@@ -1,0 +1,81 @@
+diff --git a/crates/yapfast-discord/src/api.rs b/crates/yapfast-discord/src/api.rs
+index c9d2af7..6ca14ec 100644
+--- a/crates/yapfast-discord/src/api.rs
++++ b/crates/yapfast-discord/src/api.rs
+@@ -615,6 +615,12 @@ impl Api {
+         self.json(self.request(Method::GET, &path)).await
+     }
+ 
++    /// A channel's newest message, as a list of one: MyTune's DM list shows it under the name.
++    pub async fn latest_message(&self, channel: &str) -> Result<Value> {
++        let path = format!("/channels/{channel}/messages?limit=1");
++        self.json(self.request(Method::GET, &path)).await
++    }
++
+     /// Accepts a message request, which makes it an ordinary DM.
+     pub async fn accept_request(&self, channel: &str) -> Result<()> {
+         let path = format!("/channels/{channel}/recipients/@me");
+diff --git a/crates/yapfast-discord/src/service/session.rs b/crates/yapfast-discord/src/service/session.rs
+index 0d8a954..4d7680f 100644
+--- a/crates/yapfast-discord/src/service/session.rs
++++ b/crates/yapfast-discord/src/service/session.rs
+@@ -650,15 +650,19 @@ impl Session<'_> {
+         }
+         let (api, found) = (self.shared.api.clone(), self.previews.0.clone());
+         tokio::spawn(async move {
+-            for channels in wanted.chunks(25) {
+-                match api.request_previews(channels).await {
++            // MyTune: every DM, not only message requests, one newest message each, gently
++            for channel in wanted {
++                match api.latest_message(&channel).await {
+                     Ok(answer) => {
+-                        let _ = found.send(answer);
++                        if let Some(message) = answer.as_array().and_then(|list| list.first()) {
++                            let _ = found.send(serde_json::json!([{"channel_id": channel, "message_preview": message}]));
++                        }
+                     }
+                     Err(error) => {
+-                        tracing::warn!(%error, "could not load message requests' messages");
++                        tracing::warn!(%error, "could not load a DM's latest message");
+                     }
+                 }
++                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+             }
+         });
+     }
+diff --git a/crates/yapfast-discord/src/service/tracker.rs b/crates/yapfast-discord/src/service/tracker.rs
+index f8cc19c..2a4b6b1 100644
+--- a/crates/yapfast-discord/src/service/tracker.rs
++++ b/crates/yapfast-discord/src/service/tracker.rs
+@@ -1000,9 +1000,9 @@ impl Tracker {
+         let requests: HashSet<&str> = self
+             .private
+             .iter()
+-            .filter(|private| private.request)
+             .map(|private| private.id.as_str())
+             .collect();
++        // MyTune: every DM shows its latest message under its name, not only message requests
+         self.previews.retain(|id, _| requests.contains(id.as_str()));
+         let wanted: Vec<String> = requests
+             .into_iter()
+@@ -1032,7 +1032,7 @@ impl Tracker {
+         if !self
+             .private
+             .iter()
+-            .any(|private| private.id == *channel && private.request)
++            .any(|private| private.id == *channel)
+         {
+             return false;
+         }
+@@ -1552,10 +1552,7 @@ impl Tracker {
+                 elsewhere: false,
+             })
+             .collect();
+-        let preview = private
+-            .request
+-            .then(|| self.previews.get(&private.id).cloned())
+-            .flatten();
++        let preview = self.previews.get(&private.id).cloned();
+         Conversation {
+             id: private.id.clone(),
+             name: title,

@@ -1,0 +1,7 @@
+IntelMSR.bin and AMDFamily17.bin are the unmodified PawnIO modules shipped inside LibreHardwareMonitorLib 0.9.6
+(resources LibreHardwareMonitor.Resources.PawnIo.<name>.bin). Source: https://github.com/namazso/PawnIO.Modules
+License: LGPL-2.1-or-later (see COPYING there). Loaded into the PawnIO driver (GPL-2.0-or-later with linking exception).
+SHA-256:
+  IntelMSR.bin     ED41A0D0DE082F4668A9CACCB9681EBBAD97A8ED3452C41918DDA1EB454B77A9
+  AMDFamily17.bin  099DC01D6DB97EA997FEC4A461E191CC64B9D7CE47C9D2153C451C56C2ADCF50
+Add both to installer\THIRD-PARTY-NOTICES.txt if the Rust app ever ships.

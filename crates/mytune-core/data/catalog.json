@@ -1,0 +1,2680 @@
+[
+  {
+    "id": "general.gamebar",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Disable Xbox Game Bar and background recording",
+    "description": "Turns off Game Bar and Game DVR capture, which use GPU time and can cause stutter.",
+    "details": "HKCU\\System\\GameConfigStore: GameDVR_Enabled = 0\nHKCU\\...\\CurrentVersion\\GameDVR: AppCaptureEnabled = 0\nHKCU\\Software\\Microsoft\\GameBar: UseNexusForGameBarEnabled = 0\nHKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR: AllowGameDVR = 0",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "System\\GameConfigStore",
+        "name": "GameDVR_Enabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\GameDVR",
+        "name": "AppCaptureEnabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\GameBar",
+        "name": "UseNexusForGameBarEnabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\GameDVR",
+        "name": "AllowGameDVR",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "general.powerplan",
+    "cls": "PowerPlanTweak",
+    "removed": false,
+    "title": "High-performance power plan",
+    "description": "Creates and activates the \u0022MyTune Performance\u0022 plan: no core parking, no CPU throttling, USB and PCIe power saving off, never sleeps on AC.",
+    "details": "Creates power plan 8e3f2a71-5c1b-4d7e-9a2f-6d795475e001 (a copy of High performance with tuned processor, USB, PCIe and sleep settings) and makes it active.\nYour previous plan is remembered and restored when you turn this off.\nLaptops get a battery-friendly variant that keeps sleep and hibernate.",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "general.nvidia",
+    "cls": "NvidiaGlobalProfileTweak",
+    "removed": false,
+    "title": "NVIDIA low-latency profile",
+    "description": "Sets the global NVIDIA driver profile for maximum performance and minimum input lag.",
+    "details": "NVIDIA Base Profile:\n\u2022 Power management: prefer maximum performance\n\u2022 Low latency mode: on (1 pre-rendered frame)\n\u2022 Vertical sync: off\n\u2022 Triple buffering: off\n\u2022 Preferred refresh rate: highest available\n\u2022 Texture filtering quality: high performance\n\u2022 Trilinear optimization: on\n\u2022 Anisotropic filter optimization: on\n\u2022 Anisotropic sample optimization: on\n\u2022 Shader cache size: unlimited\n\u2022 FXAA: off\n\u2022 Ansel: off (older drivers only)\nG-SYNC and per-game profiles you set yourself are not touched.",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "general.telemetry",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Disable Microsoft telemetry",
+    "description": "Limits diagnostic data to the minimum and stops the telemetry services.",
+    "details": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection: AllowTelemetry = 0\nServices DiagTrack and dmwappushservice: Disabled",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection",
+        "name": "AllowTelemetry",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SYSTEM\\CurrentControlSet\\Services\\DiagTrack",
+        "name": "Start",
+        "kind": "DWord",
+        "value": 4,
+        "default": 2,
+        "onlyIfKeyExists": true
+      },
+      {
+        "hive": "HKLM",
+        "path": "SYSTEM\\CurrentControlSet\\Services\\dmwappushservice",
+        "name": "Start",
+        "kind": "DWord",
+        "value": 4,
+        "default": 3,
+        "onlyIfKeyExists": true
+      }
+    ]
+  },
+  {
+    "id": "general.display",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Best-performance visual effects",
+    "description": "Turns off Windows animations and visual effects. Font smoothing stays on.",
+    "details": "HKCU\\...\\Explorer\\VisualEffects: VisualFXSetting = 2\nHKCU\\Control Panel\\Desktop: UserPreferencesMask = 90 12 03 80 10 00 00 00\nHKCU\\Control Panel\\Desktop\\WindowMetrics: MinAnimate = 0\nHKCU\\...\\Explorer\\Advanced: TaskbarAnimations = 0",
+    "flags": "SignOut",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\VisualEffects",
+        "name": "VisualFXSetting",
+        "kind": "DWord",
+        "value": 2,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Control Panel\\Desktop",
+        "name": "UserPreferencesMask",
+        "kind": "Binary",
+        "value": "kBIDgBAAAAA=",
+        "default": "nh4HgBIAAAA=",
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Control Panel\\Desktop\\WindowMetrics",
+        "name": "MinAnimate",
+        "kind": "String",
+        "value": "0",
+        "default": "1",
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "TaskbarAnimations",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "general.windowsupdate",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Disable automatic Windows Update",
+    "description": "Stops Windows from downloading and installing updates on its own. You can still update manually in Settings.",
+    "details": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU: NoAutoUpdate = 1, AUOptions = 2",
+    "flags": "SecurityRisk",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU",
+        "name": "NoAutoUpdate",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU",
+        "name": "AUOptions",
+        "kind": "DWord",
+        "value": 2,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "general.storeupdate",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Disable automatic Microsoft Store updates",
+    "description": "Stops Store apps from updating in the background while you play.",
+    "details": "HKLM\\SOFTWARE\\Policies\\Microsoft\\WindowsStore: AutoDownload = 2",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\WindowsStore",
+        "name": "AutoDownload",
+        "kind": "DWord",
+        "value": 2,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "adv.timer",
+    "cls": "TimerResolutionTweak",
+    "removed": false,
+    "title": "0.5 ms timer resolution while gaming",
+    "description": "Raises the Windows timer resolution while a Game Hub game is running, for smoother frame pacing. Works while MyTune is running (it keeps running in the tray).",
+    "details": "Calls NtSetTimerResolution(0.5 ms) when a game from Game Hub starts and releases it when the last one closes.\nHKLM\\...\\Session Manager\\kernel: GlobalTimerResolutionRequests = 1 (so Windows 11 honours it while MyTune is in the tray)",
+    "flags": "Restart",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\kernel",
+        "name": "GlobalTimerResolutionRequests",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "adv.backgroundapps",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Disable background apps",
+    "description": "Stops Store apps from running in the background.",
+    "details": "HKCU\\...\\BackgroundAccessApplications: GlobalUserDisabled = 1\nHKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy: LetAppsRunInBackground = 2",
+    "flags": "Experimental",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\BackgroundAccessApplications",
+        "name": "GlobalUserDisabled",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\AppPrivacy",
+        "name": "LetAppsRunInBackground",
+        "kind": "DWord",
+        "value": 2,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "adv.copilot",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Disable Copilot and Recall",
+    "description": "Turns off Windows Copilot, its taskbar button and Recall snapshots, which run in the background.",
+    "details": "HKLM \u002B HKCU\\Software\\Policies\\Microsoft\\Windows\\WindowsCopilot: TurnOffWindowsCopilot = 1\nHKCU\\...\\Explorer\\Advanced: ShowCopilotButton = 0\nHKLM \u002B HKCU\\Software\\Policies\\Microsoft\\Windows\\WindowsAI: DisableAIDataAnalysis = 1\nHKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsAI: AllowRecallEnablement = 0",
+    "flags": "SignOut",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsCopilot",
+        "name": "TurnOffWindowsCopilot",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Policies\\Microsoft\\Windows\\WindowsCopilot",
+        "name": "TurnOffWindowsCopilot",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "ShowCopilotButton",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsAI",
+        "name": "DisableAIDataAnalysis",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsAI",
+        "name": "AllowRecallEnablement",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Policies\\Microsoft\\Windows\\WindowsAI",
+        "name": "DisableAIDataAnalysis",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "adv.storagesense",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Disable Storage Sense",
+    "description": "Stops Windows from cleaning up files automatically in the background.",
+    "details": "HKCU\\...\\StorageSense\\Parameters\\StoragePolicy: 01 = 0",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\StorageSense\\Parameters\\StoragePolicy",
+        "name": "01",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "adv.notifications",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Disable notification center and calendar",
+    "description": "Removes the notification center and calendar flyout from the taskbar. Explorer restarts.",
+    "details": "HKCU\\Software\\Policies\\Microsoft\\Windows\\Explorer: DisableNotificationCenter = 1",
+    "flags": "RestartsExplorer",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Policies\\Microsoft\\Windows\\Explorer",
+        "name": "DisableNotificationCenter",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "adv.hibernation",
+    "cls": "HibernationTweak",
+    "removed": false,
+    "title": "Disable hibernation and Fast Startup",
+    "description": "Removes hiberfil.sys (frees several GB) and makes every shutdown a clean one.",
+    "details": "Runs: powercfg /hibernate off\nTurning it back on runs: powercfg /hibernate on",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "adv.classicmenu",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Classic right-click menu",
+    "description": "Brings back the full Windows 10 right-click menu without \u0022Show more options\u0022. Explorer restarts.",
+    "details": "Creates HKCU\\Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\\InprocServer32 with an empty default value.",
+    "flags": "RestartsExplorer",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": true,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}\\InprocServer32",
+        "name": "",
+        "kind": "String",
+        "value": "",
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "adv.edge",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Microsoft Edge debloat",
+    "description": "Stops Edge running in the background and turns off its sidebar, shopping and recommendation pop-ups.",
+    "details": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Edge: StartupBoostEnabled = 0, BackgroundModeEnabled = 0, HubsSidebarEnabled = 0, EdgeShoppingAssistantEnabled = 0, ShowRecommendationsEnabled = 0, PersonalizationReportingEnabled = 0, UserFeedbackAllowed = 0, DiagnosticData = 0",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Edge",
+        "name": "StartupBoostEnabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Edge",
+        "name": "BackgroundModeEnabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Edge",
+        "name": "HubsSidebarEnabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Edge",
+        "name": "EdgeShoppingAssistantEnabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Edge",
+        "name": "ShowRecommendationsEnabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Edge",
+        "name": "PersonalizationReportingEnabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Edge",
+        "name": "UserFeedbackAllowed",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Edge",
+        "name": "DiagnosticData",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "adv.brave",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Brave debloat",
+    "description": "Turns off Brave Rewards, Wallet, VPN and AI Chat.",
+    "details": "HKLM\\SOFTWARE\\Policies\\BraveSoftware\\Brave: BraveRewardsDisabled = 1, BraveWalletDisabled = 1, BraveVPNDisabled = 1, BraveAIChatEnabled = 0",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\BraveSoftware\\Brave",
+        "name": "BraveRewardsDisabled",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\BraveSoftware\\Brave",
+        "name": "BraveWalletDisabled",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\BraveSoftware\\Brave",
+        "name": "BraveVPNDisabled",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\BraveSoftware\\Brave",
+        "name": "BraveAIChatEnabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "adv.windowed",
+    "cls": "DirectXSettingsTweak",
+    "removed": false,
+    "title": "Optimizations for windowed games",
+    "description": "Lets borderless and windowed games use the faster flip presentation path (lower latency), close to exclusive fullscreen.",
+    "details": "HKCU\\Software\\Microsoft\\DirectX\\UserGpuPreferences: DirectXUserGlobalSettings gets SwapEffectUpgradeEnable=1; (other entries in that value are kept)",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "adv.mpo",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Turn off multiplane overlay",
+    "description": "Disables MPO, a known cause of stutter, flicker and black screens in some games on NVIDIA and AMD drivers.",
+    "details": "HKLM\\SOFTWARE\\Microsoft\\Windows\\Dwm: OverlayTestMode = 5",
+    "flags": "Restart, Experimental",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\Dwm",
+        "name": "OverlayTestMode",
+        "kind": "DWord",
+        "value": 5,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "adv.hags",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Turn off hardware-accelerated GPU scheduling",
+    "description": "Some games have smoother frame pacing with HAGS off. Others need it on (DLSS Frame Generation does).",
+    "details": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers: HwSchMode = 1 (off)",
+    "flags": "Restart, Experimental",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SYSTEM\\CurrentControlSet\\Control\\GraphicsDrivers",
+        "name": "HwSchMode",
+        "kind": "DWord",
+        "value": 1,
+        "default": 2,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "adv.msi",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "MSI mode for GPU and network adapter",
+    "description": "Switches your graphics card and network adapter to message-signaled interrupts, which can lower DPC latency. Many drivers already use MSI.",
+    "details": "For each PCI graphics and network device, HKLM\\SYSTEM\\CurrentControlSet\\Enum\\\u003Cdevice\u003E\\Device Parameters\\Interrupt Management\\MessageSignaledInterruptProperties: MSISupported = 1\nOriginal values are restored when you turn this off.",
+    "flags": "Restart, Experimental",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": true,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": []
+  },
+  {
+    "id": "adv.vbs",
+    "cls": "VbsTweak",
+    "removed": false,
+    "title": "Disable Virtualization-Based Security",
+    "description": "Turns off VBS, Memory Integrity and the hypervisor for more FPS. This lowers protection against malware, and Valorant (Vanguard) and some anti-cheats need VBS on.",
+    "details": "HKLM\\...\\DeviceGuard: EnableVirtualizationBasedSecurity = 0\nHKLM\\...\\DeviceGuard\\Scenarios\\HypervisorEnforcedCodeIntegrity: Enabled = 0\nbcdedit /set hypervisorlaunchtype off (previous value is remembered)",
+    "flags": "Restart, SecurityRisk",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "net.adapterpower",
+    "cls": "AdapterPropertyTweak",
+    "removed": false,
+    "title": "Adapter power management off",
+    "description": "Keeps your network adapter at full power instead of letting it sleep. The connection drops for a few seconds when applied.",
+    "details": "Driver settings (only those your adapter has): *DeviceSleepOnDisconnect, *SelectiveSuspend, ReduceSpeedOnPowerDown, ULPMode = 0",
+    "flags": "NetworkBlip",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "net.adapteradvanced",
+    "cls": "AdapterPropertyTweak",
+    "removed": false,
+    "title": "Adapter latency tuning",
+    "description": "Turns off interrupt moderation, flow control and Energy-Efficient Ethernet. The connection drops for a few seconds when applied.",
+    "details": "Driver settings (only those your adapter has): *InterruptModeration, *FlowControl, *EEE, EEELinkAdvertisement, AdvancedEEE, EnableGreenEthernet, GreenEthernet = 0",
+    "flags": "Experimental, NetworkBlip",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "net.bindings",
+    "cls": "ProtocolBindingsTweak",
+    "removed": false,
+    "title": "Unbind unused protocols",
+    "description": "Turns off network discovery protocols (LLTD and LLDP) that games never use.",
+    "details": "Disable-NetAdapterBinding for ms_lltdio, ms_rspndr and ms_lldp on each connected adapter.\nFile and printer sharing stay on.",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "deb.adid",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Disable advertising ID",
+    "description": "Stops apps from using a personal advertising ID to track you across apps.",
+    "details": "HKCU\\...\\AdvertisingInfo: Enabled = 0\nHKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\AdvertisingInfo: DisabledByGroupPolicy = 1",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\AdvertisingInfo",
+        "name": "Enabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\AdvertisingInfo",
+        "name": "DisabledByGroupPolicy",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "deb.ads",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Remove ads, suggestions and auto-installed apps",
+    "description": "Turns off Start menu and lock screen ads, Settings suggestions, Windows Spotlight tips and the sponsored apps Windows installs on its own.",
+    "details": "HKCU\\...\\ContentDeliveryManager: ContentDeliveryAllowed, SystemPaneSuggestionsEnabled, SilentInstalledAppsEnabled, PreInstalledAppsEnabled, OemPreInstalledAppsEnabled, SoftLandingEnabled, RotatingLockScreenOverlayEnabled, SubscribedContent-* = 0\nHKCU\\SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent: DisableWindowsSpotlightFeatures = 1\nHKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent: DisableWindowsConsumerFeatures = 1",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+        "name": "ContentDeliveryAllowed",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+        "name": "SystemPaneSuggestionsEnabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+        "name": "SilentInstalledAppsEnabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+        "name": "PreInstalledAppsEnabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+        "name": "OemPreInstalledAppsEnabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+        "name": "SoftLandingEnabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+        "name": "RotatingLockScreenOverlayEnabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+        "name": "SubscribedContent-310093Enabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+        "name": "SubscribedContent-338387Enabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+        "name": "SubscribedContent-338388Enabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+        "name": "SubscribedContent-338389Enabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+        "name": "SubscribedContent-338393Enabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+        "name": "SubscribedContent-353694Enabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+        "name": "SubscribedContent-353696Enabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\ContentDeliveryManager",
+        "name": "SubscribedContent-353698Enabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Policies\\Microsoft\\Windows\\CloudContent",
+        "name": "DisableWindowsSpotlightFeatures",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\CloudContent",
+        "name": "DisableWindowsConsumerFeatures",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "deb.activity",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Turn off activity history and Timeline",
+    "description": "Stops Windows from recording which apps and files you open and uploading it to Microsoft.",
+    "details": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\System: EnableActivityFeed = 0, PublishUserActivities = 0, UploadUserActivities = 0",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+        "name": "EnableActivityFeed",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+        "name": "PublishUserActivities",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\System",
+        "name": "UploadUserActivities",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "deb.tailored",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Turn off tailored experiences and inking data",
+    "description": "Stops Windows from using your diagnostic data for tips and ads, and from collecting what you type and write.",
+    "details": "HKCU\\...\\Privacy: TailoredExperiencesWithDiagnosticDataEnabled = 0\nHKCU\\SOFTWARE\\Microsoft\\InputPersonalization: RestrictImplicitTextCollection = 1, RestrictImplicitInkCollection = 1",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Privacy",
+        "name": "TailoredExperiencesWithDiagnosticDataEnabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Policies\\Microsoft\\Windows\\CloudContent",
+        "name": "DisableTailoredExperiencesWithDiagnosticData",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\InputPersonalization",
+        "name": "RestrictImplicitTextCollection",
+        "kind": "DWord",
+        "value": 1,
+        "default": 0,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\InputPersonalization",
+        "name": "RestrictImplicitInkCollection",
+        "kind": "DWord",
+        "value": 1,
+        "default": 0,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "deb.feedback",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Stop feedback prompts",
+    "description": "Windows stops asking you for feedback.",
+    "details": "HKCU\\SOFTWARE\\Microsoft\\Siuf\\Rules: NumberOfSIUFInPeriod = 0\nHKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection: DoNotShowFeedbackNotifications = 1",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Siuf\\Rules",
+        "name": "NumberOfSIUFInPeriod",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\DataCollection",
+        "name": "DoNotShowFeedbackNotifications",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "deb.location",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Turn off location services",
+    "description": "Windows and apps can no longer see where you are. Maps, weather and \u0022find my device\u0022 will not know your location.",
+    "details": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\LocationAndSensors: DisableLocation = 1",
+    "flags": "Experimental",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\LocationAndSensors",
+        "name": "DisableLocation",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "deb.wer",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Turn off Windows Error Reporting",
+    "description": "Crash reports are no longer collected and sent to Microsoft, and the reporting dialog no longer appears.",
+    "details": "HKLM\\SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting: Disabled = 1",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\Windows Error Reporting",
+        "name": "Disabled",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "deb.tasks",
+    "cls": "ScheduledTasksTweak",
+    "removed": false,
+    "title": "Disable telemetry scheduled tasks",
+    "description": "Turns off the background tasks that collect and send usage data (Compatibility Appraiser, Customer Experience program, feedback).",
+    "details": "Disables these tasks (only those that exist), and re-enables only the ones MyTune disabled:\n\\Microsoft\\Windows\\Application Experience\\Microsoft Compatibility Appraiser, ProgramDataUpdater\n\\Microsoft\\Windows\\Customer Experience Improvement Program\\Consolidator, UsbCeip\n\\Microsoft\\Windows\\Autochk\\Proxy\n\\Microsoft\\Windows\\Feedback\\Siuf\\DmClient, DmClientOnScenarioDownload\n\\Microsoft\\Windows\\Windows Error Reporting\\QueueReporting",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "deb.xbox",
+    "cls": "ServicesManualTweak",
+    "removed": false,
+    "title": "Xbox services to Manual",
+    "description": "Xbox Live, game save sync and accessory services only start when something needs them. Games that sign in to Xbox Live still work.",
+    "details": "Services XblAuthManager, XblGameSave, XboxGipSvc, XboxNetApiSvc: Automatic \u2192 Manual (never Disabled). Only those currently set to Automatic are changed.",
+    "flags": "Restart, Experimental",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "deb.spooler",
+    "cls": "ServicesManualTweak",
+    "removed": false,
+    "title": "Print Spooler to Manual",
+    "description": "Printing service starts only when you print. Do not use this if you print a lot and want it ready instantly.",
+    "details": "Service Spooler: Automatic \u2192 Manual (never Disabled). Your previous start type is restored when you turn this off.",
+    "flags": "Restart, Experimental",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "deb.onedrive",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Disable OneDrive",
+    "description": "Stops OneDrive from syncing and starting with Windows. Does not uninstall it or delete your files, and you can turn it back on here.",
+    "details": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\OneDrive: DisableFileSyncNGSC = 1",
+    "flags": "Experimental",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\OneDrive",
+        "name": "DisableFileSyncNGSC",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "deb.chat",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Remove Teams chat icon",
+    "description": "Removes the Chat (Teams) button from the taskbar. Explorer restarts.",
+    "details": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\Windows Chat: ChatIcon = 3",
+    "flags": "RestartsExplorer",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\Windows Chat",
+        "name": "ChatIcon",
+        "kind": "DWord",
+        "value": 3,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "deb.store",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Disable Microsoft Store (aggressive)",
+    "description": "Blocks the Store app entirely. Store and Xbox app games cannot be installed or updated while this is on. Revert to get it back.",
+    "details": "HKLM\\SOFTWARE\\Policies\\Microsoft\\WindowsStore: RemoveWindowsStore = 1",
+    "flags": "Experimental",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\WindowsStore",
+        "name": "RemoveWindowsStore",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "general.gsync",
+    "cls": "NvidiaGsyncTweak",
+    "removed": false,
+    "title": "Activate G-SYNC",
+    "description": "Keeps G-SYNC / variable refresh enabled in the NVIDIA driver. It is usually already on. Turn it off only if your fps stays far above your refresh rate and you accept screen tearing for slightly lower latency (competitive play).",
+    "details": "NVIDIA driver, global Base Profile: Enable G-SYNC globally, Toggle the VRR global feature, VRR requested state. On = NVIDIA\u0027s defaults (enabled). Off = all three set to 0.",
+    "flags": "New",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "game.vrr",
+    "cls": "DirectXSettingsTweak",
+    "removed": false,
+    "title": "Variable refresh rate for windowed games",
+    "description": "G-SYNC and FreeSync also work in borderless and windowed games, not just exclusive fullscreen. Needs a variable-refresh monitor.",
+    "details": "HKCU\\Software\\Microsoft\\DirectX\\UserGpuPreferences: DirectXUserGlobalSettings gets VRROptimizeEnable=1; (other entries in that value are kept)",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "game.autohdr",
+    "cls": "DirectXSettingsTweak",
+    "removed": false,
+    "title": "Auto HDR",
+    "description": "Windows adds HDR to supported DirectX 11 and 12 games that were made for standard range. Needs an HDR display with HDR turned on in Windows.",
+    "details": "HKCU\\Software\\Microsoft\\DirectX\\UserGpuPreferences: DirectXUserGlobalSettings gets AutoHDREnable=2097; (other entries in that value are kept)",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "sys.deliveryopt",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Turn off Delivery Optimization",
+    "description": "Stops your PC from sharing Windows update files with other PCs over your internet connection.",
+    "details": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\DeliveryOptimization: DODownloadMode = 0",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\DeliveryOptimization",
+        "name": "DODownloadMode",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "sys.wudrivers",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Keep Windows Update away from drivers",
+    "description": "Windows Update no longer replaces your graphics driver with its own version. Update drivers yourself from NVIDIA, AMD or Intel.",
+    "details": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate: ExcludeWUDriversInQualityUpdate = 1",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate",
+        "name": "ExcludeWUDriversInQualityUpdate",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "sys.norestart",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "No automatic restarts after updates",
+    "description": "Windows will not restart by itself while you are signed in (for example in the middle of a game).",
+    "details": "HKLM\\SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU: NoAutoRebootWithLoggedOnUsers = 1",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Policies\\Microsoft\\Windows\\WindowsUpdate\\AU",
+        "name": "NoAutoRebootWithLoggedOnUsers",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "sys.shutdown",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Faster shutdown",
+    "description": "Closes hung apps and services after 2 seconds instead of waiting 5 to 20 seconds. Unsaved data in a frozen app is lost sooner.",
+    "details": "HKCU\\Control Panel\\Desktop: WaitToKillAppTimeout = 2000, HungAppTimeout = 2000, AutoEndTasks = 1\nHKLM\\SYSTEM\\CurrentControlSet\\Control: WaitToKillServiceTimeout = 2000",
+    "flags": "Experimental",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Control Panel\\Desktop",
+        "name": "WaitToKillAppTimeout",
+        "kind": "String",
+        "value": "2000",
+        "default": "20000",
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Control Panel\\Desktop",
+        "name": "HungAppTimeout",
+        "kind": "String",
+        "value": "2000",
+        "default": "5000",
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Control Panel\\Desktop",
+        "name": "AutoEndTasks",
+        "kind": "String",
+        "value": "1",
+        "default": "0",
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SYSTEM\\CurrentControlSet\\Control",
+        "name": "WaitToKillServiceTimeout",
+        "kind": "String",
+        "value": "2000",
+        "default": "5000",
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "sys.menudelay",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Instant menus",
+    "description": "Menus open with no delay.",
+    "details": "HKCU\\Control Panel\\Desktop: MenuShowDelay = 0",
+    "flags": "SignOut",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Control Panel\\Desktop",
+        "name": "MenuShowDelay",
+        "kind": "String",
+        "value": "0",
+        "default": "400",
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "sys.startupdelay",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Remove startup app delay",
+    "description": "Windows starts your startup apps right away instead of waiting about 10 seconds after sign-in.",
+    "details": "HKCU\\...\\Explorer\\Serialize: StartupDelayInMSec = 0",
+    "flags": "SignOut",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Serialize",
+        "name": "StartupDelayInMSec",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "sys.usbsuspend",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Turn off USB selective suspend",
+    "description": "Stops Windows from powering down USB devices (mouse, keyboard, headset) to save energy, which can cause a short lag when they wake. Your USB ports are not disabled: they stay on and keep working, only the power-saving sleep is turned off.",
+    "details": "HKLM\\SYSTEM\\CurrentControlSet\\Services\\USB: DisableSelectiveSuspend = 1",
+    "flags": "Restart",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SYSTEM\\CurrentControlSet\\Services\\USB",
+        "name": "DisableSelectiveSuspend",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "sys.keyboard",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Faster keyboard response",
+    "description": "Shortens the delay before a held key starts repeating.",
+    "details": "HKCU\\Control Panel\\Keyboard: KeyboardDelay = 0, KeyboardSpeed = 31",
+    "flags": "SignOut",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Control Panel\\Keyboard",
+        "name": "KeyboardDelay",
+        "kind": "String",
+        "value": "0",
+        "default": "1",
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Control Panel\\Keyboard",
+        "name": "KeyboardSpeed",
+        "kind": "String",
+        "value": "31",
+        "default": "31",
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "sys.longpaths",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Enable long file paths",
+    "description": "Lets apps and mods use file paths longer than 260 characters.",
+    "details": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\FileSystem: LongPathsEnabled = 1",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SYSTEM\\CurrentControlSet\\Control\\FileSystem",
+        "name": "LongPathsEnabled",
+        "kind": "DWord",
+        "value": 1,
+        "default": 0,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "qol.thispc",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Open File Explorer to This PC",
+    "description": "Explorer opens to your drives instead of Home with recent files.",
+    "details": "HKCU\\...\\Explorer\\Advanced: LaunchTo = 1",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "LaunchTo",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "qol.navpane",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Remove Home and Gallery from Explorer",
+    "description": "Takes the Home and Gallery entries out of the Explorer sidebar. Explorer restarts.",
+    "details": "HKCU\\Software\\Classes\\CLSID\\{f874310e-b6b7-47dc-bc84-b9e6b38f5903}: System.IsPinnedToNameSpaceTree = 0\nHKCU\\Software\\Classes\\CLSID\\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}: System.IsPinnedToNameSpaceTree = 0",
+    "flags": "RestartsExplorer",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Classes\\CLSID\\{f874310e-b6b7-47dc-bc84-b9e6b38f5903}",
+        "name": "System.IsPinnedToNameSpaceTree",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Classes\\CLSID\\{e88865ea-0e1c-4e20-9aa6-edcd0212c87c}",
+        "name": "System.IsPinnedToNameSpaceTree",
+        "kind": "DWord",
+        "value": 0,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "qol.seconds",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Show seconds in the taskbar clock",
+    "description": "The clock shows seconds. Explorer restarts.",
+    "details": "HKCU\\...\\Explorer\\Advanced: ShowSecondsInSystemClock = 1",
+    "flags": "RestartsExplorer",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "ShowSecondsInSystemClock",
+        "kind": "DWord",
+        "value": 1,
+        "default": 0,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "qol.searchhighlights",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Turn off search highlights",
+    "description": "Removes the daily doodles and trending pictures from the search box.",
+    "details": "HKCU\\...\\SearchSettings: IsDynamicSearchBoxEnabled = 0",
+    "flags": "RestartsExplorer",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\SearchSettings",
+        "name": "IsDynamicSearchBoxEnabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "qol.stickykeys",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Stop accessibility key pop-ups",
+    "description": "Pressing Shift five times, holding Shift or holding Num Lock no longer opens Sticky Keys, Filter Keys or Toggle Keys prompts while you play.",
+    "details": "HKCU\\Control Panel\\Accessibility\\StickyKeys: Flags = 506\nHKCU\\Control Panel\\Accessibility\\Keyboard Response: Flags = 122\nHKCU\\Control Panel\\Accessibility\\ToggleKeys: Flags = 58",
+    "flags": "SignOut",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Control Panel\\Accessibility\\StickyKeys",
+        "name": "Flags",
+        "kind": "String",
+        "value": "506",
+        "default": "510",
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Control Panel\\Accessibility\\Keyboard Response",
+        "name": "Flags",
+        "kind": "String",
+        "value": "122",
+        "default": "126",
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Control Panel\\Accessibility\\ToggleKeys",
+        "name": "Flags",
+        "kind": "String",
+        "value": "58",
+        "default": "62",
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "qol.hover",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Faster hover tooltips",
+    "description": "Tooltips and taskbar previews appear sooner.",
+    "details": "HKCU\\Control Panel\\Mouse: MouseHoverTime = 100",
+    "flags": "SignOut",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Control Panel\\Mouse",
+        "name": "MouseHoverTime",
+        "kind": "String",
+        "value": "100",
+        "default": "400",
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "qol.cleanmenu",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Tidy the right-click menu",
+    "description": "Removes Share, Give access to and Include in library from the right-click menu. Explorer restarts.",
+    "details": "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Blocked: adds {E2BF9676-5F8F-435C-97EB-11607A5BEDF7} (Share), {F81E9010-6EA4-11CE-A7FF-00AA003CA9F6} (Give access to), {3DAD6C5D-2167-4CAE-9914-F99E41C12CFA} (Include in library)",
+    "flags": "RestartsExplorer",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Blocked",
+        "name": "{E2BF9676-5F8F-435C-97EB-11607A5BEDF7}",
+        "kind": "String",
+        "value": "",
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Blocked",
+        "name": "{F81E9010-6EA4-11CE-A7FF-00AA003CA9F6}",
+        "kind": "String",
+        "value": "",
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Shell Extensions\\Blocked",
+        "name": "{3DAD6C5D-2167-4CAE-9914-F99E41C12CFA}",
+        "kind": "String",
+        "value": "",
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "qol.takeown",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Add \u0022Take ownership\u0022 to the right-click menu",
+    "description": "Adds a right-click entry on files and folders that makes you the owner and gives administrators full access. Handy for locked game or mod files.",
+    "details": "Creates HKLM\\SOFTWARE\\Classes\\*\\shell\\MyTuneTakeOwnership and HKLM\\SOFTWARE\\Classes\\Directory\\shell\\MyTuneTakeOwnership, running takeown and icacls /grant Administrators:F.\nBoth keys are removed when you turn this off.",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": true,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Classes\\*\\shell\\MyTuneTakeOwnership",
+        "name": "",
+        "kind": "String",
+        "value": "Take ownership",
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Classes\\*\\shell\\MyTuneTakeOwnership",
+        "name": "HasLUAShield",
+        "kind": "String",
+        "value": "",
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Classes\\*\\shell\\MyTuneTakeOwnership\\command",
+        "name": "",
+        "kind": "String",
+        "value": "cmd.exe /c takeown /f \u0022%1\u0022 \u0026\u0026 icacls \u0022%1\u0022 /grant *S-1-5-32-544:F",
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Classes\\Directory\\shell\\MyTuneTakeOwnership",
+        "name": "",
+        "kind": "String",
+        "value": "Take ownership",
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Classes\\Directory\\shell\\MyTuneTakeOwnership",
+        "name": "HasLUAShield",
+        "kind": "String",
+        "value": "",
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Classes\\Directory\\shell\\MyTuneTakeOwnership\\command",
+        "name": "",
+        "kind": "String",
+        "value": "cmd.exe /c takeown /f \u0022%1\u0022 /r /d y \u0026\u0026 icacls \u0022%1\u0022 /grant *S-1-5-32-544:F /t /c /l /q",
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "cust.dark",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Dark theme",
+    "description": "Dark mode for Windows and apps.",
+    "details": "HKCU\\...\\Themes\\Personalize: AppsUseLightTheme = 0, SystemUsesLightTheme = 0",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": true,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        "name": "AppsUseLightTheme",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        "name": "SystemUsesLightTheme",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "cust.dragoutline",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Outline when moving windows",
+    "description": "Shows only a frame while you drag or resize a window, instead of moving the whole window. Lighter on the GPU.",
+    "details": "HKCU\\Control Panel\\Desktop: DragFullWindows = 0",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": true,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Control Panel\\Desktop",
+        "name": "DragFullWindows",
+        "kind": "String",
+        "value": "0",
+        "default": "1",
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "cust.bing",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Turn off web results in Start search",
+    "description": "Searching from Start only shows your PC, with no Bing web results. Explorer restarts.",
+    "details": "HKCU\\...\\Search: BingSearchEnabled = 0\nHKCU\\SOFTWARE\\Policies\\Microsoft\\Windows\\Explorer: DisableSearchBoxSuggestions = 1",
+    "flags": "RestartsExplorer",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": true,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Search",
+        "name": "BingSearchEnabled",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Policies\\Microsoft\\Windows\\Explorer",
+        "name": "DisableSearchBoxSuggestions",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "cust.startrecs",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Hide Start menu recommendations",
+    "description": "Removes recently added apps, files and tips from Start. Explorer restarts.",
+    "details": "HKCU\\...\\Explorer\\Advanced: Start_IrisRecommendations = 0",
+    "flags": "RestartsExplorer",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": true,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "Start_IrisRecommendations",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "cust.taskbarleft",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Align taskbar icons to the left",
+    "description": "Moves the taskbar icons and Start button to the left like Windows 10.",
+    "details": "HKCU\\...\\Explorer\\Advanced: TaskbarAl = 0",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": true,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "TaskbarAl",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "cust.hidesearch",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Hide the taskbar search button",
+    "description": "Removes the search box or icon from the taskbar. Search still opens with the Windows key.",
+    "details": "HKCU\\...\\Search: SearchboxTaskbarMode = 0",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": true,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Search",
+        "name": "SearchboxTaskbarMode",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "cust.hidetaskview",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Hide the Task View button",
+    "description": "Removes the Task View button from the taskbar. Win \u002B Tab still works.",
+    "details": "HKCU\\...\\Explorer\\Advanced: ShowTaskViewButton = 0",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": true,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "ShowTaskViewButton",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "cust.fileext",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Show file extensions",
+    "description": "Shows .exe, .txt and other extensions in File Explorer.",
+    "details": "HKCU\\...\\Explorer\\Advanced: HideFileExt = 0",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": true,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "HideFileExt",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "cust.hiddenfiles",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Show hidden files and folders",
+    "description": "Shows hidden files and folders in File Explorer.",
+    "details": "HKCU\\...\\Explorer\\Advanced: Hidden = 1",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": true,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "Hidden",
+        "kind": "DWord",
+        "value": 1,
+        "default": 2,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "cust.snapoff",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Turn off window snapping",
+    "description": "Dragging a window to a screen edge no longer arranges it. Applies after you sign out.",
+    "details": "HKCU\\Control Panel\\Desktop: WindowArrangementActive = 0",
+    "flags": "SignOut",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": true,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Control Panel\\Desktop",
+        "name": "WindowArrangementActive",
+        "kind": "String",
+        "value": "0",
+        "default": "1",
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "cust.snapflyout",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Turn off the snap layout flyout",
+    "description": "Hovering the maximize button no longer shows layout suggestions.",
+    "details": "HKCU\\...\\Explorer\\Advanced: EnableSnapAssistFlyout = 0",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": true,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "EnableSnapAssistFlyout",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "cust.snapassist",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Turn off snap assist suggestions",
+    "description": "After snapping a window, Windows no longer suggests other windows to fill the rest of the screen.",
+    "details": "HKCU\\...\\Explorer\\Advanced: SnapAssist = 0",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": true,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "SnapAssist",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "cust.numlock",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "NumLock on at startup",
+    "description": "Turns NumLock on at the sign-in screen and after sign-in.",
+    "details": "HKU\\.DEFAULT\\Control Panel\\Keyboard \u002B HKCU\\Control Panel\\Keyboard: InitialKeyboardIndicators = 2",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": true,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKU",
+        "path": ".DEFAULT\\Control Panel\\Keyboard",
+        "name": "InitialKeyboardIndicators",
+        "kind": "String",
+        "value": "2",
+        "default": "0",
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Control Panel\\Keyboard",
+        "name": "InitialKeyboardIndicators",
+        "kind": "String",
+        "value": "2",
+        "default": "0",
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "cust.verbose",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Verbose sign-in messages",
+    "description": "Shows what Windows is doing during startup, sign-in and shutdown.",
+    "details": "HKLM\\...\\Policies\\System: VerboseStatus = 1",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": true,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System",
+        "name": "VerboseStatus",
+        "kind": "DWord",
+        "value": 1,
+        "default": 0,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "cust.crashdetails",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Detailed crash screen",
+    "description": "Shows technical error details on the blue screen.",
+    "details": "HKLM\\SYSTEM\\CurrentControlSet\\Control\\CrashControl: DisplayParameters = 1",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": true,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SYSTEM\\CurrentControlSet\\Control\\CrashControl",
+        "name": "DisplayParameters",
+        "kind": "DWord",
+        "value": 1,
+        "default": 0,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "cust.settingshome",
+    "cls": "RegistryTweak",
+    "removed": false,
+    "title": "Hide the Settings home page",
+    "description": "Opens Settings on System instead of the Home page with suggestions.",
+    "details": "HKLM\\...\\Policies\\Explorer: SettingsPageVisibility = \u0022hide:home\u0022",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": true,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKLM",
+        "path": "SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer",
+        "name": "SettingsPageVisibility",
+        "kind": "String",
+        "value": "hide:home",
+        "default": null,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "adv.fso",
+    "cls": "RegistryTweak",
+    "removed": true,
+    "title": "Disable fullscreen optimizations",
+    "description": null,
+    "details": null,
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": []
+  },
+  {
+    "id": "adv.mmcss",
+    "cls": "RegistryTweak",
+    "removed": true,
+    "title": "Game scheduling priority",
+    "description": null,
+    "details": null,
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": []
+  },
+  {
+    "id": "adv.priosep",
+    "cls": "RegistryTweak",
+    "removed": true,
+    "title": "Foreground app boost",
+    "description": null,
+    "details": null,
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": []
+  },
+  {
+    "id": "adv.powerthrottling",
+    "cls": "RegistryTweak",
+    "removed": true,
+    "title": "Disable power throttling",
+    "description": null,
+    "details": null,
+    "flags": "Restart",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": []
+  },
+  {
+    "id": "adv.irqspread",
+    "cls": "RegistryTweak",
+    "removed": true,
+    "title": "Spread interrupts across CPU cores",
+    "description": null,
+    "details": null,
+    "flags": "Restart",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": []
+  },
+  {
+    "id": "net.nagle",
+    "cls": "RegistryTweak",
+    "removed": true,
+    "title": "Disable Nagle\u0027s algorithm",
+    "description": null,
+    "details": null,
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": []
+  },
+  {
+    "id": "net.throttling",
+    "cls": "RegistryTweak",
+    "removed": true,
+    "title": "Disable network throttling",
+    "description": null,
+    "details": null,
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": []
+  },
+  {
+    "id": "mem.pagefile",
+    "cls": "RegistryTweak",
+    "removed": true,
+    "title": "Fixed-size page file",
+    "description": null,
+    "details": null,
+    "flags": "Restart",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": []
+  },
+  {
+    "id": "mem.standby",
+    "cls": "RegistryTweak",
+    "removed": true,
+    "title": "Smart standby memory cleaner",
+    "description": null,
+    "details": null,
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": []
+  },
+  {
+    "id": "adv.search",
+    "cls": "ServicesManualTweak",
+    "removed": true,
+    "title": "Search indexing to Manual",
+    "description": null,
+    "details": null,
+    "flags": "Restart",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "adv.sysmain",
+    "cls": "ServicesManualTweak",
+    "removed": true,
+    "title": "SysMain (Superfetch) to Manual",
+    "description": null,
+    "details": null,
+    "flags": "Restart",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "adv.services",
+    "cls": "ServicesManualTweak",
+    "removed": true,
+    "title": "Set unneeded services to Manual",
+    "description": null,
+    "details": null,
+    "flags": "Restart",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "adv.tick",
+    "cls": "TimerTickTweak",
+    "removed": true,
+    "title": "Steadier system timer",
+    "description": null,
+    "details": null,
+    "flags": "Restart",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "net.dns",
+    "cls": "DnsTweak",
+    "removed": true,
+    "title": "Fastest DNS server",
+    "description": null,
+    "details": null,
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "net.tcp",
+    "cls": "TcpStackTweak",
+    "removed": true,
+    "title": "TCP stack optimization",
+    "description": null,
+    "details": null,
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "mem.compression",
+    "cls": "MemoryCompressionTweak",
+    "removed": true,
+    "title": "Disable memory compression",
+    "description": null,
+    "details": null,
+    "flags": "Restart",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  }
+]

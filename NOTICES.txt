@@ -1,0 +1,19 @@
+MyTune (Rust app): notices for what it contains
+
+Yapfast
+  The chat page drives the Yapfast engine (the yapfast-core and yapfast-discord crates), version 0.3.0.
+  Yapfast is free software under the GNU General Public License, version 3 or (at your option) any later
+  version. Because of that, this Rust build of MyTune is distributed under the same license, and you may
+  have its source code: the Yapfast source is at https://github.com/yapfast/yapfast and the source of this
+  program is the mytune-rs folder (the Yapfast source is changed in three files; the changes are the patch in patches/yapfast-0.3.0-mytune.patch).
+  The full license text is in vendor-src/yapfast/LICENSE.
+
+Twemoji
+  The colour emoji are Twemoji 17.0.3 (https://github.com/jdecked/twemoji), graphics copyright Twitter, Inc and
+  other contributors, licensed under Creative Commons Attribution 4.0 (CC-BY 4.0,
+  https://creativecommons.org/licenses/by/4.0/). The license text is in
+  crates/mytune-ui/assets/twemoji/LICENSE-GRAPHICS.txt. The pictures were packed into one file; they were
+  not otherwise changed.
+
+Segoe UI and Segoe Fluent Icons
+  Loaded from the Windows fonts folder at run time; they are not shipped.

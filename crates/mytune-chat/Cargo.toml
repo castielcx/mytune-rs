@@ -1,0 +1,13 @@
+[package]
+name = "mytune-chat"
+version.workspace = true
+edition = "2021"
+description = "Drives the Yapfast Discord engine (GPL-3.0-or-later) from MyTune's egui UI"
+
+[dependencies]
+yapfast-core = { path = "../../vendor-src/yapfast/crates/yapfast-core", default-features = false, features = ["discord"] }
+anyhow = "1"
+qrcode = { version = "0.14", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_LibraryLoader", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging", "Win32_UI_Input_KeyboardAndMouse"] }

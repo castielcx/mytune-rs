@@ -1,0 +1,9 @@
+# The Yapfast engine (mytune-chat) builds libwebrtc-based C++ and FFmpeg. libwebrtc is a copy of the archive
+# webrtc-sys would download; without this variable it downloads again into every new target dir.
+[env]
+LK_CUSTOM_WEBRTC = { value = "vendor-src/webrtc", relative = true }
+NASM = 'C:\Program Files\NASM\nasm.exe'
+
+# libwebrtc is built against the static CRT; mixing it with the DLL CRT fails to link (LNK2005).
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

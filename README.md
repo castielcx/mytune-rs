@@ -9,8 +9,10 @@ Rust port of MyTune 2: a Windows gaming-tuning app with a glass-style egui UI an
 - **Windows only, needs administrator rights.** It changes registry values, services, power plans and NVIDIA driver
   profiles. Every tweak saves the original values to `%ProgramData%\MyTune\state.json` first, a restore point is
   created before the first change, and a tweak can be reverted from the app. Use it at your own risk.
-- **No prebuilt download.** You build it yourself (below). The Discord part has not been tested against live calls
-  or screen sharing.
+- **Download:** a Windows installer (`MyTune-rs-Setup-0.1.0.exe`) is on the
+  [Releases page](https://github.com/castielcx/mytune-rs/releases). It is not code-signed, so Windows SmartScreen will
+  warn; check the SHA-256 in the release notes. You can also build it yourself (below). The Discord part has not been
+  tested against live calls or screen sharing.
 
 ## Building
 1. Install Rust (stable, `x86_64-pc-windows-msvc`), Visual Studio Build Tools (C++ workload), LLVM (clang-cl), NASM,

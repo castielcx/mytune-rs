@@ -13,3 +13,11 @@ webrtc-sys = { path = "vendor-src/yapfast/vendor/webrtc-sys" }
 davey = { path = "vendor-src/yapfast/vendor/davey" }
 tungstenite = { path = "vendor-src/yapfast/vendor/tungstenite" }
 const_panic = { git = "https://github.com/jplatte/const_panic", rev = "e0b317a9a7bde2d48a7d15b6a60d70e4a41d3b5f" }
+
+# The app that is run every day is the dev build: unoptimised, opening a chat room took a 386 ms frame.
+# Dependencies (egui, image, the Yapfast engine) are built optimised once; our own crates lightly, so a rebuild stays quick.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

@@ -3,6 +3,11 @@ name = "mytune-ui"
 version.workspace = true
 edition.workspace = true
 
+# The exe is MyTune.exe; the package keeps its name so `-p mytune-ui` still works.
+[[bin]]
+name = "MyTune"
+path = "src/main.rs"
+
 [dependencies]
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "clipboard", "links", "default_fonts"] }
 mytune-core = { version = "0.1.0", path = "../mytune-core" }
@@ -11,6 +16,13 @@ mytune-sensors = { version = "0.1.0", path = "../mytune-sensors" }
 rfd = "0.15"
 image = { version = "0.25", default-features = false, features = ["png"] }
 tray-icon = "0.26.1"
+memmap2 = "0.9" # already in the tree through the engine: fonts are mapped, not read into memory
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+
+[features]
+# Sticker picker that posts any server's sticker as its picture link. For the owner's own build only:
+# never pass it to the installer build (installer\build.ps1), it would put other people's accounts at risk.
+local-stickers = []
 
 [dev-dependencies]
 egui_kittest = { version = "0.37.0", features = ["wgpu", "snapshot"] }

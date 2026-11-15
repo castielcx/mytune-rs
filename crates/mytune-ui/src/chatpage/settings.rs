@@ -82,12 +82,7 @@ fn toggle(ui: &mut Ui, label: &str, help: &str, on: &mut bool) -> bool {
         ui.spacing_mut().item_spacing.x = 0.0;
         label_block(ui, w - 60.0, label, help);
         ui.add_space(14.0);
-        let (rect, resp) = ui.allocate_exact_size(vec2(46.0, 26.0), Sense::click());
-        let t = ui.ctx().animate_bool_with_time(resp.id, *on, QUICK);
-        let h = ui.ctx().animate_bool_with_time(resp.id.with("h"), resp.hovered(), QUICK);
-        ui.painter().rect_filled(rect, 13.0, k_raised().lerp_to_gamma(k_active(), h * (1.0 - t)).lerp_to_gamma(p().accent, t));
-        let x = egui::lerp(rect.left() + 13.0..=rect.right() - 13.0, t);
-        ui.painter().circle_filled(pos2(x, rect.center().y), 9.0, if t > 0.5 { p().on_accent } else { SECONDARY.lerp_to_gamma(TEXT, h) });
+        let resp = th::switch(ui, *on);
         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             *on = !*on;
             changed = true;
@@ -102,7 +97,8 @@ fn choices<T: PartialEq + Copy>(ui: &mut Ui, options: &[(T, &str)], value: &mut 
     let mut changed = false;
     let w = ui.available_width();
     let (outer, _) = ui.allocate_exact_size(vec2(w, 36.0), Sense::hover());
-    ui.painter().rect_filled(outer, 8.0, k_raised());
+    ui.painter().rect_filled(outer, 18.0, Color32::from_black_alpha(0x38));
+    ui.painter().rect_stroke(outer, 18.0, Stroke::new(1.0, Color32::from_white_alpha(0x16)), egui::StrokeKind::Inside);
     let n = options.len().max(1) as f32;
     let seg = (outer.width() - 6.0) / n;
     for (i, (v, name)) in options.iter().enumerate() {
@@ -112,9 +108,9 @@ fn choices<T: PartialEq + Copy>(ui: &mut Ui, options: &[(T, &str)], value: &mut 
         let t = ui.ctx().animate_bool_with_time(resp.id, on, QUICK);
         let h = ui.ctx().animate_bool_with_time(resp.id.with("h"), resp.hovered(), QUICK);
         if t > 0.0 || h > 0.0 {
-            ui.painter().rect_filled(r, 6.0, k_hover().gamma_multiply(h * (1.0 - t)).lerp_to_gamma(p().accent, t));
+            th::capsule(ui.painter(), r, Color32::from_white_alpha((0x14 as f32 * h * (1.0 - t) + 0x34 as f32 * t) as u8), (0x36 as f32 * t) as u8);
         }
-        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, *name, egui::FontId::new(13.0, th::semibold()), SECONDARY.lerp_to_gamma(TEXT, h).lerp_to_gamma(p().on_accent, t));
+        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, *name, egui::FontId::new(13.0, th::semibold()), SECONDARY.lerp_to_gamma(TEXT, h.max(t)));
         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !on {
             *value = *v;
             changed = true;
@@ -129,7 +125,7 @@ fn choices<T: PartialEq + Copy>(ui: &mut Ui, options: &[(T, &str)], value: &mut 
 fn track(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>) -> (bool, bool) {
     let (lo, hi) = (*range.start(), *range.end());
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 22.0), Sense::click_and_drag());
-    let inner = rect.shrink2(vec2(9.0, 0.0));
+    let inner = rect.shrink2(vec2(12.0, 0.0));
     let mut changed = false;
     if resp.dragged() || resp.clicked() {
         if let Some(p) = resp.interact_pointer_pos() {
@@ -146,8 +142,10 @@ fn track(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>) -> 
     ui.painter().rect_filled(Rect::from_min_max(pos2(inner.left(), cy - 2.5), pos2(inner.right(), cy + 2.5)), 2.5, k_raised());
     ui.painter().rect_filled(Rect::from_min_max(pos2(inner.left(), cy - 2.5), pos2(x, cy + 2.5)), 2.5, p().accent);
     let h = ui.ctx().animate_bool_with_time(resp.id, resp.hovered() || resp.dragged(), QUICK);
-    ui.painter().circle_filled(pos2(x, cy), 8.0 + 2.0 * h, Color32::WHITE);
-    ui.painter().circle_stroke(pos2(x, cy), 8.0 + 2.0 * h, Stroke::new(1.0, Color32::from_black_alpha(90)));
+    let held = ui.ctx().animate_bool_with_time(resp.id.with("held"), resp.is_pointer_button_down_on(), QUICK);
+    let thumb = Rect::from_center_size(pos2(x, cy), vec2(22.0 + 2.0 * h + 8.0 * held, 16.0 + 2.0 * h));
+    ui.painter().add(egui::Shadow { offset: [0, 2], blur: 6, spread: 0, color: Color32::from_black_alpha(70) }.as_shape(thumb, egui::CornerRadius::from(thumb.height() / 2.0)));
+    th::capsule(ui.painter(), thumb, Color32::WHITE.gamma_multiply(1.0 - 0.6 * held), 0x60);
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     (changed, resp.drag_stopped() || resp.clicked())
 }
@@ -170,9 +168,7 @@ fn slider(ui: &mut Ui, label: &str, value: &mut f32, range: std::ops::RangeInclu
 
 /// A button of the settings' size: 34 px high, rounded 8; primary in the accent.
 fn btn(ui: &mut Ui, text: &str, primary: bool) -> egui::Response {
-    let (fill, fg) = if primary { (p().accent, p().on_accent) } else { (k_raised(), TEXT) };
-    ui.add(egui::Button::new(sb(text, 13.0).color(fg)).fill(fill).corner_radius(8.0).stroke(Stroke::NONE).min_size(vec2(96.0, 34.0)))
-        .on_hover_cursor(egui::CursorIcon::PointingHand)
+    th::button(ui, text, primary, (18.0, 8.0, 18.0, 9.0))
 }
 
 /// A text field in the settings' look: a dark rounded box, `w` wide (the column's when infinite).
@@ -181,7 +177,7 @@ fn field(ui: &mut Ui, text: &mut String, hint: &str, w: f32, rows: usize, passwo
     egui::Frame::new()
         .fill(k_rail())
         .stroke(Stroke::new(1.0, k_line()))
-        .corner_radius(8.0)
+        .corner_radius(12.0)
         .inner_margin(egui::Margin::symmetric(10, 8))
         .show(ui, |ui| {
             ui.set_width(w - 22.0);
@@ -239,7 +235,7 @@ pub fn screen(ui: &mut Ui, su: &mut SettingsUi, chat: &Chat, later: &mut Later, 
             let on = su.page == i;
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
             let t = ctx.animate_bool_with_time(resp.id, resp.hovered(), QUICK);
-            ui.painter().rect_filled(r, 6.0, if on { k_active() } else { k_hover().gamma_multiply(t) });
+            ui.painter().rect_filled(r, 10.0, if on { k_active() } else { k_hover().gamma_multiply(t) });
             ui.painter().text(pos2(r.left() + 10.0, r.center().y), egui::Align2::LEFT_CENTER, *name, egui::FontId::proportional(14.5), if on { TEXT } else { SECONDARY });
             if resp.clicked() && !on {
                 su.page = i;
@@ -255,11 +251,15 @@ pub fn screen(ui: &mut Ui, su: &mut SettingsUi, chat: &Chat, later: &mut Later, 
         let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
         ui.painter().rect_filled(line, 0.0, k_line());
         ui.add_space(8.0);
-        let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
-        let t = ctx.animate_bool_with_time(resp.id, resp.hovered(), QUICK);
-        ui.painter().rect_filled(r, 6.0, k_hover().gamma_multiply(t));
-        ui.painter().text(pos2(r.left() + 10.0, r.center().y), egui::Align2::LEFT_CENTER, "Log out", egui::FontId::proportional(14.5), DANGER);
-        if resp.clicked() {
+        // it forgets the saved Discord login, so it asks once more
+        let out = super::sure(ui, "logout", "Log out", |ui, label| {
+            let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
+            let t = ctx.animate_bool_with_time(resp.id, resp.hovered(), QUICK);
+            ui.painter().rect_filled(r, 10.0, k_hover().gamma_multiply(t));
+            ui.painter().text(pos2(r.left() + 10.0, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(14.5), DANGER);
+            resp.clicked()
+        });
+        if out {
             su.close();
             later.push(Box::new(|c: &Chat| c.log_in_again()));
         }
@@ -298,8 +298,8 @@ pub fn screen(ui: &mut Ui, su: &mut SettingsUi, chat: &Chat, later: &mut Later, 
     let dragging = ctx.input(|i| i.pointer.any_down());
     if st != before {
         later.push(Box::new(move |c: &Chat| c.set_settings(st, !dragging)));
-    } else if save {
-        st.save();
+    } else if save && ctx.input(|i| i.pointer.any_released()) {
+        st.save(); // a slider let go; not every frame: some pages always report true
     }
 }
 
@@ -307,7 +307,7 @@ pub fn screen(ui: &mut Ui, su: &mut SettingsUi, chat: &Chat, later: &mut Later, 
 fn account(ui: &mut Ui, su: &mut SettingsUi, chat: &Chat, s: &AppState, tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSet<String>, want: &mut Vec<String>, acts: &mut Vec<Action>) {
     let ctx = ui.ctx().clone();
     ui.add_space(16.0);
-    egui::Frame::new().fill(k_panel()).corner_radius(10.0).inner_margin(egui::Margin::same(16)).show(ui, |ui| {
+    egui::Frame::new().fill(k_panel()).corner_radius(14.0).inner_margin(egui::Margin::same(16)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             let (a, _) = ui.allocate_exact_size(vec2(72.0, 72.0), Sense::hover());
@@ -320,6 +320,12 @@ fn account(ui: &mut Ui, su: &mut SettingsUi, chat: &Chat, s: &AppState, tex: &mu
                     ui.label(rt(format!("{}{}", cs.emoji.as_deref().map(|e| format!("{e} ")).unwrap_or_default(), cs.text), 13.5).color(SECONDARY));
                 }
                 ui.label(rt(if s.discord_online { "Online on Discord" } else { "Offline" }, 12.5).color(MUTED));
+                if s.discord_linked && s.profile_editor.is_none() {
+                    ui.add_space(6.0);
+                    if btn(ui, "Edit profile", true).clicked() {
+                        acts.push(Action::EditProfile);
+                    }
+                }
             });
         });
     });
@@ -339,9 +345,9 @@ fn account(ui: &mut Ui, su: &mut SettingsUi, chat: &Chat, s: &AppState, tex: &mu
             let hover = ui.ctx().animate_bool_with_time(r.id, r.hovered(), 0.12);
             let fill = if on { k_active() } else { k_raised() };
             let p = ui.painter();
-            p.rect_filled(rect, 6.0, fill);
+            p.rect_filled(rect, 10.0, fill);
             if hover > 0.0 {
-                p.rect_filled(rect, 6.0, Color32::from_white_alpha((14.0 * hover) as u8));
+                p.rect_filled(rect, 10.0, Color32::from_white_alpha((14.0 * hover) as u8));
             }
             p.rect_stroke(rect, 6.0, Stroke::new(1.0, if on { color } else { k_line() }), egui::StrokeKind::Inside);
             let fg = if on { TEXT } else { SECONDARY };
@@ -381,83 +387,126 @@ fn account(ui: &mut Ui, su: &mut SettingsUi, chat: &Chat, s: &AppState, tex: &mu
             acts.push(Action::ClearCustomStatus);
             su.custom_status.clear();
         }
-        // emoji and when it clears: the full dialog (extras::status_editor)
-        if btn(ui, "Emoji and clear time\u{2026}", false).clicked() {
-            ctx.data_mut(|d| d.insert_temp(egui::Id::new("open_status_editor"), true));
-        }
     });
-    heading(ui, "Profile");
+    if s.profile_editor.is_some() {
+        heading(ui, "Profile");
+    }
     match &s.profile_editor {
-        None => {
-            su.profile_open = false;
-            if btn(ui, "Edit profile", true).clicked() {
-                acts.push(Action::EditProfile);
-            }
-        }
+        None => su.profile_open = false, // the Edit profile button is in the account card above
         Some(ed) if ed.loading() => {
             ui.label(rt("Loading your profile\u{2026}", 13.0).color(MUTED));
         }
         Some(ed) => {
+            use mytune_chat::yapfast_core::application::PictureEdit;
+            use mytune_chat::yapfast_core::chat::ProfilePicture;
+            // what the profile was when the editor opened, to know whether anything changed
+            let was_id = egui::Id::new("profile_was");
+            let nag_id = egui::Id::new("profile_nag");
             if !su.profile_open {
                 su.profile_open = true;
                 su.profile = [ed.name.clone(), ed.pronouns.clone(), ed.bio.clone(), ed.colour.clone()];
+                ctx.data_mut(|d| {
+                    d.insert_temp(was_id, [ed.name.clone(), ed.pronouns.clone(), ed.bio.clone()]);
+                    d.insert_temp(nag_id, false);
+                });
             }
-            let fields = [(ProfileText::Name, "Display name", false), (ProfileText::Pronouns, "Pronouns", false), (ProfileText::Bio, "About me", true), (ProfileText::Colour, "Banner colour (#rrggbb)", false)];
-            for (i, (which, label, multi)) in fields.into_iter().enumerate() {
-                ui.label(rt(label, 13.0).color(SECONDARY));
-                if field(ui, &mut su.profile[i], label, f32::INFINITY, if multi { 4 } else { 1 }, false).changed() {
-                    acts.push(Action::WriteProfile { field: which, text: su.profile[i].clone() });
-                }
-                ui.add_space(6.0);
-            }
-            // avatar and banner: pick a picture (a file dialog on its own thread, as uploads do) or remove it
-            {
-                use mytune_chat::yapfast_core::application::PictureEdit;
-                use mytune_chat::yapfast_core::chat::ProfilePicture;
-                for (kind, label, now) in [(ProfilePicture::Avatar, "Avatar", &ed.avatar), (ProfilePicture::Banner, "Banner", &ed.banner)] {
-                    ui.horizontal(|ui| {
-                        ui.label(rt(label, 13.0).color(SECONDARY));
-                        ui.add_space(8.0);
-                        let state = match now {
-                            PictureEdit::Keep => "unchanged",
-                            PictureEdit::Reset => "removed (saved on Save changes)",
-                            PictureEdit::New(_) => "new picture (saved on Save changes)",
-                        };
-                        let reading = ed.reading.as_ref().is_some_and(|(k, _)| *k == kind);
-                        ui.label(rt(if reading { "reading the picture\u{2026}" } else { state }, 12.5).color(MUTED));
-                        if btn(ui, "Change\u{2026}", false).clicked() {
+            let was = ctx.data(|d| d.get_temp::<[String; 3]>(was_id)).unwrap_or_default();
+            let changed = ed.name != was[0] || ed.pronouns != was[1] || ed.bio != was[2] || !matches!(ed.avatar, PictureEdit::Keep);
+            let mut nag = ctx.data(|d| d.get_temp::<bool>(nag_id)).unwrap_or(false) && changed;
+            let slot = ui.painter().add(egui::Shape::Noop);
+            let card = egui::Frame::new().inner_margin(egui::Margin::same(18)).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    // the picture is the button, as in Discord: a click offers to upload one or remove it
+                    let (a, pic) = ui.allocate_exact_size(vec2(80.0, 80.0), Sense::click());
+                    let t = texture(&ctx, tex, asked, s, &s.account_avatar, want);
+                    avatar(ui, a, t, s.account_name.as_deref().unwrap_or("?"));
+                    let h = ui.ctx().animate_bool_with_time(pic.id, pic.hovered(), QUICK);
+                    if h > 0.0 {
+                        ui.painter().circle_filled(a.center(), 40.0, Color32::from_black_alpha((150.0 * h) as u8));
+                        ui.painter().text(a.center(), egui::Align2::CENTER_CENTER, "\u{E70F}", egui::FontId::new(22.0, crate::theme::icons()), Color32::from_white_alpha((255.0 * h) as u8));
+                    }
+                    let pic = pic.on_hover_cursor(egui::CursorIcon::PointingHand);
+                    egui::Popup::menu(&pic).show(|ui| {
+                        ui.set_min_width(180.0);
+                        if ui.button(rt("Upload a picture", 14.0)).clicked() {
                             let chat = chat.clone();
                             std::thread::spawn(move || {
-                                if let Some(path) = rfd::FileDialog::new().set_title(format!("Choose a {}", label.to_lowercase())).add_filter("Pictures", &["png", "jpg", "jpeg", "gif", "webp"]).pick_file() {
-                                    chat.dispatch(Action::PickProfilePicture { kind, path });
+                                if let Some(path) = rfd::FileDialog::new().set_title("Choose a profile picture").add_filter("Pictures", &["png", "jpg", "jpeg", "gif", "webp"]).pick_file() {
+                                    chat.dispatch(Action::PickProfilePicture { kind: ProfilePicture::Avatar, path });
                                 }
                             });
                         }
-                        if btn(ui, "Remove", false).clicked() {
-                            acts.push(Action::ResetProfilePicture(kind));
+                        if ui.button(rt("Remove picture", 14.0).color(DANGER)).clicked() {
+                            acts.push(Action::ResetProfilePicture(ProfilePicture::Avatar));
                         }
                     });
-                    ui.add_space(4.0);
-                }
-                if btn(ui, "Undo changes", false).clicked() {
-                    acts.push(Action::UndoProfileEdits);
-                    su.profile_open = false; // fields re-read from the editor
-                }
-                ui.add_space(6.0);
-            }
-            if let Some(e) = &ed.error {
-                ui.label(rt(e, 12.5).color(DANGER));
-            }
-            ui.horizontal(|ui| {
-                ui.add_enabled_ui(!ed.saving, |ui| {
-                    if btn(ui, if ed.saving { "Saving\u{2026}" } else { "Save changes" }, true).clicked() {
-                        acts.push(Action::SaveProfile);
-                    }
+                    ui.add_space(12.0);
+                    ui.vertical(|ui| {
+                        ui.add_space(18.0);
+                        ui.label(sb("Profile picture", 15.0).color(TEXT));
+                        let reading = ed.reading.as_ref().is_some_and(|(k, _)| *k == ProfilePicture::Avatar);
+                        let state = match &ed.avatar {
+                            _ if reading => "Reading the picture\u{2026}",
+                            PictureEdit::Keep => "Click the picture to change it.",
+                            PictureEdit::Reset => "Will be removed when you apply.",
+                            PictureEdit::New(_) => "New picture chosen. It shows when you apply.",
+                        };
+                        ui.label(rt(state, 12.5).color(MUTED));
+                    });
+                    ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
+                        // closing with changes open asks first: the Apply and Undo row below answers it
+                        let (x, close) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
+                        let h = ui.ctx().animate_bool_with_time(close.id, close.hovered(), QUICK);
+                        ui.painter().circle_filled(x.center(), 16.0, Color32::from_white_alpha((0x10 as f32 + 0x18 as f32 * h) as u8));
+                        ui.painter().text(x.center(), egui::Align2::CENTER_CENTER, "\u{E711}", egui::FontId::new(12.0, crate::theme::icons()), SECONDARY.lerp_to_gamma(TEXT, h));
+                        if close.on_hover_text("Close").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            if changed {
+                                nag = true;
+                            } else {
+                                acts.push(Action::CloseProfileEditor);
+                            }
+                        }
+                    });
                 });
-                if btn(ui, "Cancel", false).clicked() {
-                    acts.push(Action::CloseProfileEditor);
+                ui.add_space(14.0);
+                let fields = [(ProfileText::Name, "Display name", false), (ProfileText::Pronouns, "Pronouns", false), (ProfileText::Bio, "About me", true)];
+                for (i, (which, label, multi)) in fields.into_iter().enumerate() {
+                    ui.label(rt(label, 13.0).color(SECONDARY));
+                    ui.add_space(4.0);
+                    if field(ui, &mut su.profile[i], label, f32::INFINITY, if multi { 4 } else { 1 }, false).changed() {
+                        acts.push(Action::WriteProfile { field: which, text: su.profile[i].clone() });
+                    }
+                    ui.add_space(10.0);
+                }
+                if let Some(e) = &ed.error {
+                    ui.label(rt(e, 12.5).color(DANGER));
+                    ui.add_space(6.0);
+                }
+                // Apply and Undo show only once something changed
+                if changed {
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            ui.add_enabled_ui(!ed.saving, |ui| {
+                                if btn(ui, if ed.saving { "Applying\u{2026}" } else { "Apply" }, true).clicked() {
+                                    acts.push(Action::SaveProfile);
+                                    su.profile_open = false; // what is applied becomes the new starting point
+                                }
+                                if btn(ui, "Undo", false).clicked() {
+                                    acts.push(Action::UndoProfileEdits);
+                                    su.profile_open = false; // fields re-read from the editor
+                                }
+                            });
+                            if nag {
+                                ui.label(rt("You changed your profile: apply or undo first.", 12.5).color(crate::theme::WARNING));
+                            }
+                        });
+                    });
                 }
             });
+            ui.painter().set(slot, crate::theme::glass(card.response.rect, crate::theme::R_PANEL, crate::theme::Glass::Base.fill()));
+            ctx.data_mut(|d| d.insert_temp(nag_id, nag));
         }
     }
 }
@@ -523,10 +572,10 @@ fn voice(ui: &mut Ui, su: &mut SettingsUi, later: &mut Later, s: &AppState, st: 
         }
         match &su.camera_tex {
             Some(t) => {
-                egui::Image::new(egui::load::SizedTexture::new(t.id(), r.size())).corner_radius(8.0).paint_at(ui, r);
+                egui::Image::new(egui::load::SizedTexture::new(t.id(), r.size())).corner_radius(12.0).paint_at(ui, r);
             }
             None => {
-                ui.painter().rect_filled(r, 8.0, Color32::BLACK);
+                ui.painter().rect_filled(r, 12.0, Color32::BLACK);
                 ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "Starting camera\u{2026}", egui::FontId::proportional(13.0), MUTED);
             }
         }
@@ -543,10 +592,15 @@ fn voice(ui: &mut Ui, su: &mut SettingsUi, later: &mut Later, s: &AppState, st: 
         choices(ui, &[(Strength::Full, "Full"), (Strength::Medium, "Medium"), (Strength::Light, "Light")], &mut st.noise_strength);
     }
     toggle(ui, "Take out your room's echo in Discord calls", "", &mut st.reduce_room_echo);
-    let mut sb_vol = s.soundboard_volume;
+    // kept while dragged: read from the engine each frame, the knob sprang back under the pointer
+    let vid = egui::Id::new("soundboard_drag");
+    let mut sb_vol = ui.data(|d| d.get_temp(vid)).unwrap_or(s.soundboard_volume);
     let (_, done) = slider(ui, "Soundboard volume", &mut sb_vol, 0.0..=100.0, "%");
     if done {
         acts.push(Action::SoundboardVolume(sb_vol));
+        ui.data_mut(|d| d.remove_temp::<f32>(vid));
+    } else if sb_vol != s.soundboard_volume {
+        ui.data_mut(|d| d.insert_temp(vid, sb_vol));
     }
     join_sounds(ui, s, acts);
     heading(ui, "Input mode");
@@ -556,7 +610,7 @@ fn voice(ui: &mut Ui, su: &mut SettingsUi, later: &mut Later, s: &AppState, st: 
         ui.label(rt("Shortcut", 14.5).color(TEXT));
         ui.horizontal(|ui| {
             let name = st.push_to_talk_key.as_ref().map_or("No key yet", |k| k.name.as_str());
-            egui::Frame::new().fill(k_raised()).corner_radius(6.0).inner_margin(egui::Margin::symmetric(12, 6)).show(ui, |ui| {
+            egui::Frame::new().fill(k_raised()).corner_radius(10.0).inner_margin(egui::Margin::symmetric(12, 6)).show(ui, |ui| {
                 ui.label(sb(name, 14.0).color(TEXT));
             });
             let recording = mytune_chat::ptt::recording();
@@ -587,10 +641,10 @@ fn voice(ui: &mut Ui, su: &mut SettingsUi, later: &mut Later, s: &AppState, st: 
         if let Some(m) = &su.meter {
             let level = m.level().clamp(0.0, 1.0);
             let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width().min(420.0), 8.0), Sense::hover());
-            ui.painter().rect_filled(bar, 4.0, k_raised());
+            ui.painter().rect_filled(bar, 10.0, k_raised());
             let threshold = (sens + 80.0) / 80.0;
             let fill = Rect::from_min_size(bar.min, vec2(bar.width() * level, bar.height()));
-            ui.painter().rect_filled(fill, 4.0, if level >= threshold { LIVE } else { th::WARNING });
+            ui.painter().rect_filled(fill, 10.0, if level >= threshold { LIVE } else { th::WARNING });
             let x = bar.left() + bar.width() * threshold;
             ui.painter().line_segment([pos2(x, bar.top() - 3.0), pos2(x, bar.bottom() + 3.0)], Stroke::new(2.0, TEXT));
             ui.label(rt("Speak: the bar turns green where your voice is sent.", 12.5).color(MUTED));
@@ -642,6 +696,11 @@ fn notifications(ui: &mut Ui, st: &mut Settings) -> bool {
         toggle(ui, "Show what messages say", "Not available yet: a notification says who wrote and how many messages.", &mut st.notification_text);
     });
     toggle(ui, "Flash the taskbar", "When a message comes while MyTune is not in front.", &mut st.flash_taskbar);
+    heading(ui, "Sound");
+    let mut vol = f32::from(st.notification_volume);
+    if slider(ui, "Message and mention volume", &mut vol, 0.0..=200.0, "%").0 {
+        st.notification_volume = vol as u8;
+    }
     true
 }
 
@@ -694,6 +753,7 @@ fn sounds(ui: &mut Ui, later: &mut Later, st: &mut Settings) -> bool {
         }));
     }
     save |= done;
+    save |= toggle(ui, "Say who joins and leaves", "A Windows voice says the name when someone joins or leaves the call you are in. Not while deafened.", &mut st.narrate_calls);
     toggle(ui, "Adjust each sound", "", &mut st.adjust_each_sound);
     for (sound, name) in SOUNDS {
         ui.horizontal(|ui| {
@@ -723,7 +783,7 @@ fn discord(ui: &mut Ui, su: &mut SettingsUi, later: &mut Later, s: &AppState, ac
         ui.label(rt(format!("Linked as {}", s.account_name.as_deref().unwrap_or("?")), 14.5).color(TEXT));
         ui.label(rt("The login is kept in Windows' credential store, shared with the Yapfast app.", 12.5).color(MUTED));
         ui.add_space(8.0);
-        if btn(ui, "Unlink Discord", false).clicked() {
+        if super::sure(ui, "unlink", "Unlink Discord", |ui, l| btn(ui, l, false).clicked()) {
             acts.push(Action::UnlinkDiscord);
         }
     } else {
@@ -791,16 +851,15 @@ fn advanced(ui: &mut Ui, st: &mut Settings) -> bool {
 #[allow(clippy::too_many_arguments)]
 pub fn user_bar(ui: &mut Ui, chat: &Chat, later: &mut Later, su: &mut SettingsUi, s: &AppState, tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSet<String>, want: &mut Vec<String>, acts: &mut Vec<Action>) {
     let ctx = ui.ctx().clone();
-    let v = &s.voice;
-    let (unmute, deafen) = chat.with_settings(|st| (st.unmute_on_join, st.deafen_on_join));
-    let (muted, deafened) = if v.active() { (v.muted, v.deafened) } else { (!unmute || deafen, deafen) };
+    let _ = (chat, later);
     let mut anchor = egui::Rect::NOTHING;
+    // Where the profile card goes, as in Discord: over the server rail (72 wide, left of this list) and the
+    // conversation list, with the bar's own 8 px margin on both sides, so it never reaches into the chat.
+    let bar = ui.max_rect();
+    let span = (bar.left() - 72.0, bar.width() + 72.0);
     ui.horizontal(|ui| {
-        let (a, ar) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
+        let (a, _) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::hover());
         anchor = a;
-        if ar.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Set your status").clicked() {
-            ctx.data_mut(|d| { let o = d.get_temp::<bool>(egui::Id::new("status_menu")).unwrap_or(false); d.insert_temp(egui::Id::new("status_menu"), !o) });
-        }
         let t = texture(&ctx, tex, asked, s, &s.account_avatar, want);
         avatar(ui, a, t, s.account_name.as_deref().unwrap_or("?"));
         let presence = match s.discord_presence.as_deref() {
@@ -813,7 +872,7 @@ pub fn user_bar(ui: &mut Ui, chat: &Chat, later: &mut Later, su: &mut SettingsUi
         super::header::status_dot(ui, a, presence, k_panel());
         ui.vertical(|ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            ui.set_width(ui.available_width() - 3.0 * 40.0 - 4.0);
+            ui.set_width(ui.available_width() - 40.0 - 4.0);
             ui.add(egui::Label::new(sb(s.account_name.as_deref().unwrap_or(""), 13.5).color(TEXT)).truncate());
             let line = s.custom_status.as_ref().map(|c| c.text.clone()).unwrap_or_else(|| match s.discord_presence.as_deref() {
                 Some("idle") => "Idle".into(),
@@ -823,42 +882,216 @@ pub fn user_bar(ui: &mut Ui, chat: &Chat, later: &mut Later, su: &mut SettingsUi
             });
             ui.add(egui::Label::new(rt(line, 11.5).color(MUTED)).truncate());
         });
-        let mut b = |ui: &mut Ui, g: &str, slash: bool, red: bool, tip: &str| {
+        // name and avatar open the profile card (Discord's)
+        let hit = Rect::from_min_max(a.min, pos2(ui.min_rect().right(), a.max.y));
+        let hr = ui.interact(hit, egui::Id::new("own_card_hit"), Sense::click());
+        if hr.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            let open = !ctx.data(|d| d.get_temp::<bool>(egui::Id::new("own_card"))).unwrap_or(false);
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new("own_card"), open));
+            match (&s.discord_user, open) {
+                (Some(u), true) => acts.push(Action::ShowProfile { user: u.clone(), large: false }),
+                (_, false) => acts.push(Action::CloseProfile),
+                _ => {}
+            }
+        }
+        let b =|ui: &mut Ui, g: &str, slash: bool, red: bool, tip: &str| {
             let (r, resp) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
             let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
-            ui.painter().rect_filled(r, 6.0, k_hover().gamma_multiply(t));
+            ui.painter().rect_filled(r, 10.0, k_hover().gamma_multiply(t));
             glyph(ui.painter(), r.center(), g, 16.0, if red { DANGER } else { SECONDARY.lerp_to_gamma(TEXT, t) }, slash);
             resp.on_hover_text(tip).clicked()
         };
-        if b(ui, "\u{E720}", muted, muted, if muted { "Unmute" } else { "Mute" }) {
-            if v.active() {
-                acts.push(Action::Voice(Vc::Mute(!v.muted)));
-            } else {
-                // out of a call: how the next one starts, as Yapfast's toggle_on_join
-                let mut st = chat.settings();
-                if st.deafen_on_join {
-                    st.deafen_on_join = false;
-                    st.unmute_on_join = true;
-                } else {
-                    st.unmute_on_join = !st.unmute_on_join;
-                }
-                later.push(Box::new(move |c: &Chat| c.set_settings(st, true)));
-            }
-        }
-        if b(ui, "\u{E7F6}", deafened, deafened, if deafened { "Undeafen" } else { "Deafen" }) {
-            if v.active() {
-                acts.push(Action::Voice(Vc::Deafen(!v.deafened)));
-            } else {
-                let mut st = chat.settings();
-                st.deafen_on_join = !st.deafen_on_join;
-                later.push(Box::new(move |c: &Chat| c.set_settings(st, true)));
-            }
-        }
+        // Only the gear: with mute and deafen here too the name had no room left ("..."). In a call they are on
+        // the call stage or the voice dock just above; how a call starts is in Settings > Voice & video.
         if b(ui, "\u{E713}", false, false, "User settings") {
             su.open(0);
         }
     });
+    own_card(&ctx, su, s, anchor, span, tex, asked, want, acts);
     status_menu(&ctx, s, anchor, acts);
+}
+
+/// Discord's card for your own account, above the user bar: banner, picture with status, custom status bubble,
+/// name and handle, then Edit Profile, Status (opens the status menu) and Copy User ID. Badges, Orbs and Switch
+/// Accounts are left out: the engine has nothing for them.
+#[allow(clippy::too_many_arguments)]
+fn own_card(ctx: &egui::Context, su: &mut SettingsUi, s: &AppState, anchor: Rect, span: (f32, f32), tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSet<String>, want: &mut Vec<String>, acts: &mut Vec<Action>) {
+    let id = egui::Id::new("own_card");
+    if !ctx.data(|d| d.get_temp::<bool>(id)).unwrap_or(false) || anchor == Rect::NOTHING {
+        return;
+    }
+    let mine = s.profile.as_ref().map(|p| &p.profile).filter(|p| Some(&p.id) == s.discord_user.as_ref());
+    let name = mine.map(|p| p.name.clone()).or_else(|| s.account_name.clone()).unwrap_or_default();
+    let pic = mine.and_then(|p| p.avatar.clone()).or_else(|| s.account_avatar.clone());
+    let banner_url = mine.and_then(|p| p.banner.clone());
+    let accent = mine.and_then(|p| p.accent).map_or(k_raised(), |c| Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8));
+    let handle = mine.map(|p| if p.pronouns.is_empty() { p.handle.clone() } else { format!("{} \u{00B7} {}", p.handle, p.pronouns) }).unwrap_or_default();
+    let presence = match s.discord_presence.as_deref() {
+        Some("idle") => Some(mytune_chat::yapfast_core::chat::Presence::Idle),
+        Some("dnd") => Some(mytune_chat::yapfast_core::chat::Presence::DoNotDisturb),
+        Some("invisible") => Some(mytune_chat::yapfast_core::chat::Presence::Offline),
+        _ if s.discord_online => Some(mytune_chat::yapfast_core::chat::Presence::Online),
+        _ => None,
+    };
+    let status_name = match s.discord_presence.as_deref() {
+        Some("idle") => "Idle",
+        Some("dnd") => "Do Not Disturb",
+        Some("invisible") => "Invisible",
+        _ => "Online",
+    };
+    let mut close = false;
+    let sub_id = egui::Id::new("own_card_sub");
+    let sub_open = ctx.data(|d| d.get_temp::<bool>(sub_id)).unwrap_or(false);
+    let mut status_row = Rect::NOTHING;
+    let resp = egui::Area::new(egui::Id::new("own_card_area")).order(egui::Order::Foreground).fixed_pos(egui::pos2(span.0.round(), (anchor.top() - 12.0).round())).pivot(egui::Align2::LEFT_BOTTOM).show(ctx, |ui| {
+        crate::theme::float(ui, crate::theme::R_MENU, 0, |ui| {
+            // Discord's card is narrow and tall: at most 300 wide; the height comes from the taller banner,
+            // the taller rows and the two plates below
+            let w = span.1.round().min(300.0);
+            ui.set_width(w);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            let top = egui::CornerRadius { nw: 16, ne: 16, sw: 0, se: 0 };
+            let (banner, _) = ui.allocate_exact_size(vec2(w, 124.0), Sense::hover());
+            match texture(ctx, tex, asked, s, &banner_url, want) {
+                Some(t) => egui::Image::new(egui::load::SizedTexture::new(t, banner.size())).corner_radius(top).paint_at(ui, banner),
+                None => {
+                    ui.painter().rect_filled(banner, top, accent);
+                }
+            }
+            let av = 80.0;
+            let a = Rect::from_min_size(pos2(banner.left() + 16.0, banner.bottom() - av / 2.0), vec2(av, av));
+            ui.painter().circle_filled(a.center(), av / 2.0 + 6.0, k_panel());
+            let t = texture(ctx, tex, asked, s, &pic, want);
+            avatar(ui, a, t, &name);
+            super::header::status_dot(ui, a, presence, k_panel());
+            // custom status bubble to the right of the picture; a click opens the status editor
+            let bubble = Rect::from_min_max(pos2(a.right() + 12.0, banner.bottom() + 6.0), pos2(banner.right() - 12.0, banner.bottom() + 6.0 + 44.0));
+            let br = ui.interact(bubble, egui::Id::new("own_card_bubble"), Sense::click());
+            ui.painter().rect_filled(bubble, 14.0, k_raised().gamma_multiply(if br.hovered() { 1.4 } else { 1.0 }));
+            let (txt, col) = match &s.custom_status {
+                Some(c) => (c.text.clone(), SECONDARY),
+                None => ("Set a custom status".to_owned(), MUTED),
+            };
+            let f = egui::FontId::proportional(12.5);
+            let shown = ellipsize(ui, &txt, &f, bubble.width() - 24.0);
+            ui.painter().text(bubble.left_center() + vec2(12.0, 0.0), egui::Align2::LEFT_CENTER, shown, f, col);
+            if br.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new("open_status_editor"), true));
+                close = true;
+            }
+            ui.add_space(av / 2.0 + 16.0);
+            egui::Frame::new().inner_margin(egui::Margin::symmetric(16, 0)).show(ui, |ui| {
+                ui.add(egui::Label::new(sb(&name, 20.0).color(TEXT)).truncate());
+                if !handle.is_empty() {
+                    ui.add(egui::Label::new(rt(&handle, 13.5).color(SECONDARY)).truncate());
+                }
+            });
+            ui.add_space(18.0);
+            egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 0)).show(ui, |ui| {
+                // a plate of rows like Discord's: glyph, label, optional chevron
+                let row = |ui: &mut Ui, g: Option<&str>, dot: Option<Option<mytune_chat::yapfast_core::chat::Presence>>, label: &str, chevron: bool| -> (bool, Rect) {
+                    let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 46.0), Sense::click());
+                    if resp.hovered() {
+                        ui.painter().rect_filled(r, 10.0, k_active());
+                    }
+                    let c = pos2(r.left() + 20.0, r.center().y);
+                    if let Some(g) = g {
+                        glyph(ui.painter(), c, g, 16.0, SECONDARY, false);
+                    }
+                    if let Some(p) = dot {
+                        super::header::badge(ui.painter(), c, 6.0, p);
+                    }
+                    ui.painter().text(pos2(r.left() + 42.0, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(13.5), TEXT);
+                    if chevron {
+                        glyph(ui.painter(), pos2(r.right() - 14.0, r.center().y), "\u{E76C}", 11.0, MUTED, false);
+                    }
+                    (resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked(), r)
+                };
+                // two plates, as in Discord: profile and status, then the id
+                let plate = |ui: &mut Ui, add: &mut dyn FnMut(&mut Ui)| {
+                    egui::Frame::new().fill(k_raised()).corner_radius(12.0).inner_margin(egui::Margin::same(4)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        add(ui);
+                    });
+                };
+                plate(ui, &mut |ui| {
+                    if row(ui, Some("\u{E70F}"), None, "Edit Profile", false).0 {
+                        su.open(0);
+                        close = true;
+                    }
+                    let (clicked, r) = row(ui, None, Some(presence), status_name, true);
+                    status_row = r;
+                    if clicked {
+                        ctx.data_mut(|d| d.insert_temp(sub_id, !sub_open));
+                    }
+                    if sub_open {
+                        ui.painter().rect_stroke(r, 10.0, Stroke::new(1.0, k_edge()), egui::StrokeKind::Inside);
+                    }
+                });
+                if let Some(u) = &s.discord_user {
+                    ui.add_space(10.0);
+                    plate(ui, &mut |ui| {
+                        if row(ui, Some("\u{E8C8}"), None, "Copy User ID", false).0 {
+                            ctx.copy_text(u.clone());
+                            close = true;
+                        }
+                    });
+                }
+            });
+            ui.add_space(14.0);
+        });
+    });
+    // Status flyout to the right of the card, level with the Status row (Discord's). The engine has no timed
+    // status, so no chevrons on Idle / Do Not Disturb / Invisible.
+    let mut sub_rect = Rect::NOTHING;
+    if sub_open && status_row != Rect::NOTHING {
+        use mytune_chat::yapfast_core::chat::Presence;
+        let cur = s.discord_presence.as_deref().unwrap_or("online");
+        let sr = egui::Area::new(egui::Id::new("own_card_sub_area")).order(egui::Order::Foreground).fixed_pos(egui::pos2((resp.response.rect.right() + 8.0).round(), (status_row.top() - 8.0).round())).show(ctx, |ui| {
+            crate::theme::float(ui, crate::theme::R_MENU, 8, |ui| {
+                ui.set_width(248.0);
+                let rows = [
+                    ("online", "Online", "", Presence::Online),
+                    ("idle", "Idle", "", Presence::Idle),
+                    ("dnd", "Do Not Disturb", "You will not receive desktop notifications", Presence::DoNotDisturb),
+                    ("invisible", "Invisible", "You will appear offline", Presence::Offline),
+                ];
+                for (key, label, note, p) in rows {
+                    let h = if note.is_empty() { 36.0 } else { 48.0 };
+                    let (r, rr) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
+                    if rr.hovered() || cur == key {
+                        ui.painter().rect_filled(r, 10.0, k_active());
+                    }
+                    super::header::badge(ui.painter(), egui::pos2(r.left() + 18.0, r.center().y), 6.0, Some(p));
+                    let x = r.left() + 38.0;
+                    if note.is_empty() {
+                        ui.painter().text(egui::pos2(x, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::new(13.5, th::semibold()), TEXT);
+                    } else {
+                        ui.painter().text(egui::pos2(x, r.center().y - 8.0), egui::Align2::LEFT_CENTER, label, egui::FontId::new(13.5, th::semibold()), TEXT);
+                        ui.painter().text(egui::pos2(x, r.center().y + 9.0), egui::Align2::LEFT_CENTER, note, egui::FontId::proportional(11.5), MUTED);
+                    }
+                    if rr.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        acts.push(Action::SetStatus(key.to_owned()));
+                        close = true;
+                    }
+                    if key == "online" {
+                        ui.add_space(5.0);
+                        ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), Stroke::new(1.0, k_edge()));
+                        ui.add_space(6.0);
+                    }
+                }
+            });
+        });
+        sub_rect = sr.response.rect;
+    }
+    let outside = resp.response.clicked_elsewhere() && !ctx.input(|i| i.pointer.interact_pos().is_some_and(|p| sub_rect.contains(p) || anchor.contains(p) || (p.y >= anchor.top() && p.y <= anchor.bottom() && p.x >= anchor.left() && p.x <= anchor.left() + 248.0)));
+    if close || outside || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        ctx.data_mut(|d| {
+            d.insert_temp(id, false);
+            d.insert_temp(sub_id, false);
+        });
+        acts.push(Action::CloseProfile);
+    }
 }
 
 /// The status menu above the user bar (a click on the avatar): Online, Idle, Do Not Disturb, Invisible, and a
@@ -872,29 +1105,58 @@ fn status_menu(ctx: &egui::Context, s: &AppState, anchor: egui::Rect, acts: &mut
     let text_id = egui::Id::new("status_text");
     let mut text: String = ctx.data(|d| d.get_temp(text_id)).unwrap_or_else(|| s.custom_status.as_ref().map(|c| c.text.clone()).unwrap_or_default());
     let mut close = false;
-    let resp = egui::Area::new(egui::Id::new("status_menu_area")).order(egui::Order::Foreground).fixed_pos(egui::pos2(anchor.left(), anchor.top() - 12.0)).pivot(egui::Align2::LEFT_BOTTOM).show(ctx, |ui| {
-        egui::Frame::new().fill(k_raised()).stroke(Stroke::new(1.0, k_edge())).corner_radius(10.0).shadow(egui::Shadow { offset: [0, 10], blur: 28, spread: 0, color: Color32::from_black_alpha(0x66) }).inner_margin(egui::Margin::same(8)).show(ui, |ui| {
+    let resp = egui::Area::new(egui::Id::new("status_menu_area")).order(egui::Order::Foreground).fixed_pos(egui::pos2(anchor.left().round(), (anchor.top() - 12.0).round())).pivot(egui::Align2::LEFT_BOTTOM).show(ctx, |ui| {
+        crate::theme::float(ui, crate::theme::R_MENU, 8, |ui| {
             ui.set_width(248.0);
             let cur = s.discord_presence.as_deref().unwrap_or("online");
-            for (key, label, color) in [("online", "Online", LIVE), ("idle", "Idle", super::header::presence_color(Some(mytune_chat::yapfast_core::chat::Presence::Idle))), ("dnd", "Do Not Disturb", DANGER), ("invisible", "Invisible", FAINT)] {
-                let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
-                if resp.hovered() || cur == key {
-                    ui.painter().rect_filled(r, 6.0, k_active());
+            // Discord's status rows: its dot shapes, a line under the busier ones saying what they do, and a
+            // rule under Online. (Discord's ">" opens "for how long"; the engine has no timed status, so none here.)
+            use mytune_chat::yapfast_core::chat::Presence;
+            let rows = [
+                ("online", "Online", "", Presence::Online),
+                ("idle", "Idle", "", Presence::Idle),
+                ("dnd", "Do Not Disturb", "You will not receive desktop notifications", Presence::DoNotDisturb),
+                ("invisible", "Invisible", "You will appear offline", Presence::Offline),
+            ];
+            for (key, label, note, presence) in rows {
+                let h = if note.is_empty() { 36.0 } else { 48.0 };
+                let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
+                let lit = resp.hovered() || cur == key;
+                if lit {
+                    ui.painter().rect_filled(r, 10.0, k_active());
                 }
-                ui.painter().circle_filled(egui::pos2(r.left() + 18.0, r.center().y), 6.0, color);
-                ui.painter().text(egui::pos2(r.left() + 36.0, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::new(13.5, th::semibold()), TEXT);
+                let c = egui::pos2(r.left() + 18.0, r.center().y);
+                super::header::badge(ui.painter(), c, 6.0, Some(presence));
+                let x = r.left() + 38.0;
+                if note.is_empty() {
+                    ui.painter().text(egui::pos2(x, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::new(13.5, th::semibold()), TEXT);
+                } else {
+                    ui.painter().text(egui::pos2(x, r.center().y - 8.0), egui::Align2::LEFT_CENTER, label, egui::FontId::new(13.5, th::semibold()), TEXT);
+                    ui.painter().text(egui::pos2(x, r.center().y + 9.0), egui::Align2::LEFT_CENTER, note, egui::FontId::proportional(11.5), MUTED);
+                }
                 if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                     acts.push(Action::SetStatus(key.to_owned()));
                     close = true;
                 }
+                if key == "online" {
+                    ui.add_space(5.0);
+                    ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), Stroke::new(1.0, k_edge()));
+                    ui.add_space(6.0);
+                }
             }
             ui.add_space(6.0);
             ui.painter().hline(ui.max_rect().x_range(), ui.cursor().top(), Stroke::new(1.0, k_edge()));
-            ui.add_space(8.0);
-            ui.label(sb("CUSTOM STATUS", 11.0).color(MUTED));
-            ui.add(egui::TextEdit::singleline(&mut text).desired_width(f32::INFINITY).hint_text(rt("What's happening?", 13.5).color(FAINT)));
-            ui.add_space(6.0);
+            // room to breathe: the heading, the field and the buttons sat 2 to 6 px apart
+            ui.add_space(14.0);
             ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                ui.label(sb("CUSTOM STATUS", 12.0).color(MUTED));
+            });
+            ui.add_space(8.0);
+            ui.add(egui::TextEdit::singleline(&mut text).desired_width(f32::INFINITY).font(egui::FontId::proportional(14.0)).margin(egui::Margin::symmetric(12, 8)).hint_text(rt("What's happening?", 14.0).color(FAINT)));
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 8.0;
                 if pill(ui, "Set", true).clicked() && !text.trim().is_empty() {
                     acts.push(Action::SetCustomStatus { emoji: None, text: text.trim().to_owned(), clear_after: ClearAfter::Today });
                     close = true;
@@ -910,10 +1172,13 @@ fn status_menu(ctx: &egui::Context, s: &AppState, anchor: egui::Rect, acts: &mut
                     close = true;
                 }
             });
+            ui.add_space(4.0);
         });
     });
     ctx.data_mut(|d| d.insert_temp(text_id, text));
-    let outside = resp.response.clicked_elsewhere() && !ctx.input(|i| i.pointer.interact_pos().is_some_and(|p| anchor.contains(p)));
+    // the click that opened the menu from the profile card lands elsewhere than the menu: ignore it
+    let fresh = ctx.data(|d| d.get_temp::<f64>(egui::Id::new("status_menu_t"))).is_some_and(|t| ctx.input(|i| i.time) - t < 0.3);
+    let outside = !fresh && resp.response.clicked_elsewhere() && !ctx.input(|i| i.pointer.interact_pos().is_some_and(|p| anchor.contains(p)));
     if close || outside || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         ctx.data_mut(|d| d.insert_temp(id, false));
     }

@@ -35,8 +35,10 @@ pub fn dropdown(ui: &mut Ui, id: &str, width: f32, value: &str, rows: &[(String,
     let text_h = ui.painter().layout_no_wrap("Ag".into(), FontId::proportional(14.0), TEXT).size().y;
     let (rect, resp) = ui.allocate_exact_size(vec2(width, text_h + FIELD_PAD.1 + 8.0 + 2.0), Sense::click());
     let paint = ui.painter();
-    paint.rect_filled(rect, 12.0, if resp.hovered() { white(0x22) } else { control_bg() });
-    paint.rect_stroke(rect, 12.0, Stroke::new(1.0, if open { pal.accent } else { control_border() }), StrokeKind::Inside);
+    th::capsule(paint, rect, if resp.hovered() { white(0x2C) } else { th::Glass::Raised.fill() }, 0x26);
+    if open {
+        paint.rect_stroke(rect, rect.height() / 2.0, Stroke::new(1.0, pal.accent), StrokeKind::Inside);
+    }
     paint.text(pos2(rect.left() + 1.0 + FIELD_PAD.0, rect.center().y), egui::Align2::LEFT_CENTER, value, FontId::proportional(14.0), TEXT);
     paint.text(pos2(rect.right() - 1.0 - FIELD_PAD.0, rect.center().y), egui::Align2::RIGHT_CENTER, "\u{E70D}", FontId::new(10.0, th::icons()), text2());
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -45,8 +47,10 @@ pub fn dropdown(ui: &mut Ui, id: &str, width: f32, value: &str, rows: &[(String,
     let mut list_rect = Rect::NOTHING;
     if open {
         let area = egui::Area::new(key.with("list")).order(Order::Foreground).fixed_pos(pos2(rect.left(), rect.bottom() + 4.0)).show(&ctx, |ui| {
-            egui::Frame::new().corner_radius(14).fill(pal.card_hover).stroke(Stroke::new(1.0, white(0x40))).inner_margin(4).show(ui, |ui| {
-                ui.set_width(width - 10.0);
+            th::float(ui, th::R_MENU, 4, |ui| {
+                // as wide as the field, or wider when a row's text needs it (long device names)
+                let longest = rows.iter().map(|(l, _)| ui.painter().layout_no_wrap(l.clone(), FontId::new(14.0, th::semibold()), TEXT).size().x).fold(0.0, f32::max);
+                ui.set_width((width - 10.0).max(longest + 2.0 * ROW_H_PAD.0));
                 ui.spacing_mut().item_spacing.y = 1.0;
                 egui::ScrollArea::vertical().max_height(264.0).auto_shrink([false, true]).show(ui, |ui| {
                     for (i, (label, sel)) in rows.iter().enumerate() {
@@ -77,7 +81,7 @@ fn row_button(ui: &mut Ui, text: &str, selected: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), h), Sense::click());
     let bg = if resp.is_pointer_button_down_on() { Some(white(0x0A)) } else if resp.hovered() { Some(white(0x14)) } else { None };
     if let Some(bg) = bg {
-        ui.painter().rect_filled(rect, 10.0, bg);
+        ui.painter().rect_filled(rect, th::nested(th::R_MENU, 4.0), bg);
     }
     ui.painter().galley(pos2(rect.left() + ROW_H_PAD.0, rect.top() + ROW_H_PAD.1), galley, TEXT);
     if selected {
@@ -101,7 +105,7 @@ pub fn slider(ui: &mut Ui, id: Id, value: &mut f64, min: f64, max: f64, width: f
     if enabled && resp.is_pointer_button_down_on() {
         if let Some(p) = resp.interact_pointer_pos() {
             // the thumb centre travels over the track minus the thumb width
-            let t = ((p.x - rect.left() - 5.0) / (rect.width() - 10.0)).clamp(0.0, 1.0) as f64;
+            let t = ((p.x - rect.left() - 11.0) / (rect.width() - 22.0)).clamp(0.0, 1.0) as f64;
             let v = ((min + t * (max - min)) * 100.0).round() / 100.0; // the C# row rounds to 2 decimals
             if v != *value {
                 *value = v;
@@ -110,18 +114,19 @@ pub fn slider(ui: &mut Ui, id: Id, value: &mut f64, min: f64, max: f64, width: f
         }
     }
     let t = if max > min { ((*value - min) / (max - min)).clamp(0.0, 1.0) as f32 } else { 0.0 };
-    let cx = rect.left() + 5.0 + t * (rect.width() - 10.0);
-    let k = ui.ctx().animate_bool_with_time(id, enabled && resp.hovered(), 0.1);
+    let cx = rect.left() + 11.0 + t * (rect.width() - 22.0);
+    let ease = egui::emath::easing::cubic_out;
+    let k = ui.ctx().animate_bool_with_time_and_easing(id, enabled && resp.hovered(), 0.14, ease);
+    let held = ui.ctx().animate_bool_with_time_and_easing(id.with("held"), enabled && resp.is_pointer_button_down_on(), 0.12, ease);
     let op = if enabled { 1.0 } else { 0.4 };
     let fade = |c: Color32| c.gamma_multiply(op);
     let paint = ui.painter();
     let track = Rect::from_center_size(rect.center(), vec2(rect.width(), 6.0));
     paint.rect_filled(track, 3.0, fade(white(0x29)));
     paint.rect_filled(Rect::from_min_max(track.min, pos2(cx, track.max.y)), 3.0, fade(pal.accent));
-    let scale = 1.0 + 0.2 * k;
-    let thumb = Rect::from_center_size(pos2(cx, rect.center().y), vec2(10.0 * scale, 20.0 * scale));
-    paint.rect_filled(thumb, thumb.width() / 2.0, fade(pal.accent));
-    paint.rect_stroke(thumb, thumb.width() / 2.0, Stroke::new(2.0, fade(pal.ink)), StrokeKind::Inside);
+    let thumb = Rect::from_center_size(pos2(cx, rect.center().y), vec2(22.0 + 2.0 * k + 8.0 * held, 16.0 + 2.0 * k));
+    paint.add(egui::Shadow { offset: [0, 2], blur: 6, spread: 0, color: fade(Color32::from_black_alpha(70)) }.as_shape(thumb, egui::CornerRadius::from(thumb.height() / 2.0)));
+    th::capsule(paint, thumb, fade(Color32::WHITE.gamma_multiply(1.0 - 0.6 * held)), 0x60);
     SliderOut { changed, released: enabled && (resp.drag_stopped() || resp.clicked()) }
 }
 
@@ -172,8 +177,8 @@ pub fn checkbox(ui: &mut Ui, id: Id, checked: &mut bool, label: impl FnOnce(&mut
         let hover = ui.rect_contains_pointer(rect);
         let fade = if hover { 0.85 } else { 1.0 };
         let (fill, stroke) = if *checked { (pal.accent, pal.accent) } else { (white(0x08), white(0x9A)) };
-        ui.painter().rect_filled(rect, 6.0, fill.gamma_multiply(fade));
-        ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, stroke.gamma_multiply(fade)), StrokeKind::Inside);
+        ui.painter().rect_filled(rect, 7.0, fill.gamma_multiply(fade));
+        ui.painter().rect_stroke(rect, 7.0, Stroke::new(1.0, stroke.gamma_multiply(fade)), StrokeKind::Inside);
         if *checked {
             ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "\u{E73E}", FontId::new(12.0, th::icons()), pal.on_accent);
         }

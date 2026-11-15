@@ -31,7 +31,7 @@ pub fn chip(ui: &mut Ui, m: &ChatMessage, acts: &mut Vec<Action>) {
 fn row(ui: &mut Ui, t: &ListedThread, acts: &mut Vec<Action>) {
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::click());
     if resp.hovered() {
-        ui.painter().rect_filled(r, 8.0, k_active());
+        ui.painter().rect_filled(r, 12.0, k_active());
     }
     voice::glyph(ui.painter(), egui::pos2(r.left() + 16.0, r.center().y), if t.private { "\u{E72E}" } else { "\u{E8BD}" }, 14.0, SECONDARY, false);
     let clip = ui.painter().with_clip_rect(egui::Rect::from_min_max(egui::pos2(r.left() + 32.0, r.top()), egui::pos2(r.right() - 70.0, r.bottom())));
@@ -42,7 +42,7 @@ fn row(ui: &mut Ui, t: &ListedThread, acts: &mut Vec<Action>) {
     if !t.archived {
         let b = egui::Rect::from_center_size(egui::pos2(r.right() - 34.0, r.center().y), vec2(56.0, 26.0));
         let jr = ui.interact(b, resp.id.with("join"), Sense::click());
-        ui.painter().rect_filled(b, 6.0, if jr.hovered() { k_hover() } else { k_raised() });
+        ui.painter().rect_filled(b, 10.0, if jr.hovered() { k_hover() } else { k_raised() });
         ui.painter().text(b.center(), egui::Align2::CENTER_CENTER, if t.joined { "Leave" } else { "Join" }, egui::FontId::new(12.5, th::semibold()), if t.joined { SECONDARY } else { TEXT });
         if jr.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             acts.push(Action::JoinThread { room: t.room.clone(), join: !t.joined, location: "Thread Browser" });

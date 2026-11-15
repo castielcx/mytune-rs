@@ -25,6 +25,10 @@ pub trait Tweak {
     /// Capture originals into `backup` before each write.
     fn apply(&self, backup: &mut TweakBackup) -> Result<()>;
     fn revert(&self, backup: &TweakBackup) -> Result<()>;
+    /// Revert without a backup: write the Windows defaults. False when the defaults are not known (nothing touched).
+    fn revert_default(&self) -> Result<bool> {
+        Ok(false)
+    }
     /// Runs under the engine lock after a successful apply and after its backup was saved
     /// (e.g. to set a flag in `state.json`).
     fn on_applied(&self, _store: &mut Store) -> Result<()> {
@@ -81,8 +85,15 @@ impl Engine {
     pub fn revert(&self, t: &dyn Tweak) -> Result<RevertOutcome> {
         self.with_store(|store| {
             let Some(backup) = store.get_backup(t.id()).cloned() else {
-                log::info(&format!("revert {}: no backup, nothing changed", t.id()));
-                return Ok(RevertOutcome::NoBackup);
+                // set outside MyTune: turning it off writes the Windows defaults when the catalog knows them
+                if !t.revert_default()? {
+                    log::info(&format!("revert {}: no backup, nothing changed", t.id()));
+                    return Ok(RevertOutcome::NoBackup);
+                }
+                log::info(&format!("revert {}: no backup, Windows defaults written", t.id()));
+                crate::stability::record(store.dir(), "off", t.id(), t.title());
+                t.on_reverted(store)?;
+                return Ok(RevertOutcome::Reverted);
             };
             if let Err(e) = t.revert(&backup) {
                 log::error(&format!("revert {} failed, backup kept", t.id()), Some(&e));

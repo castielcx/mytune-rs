@@ -5,7 +5,7 @@ Yapfast
   Yapfast is free software under the GNU General Public License, version 3 or (at your option) any later
   version. Because of that, this Rust build of MyTune is distributed under the same license, and you may
   have its source code: the Yapfast source is at https://github.com/yapfast/yapfast and the source of this
-  program is the mytune-rs folder (the Yapfast source is changed in three files; the changes are the patch in patches/yapfast-0.3.0-mytune.patch).
+  program is the mytune-rs folder (the Yapfast source is changed in 16 files; the changes are the patch in patches/yapfast-0.3.0-mytune.patch).
   The full license text is in vendor-src/yapfast/LICENSE.
 
 Twemoji

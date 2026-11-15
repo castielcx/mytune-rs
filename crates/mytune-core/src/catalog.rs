@@ -10,8 +10,9 @@
 //! (devices enumerated at runtime) and `TimerResolutionTweak` (also writes an app setting).
 //!
 //! Differences from C# `RegistryTweak` (revert is never weaker):
-//! - `Default` values are not used. C# writes them when a backup exists but holds no registry entries;
-//!   here that case restores nothing. `AfterFallbackRevert` (DeleteTree for classic menu / take ownership)
+//! - `Default` values are written when a tweak is turned off without any backup (set outside MyTune), so off is
+//!   the opposite of on; C# writes them when a backup exists but holds no registry entries, here that case
+//!   restores nothing. `AfterFallbackRevert` (DeleteTree for classic menu / take ownership)
 //!   is dropped for the same reason: the captured `CreatedKeys` already remove keys the tweak created.
 //! - `is_applied` is false when no set is applicable (all `OnlyIfKeyExists` keys missing); C# is vacuously true.
 //! - The Explorer restart that the C# `Engine` does for `RestartsExplorer` tweaks is done here, after
@@ -146,6 +147,9 @@ pub struct SetDef {
     pub name: String,
     pub kind: String,
     pub value: Value,
+    /// Windows default; null means the value does not exist by default.
+    #[serde(default)]
+    pub default: Value,
     pub only_if_key_exists: bool,
 }
 
@@ -186,6 +190,8 @@ pub struct DataSet {
     pub value: RegValue,
     /// Skip this value when its key does not exist (e.g. a service that is not installed).
     pub only_if_key_exists: bool,
+    /// Windows default for a revert without backup: `Some(None)` deletes the value, `None` means unknown.
+    pub default: Option<Option<RegValue>>,
 }
 
 pub struct DataTweak {
@@ -258,6 +264,20 @@ impl Tweak for DataTweak {
         self.after_change();
         Ok(())
     }
+    fn revert_default(&self) -> Result<bool> {
+        let sets = self.applicable()?;
+        if sets.is_empty() || sets.iter().any(|s| s.default.is_none()) {
+            return Ok(false);
+        }
+        for s in sets {
+            match s.default.as_ref().and_then(Option::as_ref) {
+                Some(v) => reg::set(s.hive, &s.path, &s.name, v)?,
+                None => reg::delete_value(s.hive, &s.path, &s.name)?,
+            }
+        }
+        self.after_change();
+        Ok(true)
+    }
 }
 
 /// Builds one registry-style `DataTweak` from a catalog entry (also `TimerResolutionTweak`, which is plain values + a flag).
@@ -269,6 +289,7 @@ pub fn data_tweak(e: Entry, hooks: Arc<dyn Hooks>) -> Result<DataTweak> {
             path: s.path,
             name: s.name,
             value: to_reg_value(&s.kind, &s.value).map_err(|er| Error::Catalog(format!("{}: {er}", e.id)))?,
+            default: Some(if s.default.is_null() { None } else { Some(to_reg_value(&s.kind, &s.default).map_err(|er| Error::Catalog(format!("{}: default {er}", e.id)))?) }),
             only_if_key_exists: s.only_if_key_exists,
         });
     }
@@ -302,6 +323,27 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
     use std::sync::atomic::{AtomicU32, Ordering};
+
+    #[test]
+    fn revert_without_backup_writes_windows_defaults() {
+        let path = format!("Software\\MyTuneTest\\cat-default-{}", std::process::id());
+        let set = |name: &str, default| DataSet { hive: Hive::Hkcu, path: path.clone(), name: name.into(), value: RegValue::Dword(0), only_if_key_exists: false, default };
+        let tweak = |sets| DataTweak { id: "t".into(), title: "t".into(), description: String::new(), details: String::new(), flags: TweakFlags(0), removed: false, sets, after: After::None, hooks: Arc::new(CountHooks::default()) };
+        reg::set(Hive::Hkcu, &path, "A", &RegValue::Dword(0)).unwrap();
+        reg::set(Hive::Hkcu, &path, "B", &RegValue::Dword(0)).unwrap();
+        // one unknown default: nothing is touched
+        let unknown = tweak(vec![set("A", Some(Some(RegValue::Dword(1)))), set("B", None)]);
+        assert!(!unknown.revert_default().unwrap());
+        assert_eq!(reg::get(Hive::Hkcu, &path, "A").unwrap(), Some(RegValue::Dword(0)));
+        // known defaults: A gets its value back, B (absent by default) is deleted
+        let known = tweak(vec![set("A", Some(Some(RegValue::Dword(1)))), set("B", Some(None))]);
+        assert!(known.revert_default().unwrap());
+        assert_eq!(reg::get(Hive::Hkcu, &path, "A").unwrap(), Some(RegValue::Dword(1)));
+        assert_eq!(reg::get(Hive::Hkcu, &path, "B").unwrap(), None);
+        assert!(!known.is_applied().unwrap());
+        let _ = reg::delete_tree(Hive::Hkcu, &path);
+        let _ = reg::delete_key_if_empty(Hive::Hkcu, "Software\\MyTuneTest");
+    }
 
     #[derive(Default)]
     pub struct CountHooks {

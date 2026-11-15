@@ -76,7 +76,7 @@
     "removed": false,
     "title": "NVIDIA low-latency profile",
     "description": "Sets the global NVIDIA driver profile for maximum performance and minimum input lag.",
-    "details": "NVIDIA Base Profile:\n\u2022 Power management: prefer maximum performance\n\u2022 Low latency mode: on (1 pre-rendered frame)\n\u2022 Vertical sync: off\n\u2022 Triple buffering: off\n\u2022 Preferred refresh rate: highest available\n\u2022 Texture filtering quality: high performance\n\u2022 Trilinear optimization: on\n\u2022 Anisotropic filter optimization: on\n\u2022 Anisotropic sample optimization: on\n\u2022 Shader cache size: unlimited\n\u2022 FXAA: off\n\u2022 Ansel: off (older drivers only)\nG-SYNC and per-game profiles you set yourself are not touched.",
+    "details": "NVIDIA Base Profile:\n\u2022 Power management: prefer maximum performance\n\u2022 Low latency mode: on (1 pre-rendered frame)\n\u2022 Vertical sync: off\n\u2022 Triple buffering: off\n\u2022 Preferred refresh rate: highest available\n\u2022 Texture filtering quality: high performance\n\u2022 Trilinear optimization: on\n\u2022 Anisotropic filter optimization: on\n\u2022 Anisotropic sample optimization: on\n\u2022 Shader cache size: unlimited\n\u2022 FXAA: off\n\u2022 Ansel: off (older drivers only)\n\u2022 Anisotropic filtering: off\n\u2022 Antialiasing transparency: off\n\u2022 OpenGL GDI compatibility: prefer performance\nG-SYNC and per-game profiles you set yourself are not touched.",
     "flags": "None",
     "group": "",
     "page": "",

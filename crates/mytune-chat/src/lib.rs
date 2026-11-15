@@ -33,6 +33,8 @@ struct Inner {
     phase: Mutex<yapfast_core::voice::Phase>,
     /// A message came that should flash the taskbar; the UI takes it.
     attention: std::sync::atomic::AtomicBool,
+    /// The mic was muted when deafening began, so undeafening leaves it muted (else it opens the mic again).
+    mic_was_muted: std::sync::atomic::AtomicBool,
     /// Message alerts (who wrote where, and the text) the engine raised, for the UI to show as toasts.
     alerts: Mutex<Vec<yapfast_core::chat::Alert>>,
     repaint: Box<dyn Fn() + Send + Sync>,
@@ -40,6 +42,31 @@ struct Inner {
 
 #[derive(Clone)]
 pub struct Chat(Arc<Inner>);
+
+/// The engine mutes the mic on deafen and leaves it muted on undeafen. As Discord: undeafening gives the mic
+/// back unless it was muted before (the engine's unmute also undeafens).
+fn deafen_command(on: bool, muted: bool, was_muted: &std::sync::atomic::AtomicBool) -> yapfast_core::voice::Command {
+    use std::sync::atomic::Ordering::Relaxed;
+    use yapfast_core::voice::Command;
+    if on {
+        was_muted.store(muted, Relaxed);
+        Command::Deafen(true)
+    } else if was_muted.load(Relaxed) {
+        Command::Deafen(false)
+    } else {
+        Command::Mute(false)
+    }
+}
+
+#[test]
+fn undeafen_restores_mic() {
+    use yapfast_core::voice::Command;
+    let was = std::sync::atomic::AtomicBool::new(false);
+    assert!(matches!(deafen_command(true, false, &was), Command::Deafen(true)));
+    assert!(matches!(deafen_command(false, true, &was), Command::Mute(false)));
+    assert!(matches!(deafen_command(true, true, &was), Command::Deafen(true)));
+    assert!(matches!(deafen_command(false, true, &was), Command::Deafen(false)));
+}
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -65,6 +92,7 @@ impl Chat {
             hook: Mutex::new(None),
             phase: Mutex::new(Default::default()),
             attention: std::sync::atomic::AtomicBool::new(false),
+            mic_was_muted: std::sync::atomic::AtomicBool::new(false),
             alerts: Mutex::new(Vec::new()),
             repaint: Box::new(repaint),
         }));
@@ -100,8 +128,24 @@ impl Chat {
         }
     }
 
+    /// Keeps a person's call volume and mutes (as the engine holds them now) between runs.
+    pub fn keep_person_sound(&self, person: &str) {
+        use yapfast_core::volume::{self, Kind};
+        let now = (volume::get(Kind::Voice, person), volume::muted(person), volume::soundboard_muted(person));
+        let plain = now == (Kind::Voice.default_gain(), false, false);
+        let mut s = lock(&self.0.settings);
+        let changed = if plain { s.person_sound.remove(person).is_some() } else { s.person_sound.insert(person.to_owned(), now) != Some(now) };
+        if changed {
+            s.save();
+        }
+    }
+
     /// Takes new settings: hands them to the engine, starts or stops the push-to-talk hook, and saves them.
-    pub fn set_settings(&self, new: Settings, save: bool) {
+    pub fn set_settings(&self, mut new: Settings, save: bool) {
+        if save {
+            // the settings screen edits an older copy: people's volumes are changed only in the call menu
+            new.person_sound = lock(&self.0.settings).person_sound.clone();
+        }
         let old = std::mem::replace(&mut *lock(&self.0.settings), new.clone());
         new.apply();
         let first = !save;
@@ -117,6 +161,8 @@ impl Chat {
         }
         if first {
             acts.push(Action::SetPinned(new.pinned_dms.clone()));
+            // without this the engine marks rooms read only in memory and they come back unread on restart
+            acts.push(Action::SyncDiscordReads(true));
         }
         for a in acts {
             let effects = lock(&self.0.app).dispatch(a);
@@ -177,6 +223,13 @@ impl Chat {
 
     pub fn dispatch(&self, action: Action) {
         let pin = matches!(action, Action::Pin { .. });
+        let action = match action {
+            Action::Voice(yapfast_core::voice::Command::Deafen(on)) => {
+                let muted = lock(&self.0.app).state.voice.muted;
+                Action::Voice(deafen_command(on, muted, &self.0.mic_was_muted))
+            }
+            a => a,
+        };
         let effects = lock(&self.0.app).dispatch(action);
         self.execute(effects);
         if pin {
@@ -194,27 +247,28 @@ impl Chat {
     /// Rings while a DM call rings this account (not in Do Not Disturb, not in that call), then repaints.
     fn changed(&self) {
         // A call that just connected starts unmuted or deafened as the settings say (it joins muted).
-        let now = lock(&self.0.app).state.voice.phase;
+        // one lock for all it reads: the UI holds it for whole frames
+        let (now, ring, speaker) = {
+            let app = lock(&self.0.app);
+            let s = &app.state;
+            let v = &s.voice;
+            (v.phase, !s.do_not_disturb() && s.rooms.iter().any(|r| r.incoming && !(v.active() && v.room.as_ref() == Some(&r.id))), v.speaker.clone())
+        };
         let was = std::mem::replace(&mut *lock(&self.0.phase), now);
         if now == yapfast_core::voice::Phase::Connected && was != now {
             let s = self.settings();
             let act = if s.deafen_on_join { Some(Action::DeafenOnJoin) } else if s.unmute_on_join { Some(Action::UnmuteOnJoin) } else { None };
             if let Some(a) = act {
+                // a call joins muted: undeafening later opens the mic only if it would have been unmuted
+                self.0.mic_was_muted.store(!s.unmute_on_join, std::sync::atomic::Ordering::Relaxed);
                 let effects = lock(&self.0.app).dispatch(a);
                 self.execute(effects);
             }
         }
-        let ring = {
-            let app = lock(&self.0.app);
-            let s = &app.state;
-            let v = &s.voice;
-            !s.do_not_disturb() && s.rooms.iter().any(|r| r.incoming && !(v.active() && v.room.as_ref() == Some(&r.id)))
-        };
         let mut ringer = lock(&self.0.ringer);
         if !ring {
             *ringer = None;
         } else if ringer.is_none() {
-            let speaker = lock(&self.0.app).state.voice.speaker.clone();
             *ringer = yapfast_core::ring::Ringer::start(yapfast_core::ring::Tone::Incoming, speaker.as_deref()).ok();
         }
         drop(ringer);
@@ -239,6 +293,11 @@ impl Chat {
     /// Connects with the Discord login saved on this PC (a no-op error event when there is none).
     pub fn restore(&self) {
         self.execute(vec![Effect::Start(Start::Restore)]);
+    }
+
+    /// True while a connection is running or being set up (false again once it ended, as with no saved login).
+    pub fn starting(&self) -> bool {
+        lock(&self.0.backend).is_some()
     }
 
     /// Drops the connection and connects again with the saved login (when Discord went offline or the page is stale).
@@ -316,7 +375,29 @@ impl Chat {
                 if *lock(&me.0.run) != run {
                     return;
                 }
-                let effects = lock(&me.0.app).apply(event);
+                // A call sends events in bursts, and the UI holds this lock for each whole frame: one event per
+                // lock (then three more locks in `changed`) fell behind while the page kept repainting, as when
+                // scrolling. All that wait are applied under one lock, with one repaint after.
+                let mut effects = Vec::new();
+                let narrate = lock(&me.0.settings).narrate_calls;
+                let mut lines = Vec::new();
+                {
+                    let mut app = lock(&me.0.app);
+                    let before = if narrate { in_call(&app.state.voice) } else { None };
+                    effects.extend(app.apply(event));
+                    for _ in 0..256 {
+                        match events.try_recv() {
+                            Ok(event) => effects.extend(app.apply(event)),
+                            Err(_) => break,
+                        }
+                    }
+                    if let (Some(before), Some(after)) = (before, in_call(&app.state.voice)) {
+                        lines = narration(&before, &after);
+                    }
+                }
+                if !lines.is_empty() {
+                    say(lines.join(". "), lock(&me.0.settings).sound_volume);
+                }
                 me.execute(effects);
                 me.changed();
             }
@@ -343,6 +424,48 @@ impl Chat {
 }
 
 pub use yapfast_core;
+
+/// The call this account is in and hears: its room and the other connected people (id, name).
+type InCall = (Option<String>, Vec<(String, String)>);
+
+fn in_call(v: &yapfast_core::voice::State) -> Option<InCall> {
+    (v.active() && !v.deafened).then(|| (v.room.clone(), v.participants.iter().filter(|p| !p.local && p.connected).map(|p| (p.id.clone(), p.user.clone())).collect()))
+}
+
+/// What the narrator says for a change in one call: who joined, who left. Nothing when the call changed.
+fn narration(before: &InCall, after: &InCall) -> Vec<String> {
+    if before.0 != after.0 {
+        return vec![];
+    }
+    let gone = |list: &InCall, id: &str| !list.1.iter().any(|(i, _)| i == id);
+    let joined = after.1.iter().filter(|(id, _)| gone(before, id)).map(|(_, n)| format!("{n} joined"));
+    let left = before.1.iter().filter(|(id, _)| gone(after, id)).map(|(_, n)| format!("{n} left"));
+    joined.chain(left).collect()
+}
+
+/// Speaks a line with Windows' own voice, from a thread. The text is other people's names: it goes in as an
+/// environment variable, never as part of the script.
+fn say(line: String, volume: u8) {
+    std::thread::spawn(move || {
+        use std::os::windows::process::CommandExt;
+        let script = "Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; $s.Volume = [int]$env:MYTUNE_SAY_VOLUME; $s.Speak($env:MYTUNE_SAY)";
+        let _ = std::process::Command::new("powershell").args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script]).env("MYTUNE_SAY", line.replace('\0', "")).env("MYTUNE_SAY_VOLUME", volume.min(100).to_string()).creation_flags(0x0800_0000).output();
+    });
+}
+
+#[cfg(test)]
+mod narrator_tests {
+    use super::*;
+
+    #[test]
+    fn says_who_joined_and_left_one_call() {
+        let p = |id: &str| (id.to_owned(), id.to_uppercase());
+        let a = (Some("r".to_owned()), vec![p("a"), p("b")]);
+        let b = (Some("r".to_owned()), vec![p("b"), p("c")]);
+        assert_eq!(narration(&a, &b), ["C joined", "A left"]);
+        assert!(narration(&a, &(Some("other".to_owned()), vec![])).is_empty());
+    }
+}
 
 /// A video frame buffer the UI can read back (the engine's own one only offers `pixels_mut`).
 struct Rgba {

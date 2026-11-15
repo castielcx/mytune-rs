@@ -12,6 +12,7 @@ const MAX_H: f32 = 320.0;
 
 /// The texture of a decoded picture, made once per key.
 fn pic_tex(ctx: &egui::Context, cache: &mut HashMap<String, TextureHandle>, key: String, pic: &Picture) -> egui::TextureId {
+    touch(ctx, &key);
     if let Some(t) = cache.get(&key) {
         return t.id();
     }
@@ -29,6 +30,22 @@ fn fit(from: (f32, f32), max_w: f32, max_h: f32) -> egui::Vec2 {
     vec2((w * k).max(24.0), (h * k).max(24.0))
 }
 
+/// The size of a message picture. A sticker posted as its picture link (the Stickers tab of a local build, or
+/// another client's fake stickers) fills a sticker's 160 box, enlarged when its source is small: the sources
+/// are 32 to 320 px, and at their own size some showed tiny.
+fn sticker_link(a: &Attachment) -> bool {
+    matches!(a.placement, Placement::Message) && a.url.as_deref().is_some_and(|u| u.contains("/stickers/"))
+}
+
+fn picture_size(a: &Attachment, from: (f32, f32)) -> egui::Vec2 {
+    if !sticker_link(a) {
+        return fit(from, MAX_W, MAX_H);
+    }
+    let (w, h) = (from.0.max(1.0), from.1.max(1.0));
+    let k = (160.0 / w).min(160.0 / h);
+    vec2(w * k, h * k)
+}
+
 fn human_size(b: u64) -> String {
     match b {
         0..=1023 => format!("{b} B"),
@@ -42,7 +59,8 @@ pub fn content(ui: &mut Ui, s: &AppState, m: &ChatMessage, tex: &mut HashMap<Str
     let ctx = ui.ctx().clone();
     for (i, a) in m.attachments.iter().enumerate() {
         if matches!(a.placement, Placement::Message | Placement::Sticker) {
-            ui.add_space(4.0);
+            // a sticker-only message has no text above it to space from: its picture follows the row's gap alone
+            ui.add_space(if matches!(a.placement, Placement::Sticker) || sticker_link(a) { 0.0 } else { 4.0 });
             let playing = s.video.as_ref().filter(|v| v.item == m.item && v.index == i);
             attachment(ui, &ctx, m, i, a, playing, tex, acts);
         }
@@ -62,28 +80,55 @@ pub fn content(ui: &mut Ui, s: &AppState, m: &ChatMessage, tex: &mut HashMap<Str
 fn attachment_menu(resp: &egui::Response, ctx: &egui::Context, m: &ChatMessage, i: usize, a: &Attachment, acts: &mut Vec<Action>) {
     if resp.secondary_clicked() {
         // this right click is the attachment's: the message menu (menu::watch) stays shut
-        ctx.data_mut(|d| d.insert_temp(egui::Id::new("msg_menu_block"), ctx.cumulative_pass_nr()));
+        let pass = ctx.cumulative_pass_nr(); // read outside data_mut: nested ctx locks deadlock
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new("msg_menu_block"), pass));
     }
-    resp.context_menu(|ui| {
-        if ui.button("Save\u{2026}").clicked() {
-            ctx.data_mut(|d| d.insert_temp(egui::Id::new("save_attachment"), (m.item.clone(), i, a.name.clone())));
-            ui.close();
-        }
-        if a.image && !a.video && ui.button("Copy Image").clicked() {
-            acts.push(Action::CopyAttachment { item: m.item.clone(), index: i });
-            ui.close();
-        }
-        if let Some(u) = &a.url {
-            if ui.button("Copy Link").clicked() {
-                ctx.copy_text(u.to_string());
-                ui.close();
+    let _ = acts;
+    if resp.secondary_clicked() {
+        let at = ctx.input(|i| i.pointer.interact_pos()).unwrap_or(resp.rect.center());
+        ctx.data_mut(|d| d.insert_temp(egui::Id::new("att_menu"), (m.item.clone(), i, at)));
+    }
+}
+
+/// The open attachment menu, drawn like the message menu: floating glass, hover rows, closes on a pick,
+/// Escape or a click elsewhere.
+pub fn attachment_menu_show(ctx: &egui::Context, s: &AppState, acts: &mut Vec<Action>) {
+    let Some((item, index, at)) = ctx.data(|d| d.get_temp::<(String, usize, egui::Pos2)>(egui::Id::new("att_menu"))) else { return };
+    let Some((m, a)) = s.message(&item).and_then(|m| m.attachments.get(index).map(|a| (m, a))) else {
+        ctx.data_mut(|d| d.remove::<(String, usize, egui::Pos2)>(egui::Id::new("att_menu")));
+        return;
+    };
+    let area_id = egui::Id::new("att_menu_area");
+    let screen = ctx.content_rect();
+    let size = ctx.memory(|mem| mem.area_rect(area_id)).map_or(egui::Vec2::ZERO, |r| r.size());
+    let pos = pos2(if at.x + size.x > screen.right() { at.x - size.x } else { at.x }, if at.y + size.y > screen.bottom() { at.y - size.y } else { at.y });
+    let mut close = false;
+    let shown = egui::Area::new(area_id).order(egui::Order::Tooltip).fixed_pos(pos).show(ctx, |ui| {
+        crate::theme::float(ui, crate::theme::R_MENU, 6, |ui| {
+            ui.spacing_mut().item_spacing.y = 4.0;
+            if super::menu::item(ui, "\u{E74E}", "Save\u{2026}", false) {
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new("save_attachment"), (m.item.clone(), index, a.name.clone())));
+                close = true;
             }
-            if ui.button("Open in Browser").clicked() {
-                ctx.open_url(egui::OpenUrl::new_tab(u.to_string()));
-                ui.close();
+            if a.image && !a.video && super::menu::item(ui, "\u{E8C8}", "Copy Image", false) {
+                acts.push(Action::CopyAttachment { item: m.item.clone(), index });
+                close = true;
             }
-        }
+            if let Some(u) = &a.url {
+                if super::menu::item(ui, "\u{E71B}", "Copy Link", false) {
+                    ctx.copy_text(u.to_string());
+                    close = true;
+                }
+                if super::menu::item(ui, "\u{E774}", "Open in Browser", false) {
+                    super::extras::open_link(ctx, u); // web links only, checked there
+                    close = true;
+                }
+            }
+        });
     });
+    if close || (shown.response.clicked_elsewhere() && !ctx.input(|i| i.pointer.secondary_clicked())) || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        ctx.data_mut(|d| d.remove::<(String, usize, egui::Pos2)>(egui::Id::new("att_menu")));
+    }
 }
 
 /// An attachment Save asked for: (item, index, file name), once.
@@ -106,7 +151,7 @@ fn video(ui: &mut Ui, ctx: &egui::Context, rect: egui::Rect, v: &mytune_chat::ya
             ctx.data_mut(|d| d.insert_temp(key, t.clone().unwrap()));
         }
         if let Some(t) = t {
-            ui.painter().rect_filled(rect, 8.0, Color32::BLACK);
+            ui.painter().rect_filled(rect, 12.0, Color32::BLACK);
             let size = t.size_vec2();
             let inner = egui::Rect::from_center_size(rect.center(), fit((size.x, size.y), rect.width(), rect.height()));
             egui::Image::new(egui::load::SizedTexture::new(t.id(), inner.size())).paint_at(ui, inner);
@@ -124,7 +169,7 @@ fn video(ui: &mut Ui, ctx: &egui::Context, rect: egui::Rect, v: &mytune_chat::ya
     if v.sound {
         let b = egui::Rect::from_min_size(rect.right_bottom() - vec2(40.0, 40.0), vec2(32.0, 32.0));
         let mr = ui.interact(b, resp.id.with("mute"), Sense::click());
-        ui.painter().rect_filled(b, 6.0, Color32::from_black_alpha(if mr.hovered() { 190 } else { 140 }));
+        ui.painter().rect_filled(b, 10.0, Color32::from_black_alpha(if mr.hovered() { 190 } else { 140 }));
         glyph(ui.painter(), b.center(), if v.muted { "\u{E74F}" } else { "\u{E767}" }, 14.0, Color32::WHITE, false);
         if mr.clicked() {
             acts.push(Action::Video(VideoCommand::Mute(!v.muted)));
@@ -141,12 +186,12 @@ fn attachment(ui: &mut Ui, ctx: &egui::Context, m: &ChatMessage, i: usize, a: &A
     let sticker = matches!(a.placement, Placement::Sticker);
     if let (true, Some(pic)) = (a.image || a.video || sticker, &a.preview) {
         let dims = a.dimensions.map(|(w, h)| (w as f32, h as f32)).unwrap_or((pic.width as f32, pic.height as f32));
-        let size = if sticker { vec2(160.0, 160.0) } else { fit(dims, MAX_W, MAX_H) };
+        let size = if sticker { vec2(160.0, 160.0) } else { picture_size(a, dims) };
         let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
         let spoiler_key = egui::Id::new(("spoiler", &m.item, i));
         let covered = a.spoiler && !ctx.data(|d| d.get_temp::<bool>(spoiler_key)).unwrap_or(false);
         if covered {
-            ui.painter().rect_filled(rect, 8.0, k_active());
+            ui.painter().rect_filled(rect, 12.0, k_active());
             ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "SPOILER", egui::FontId::new(13.0, th::bold()), SECONDARY);
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 ctx.data_mut(|d| d.insert_temp(spoiler_key, true));
@@ -154,8 +199,16 @@ fn attachment(ui: &mut Ui, ctx: &egui::Context, m: &ChatMessage, i: usize, a: &A
             return;
         }
         let still = pic_tex(ctx, tex, format!("att:{}:{i}", m.item), pic);
-        let id = animated(ctx, &format!("att:{}:{i}", m.item), pic).unwrap_or(still);
+        // a GIF moves only under the pointer (a click opens it large, where it plays); else its first frame
+        // with a "GIF" tag
+        let moves = pic.animation.as_ref().is_some_and(|a| a.delays.len() >= 2);
+        let id = if moves && resp.hovered() { animated(ctx, &format!("att:{}:{i}", m.item), pic).unwrap_or(still) } else { still };
         egui::Image::new(egui::load::SizedTexture::new(id, rect.size())).corner_radius(if sticker { 0.0 } else { 8.0 }).paint_at(ui, rect);
+        if moves && !resp.hovered() && !sticker {
+            let tag = egui::Rect::from_min_size(rect.left_top() + vec2(8.0, 8.0), vec2(34.0, 20.0));
+            ui.painter().rect_filled(tag, 10.0, Color32::from_black_alpha(170));
+            ui.painter().text(tag.center(), egui::Align2::CENTER_CENTER, "GIF", egui::FontId::new(11.0, th::bold()), Color32::WHITE);
+        }
         let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
         if !sticker {
             attachment_menu(&resp, ctx, m, i, a, acts);
@@ -184,7 +237,7 @@ fn attachment(ui: &mut Ui, ctx: &egui::Context, m: &ChatMessage, i: usize, a: &A
     // a picture not loaded yet (or dropped from the engine's cache): a block of the final size, so the rows
     // below do not jump when it arrives while scrolling
     if let (true, None, false, Some((w, h))) = (a.image || a.video || sticker, &a.preview, a.preview_failed, a.dimensions) {
-        let size = if sticker { vec2(160.0, 160.0) } else { fit((w as f32, h as f32), MAX_W, MAX_H) };
+        let size = if sticker { vec2(160.0, 160.0) } else { picture_size(a, (w as f32, h as f32)) };
         let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
         ui.painter().rect_filled(rect, if sticker { 0.0 } else { 8.0 }, k_raised());
         return;
@@ -222,7 +275,7 @@ fn embed(ui: &mut Ui, ctx: &egui::Context, m: &ChatMessage, idx: usize, e: &Embe
     let small = find(|p, i| matches!(p, Placement::Thumbnail(n) if *n == i));
     let bar = e.color.map(|c| Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)).unwrap_or(k_line());
     let width = (MAX_W + 20.0).min(ui.available_width());
-    let frame = egui::Frame::new().fill(k_sidebar()).corner_radius(6.0).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
+    let frame = egui::Frame::new().fill(k_sidebar()).corner_radius(10.0).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
         ui.set_width(width - 28.0);
         ui.horizontal_top(|ui| {
             ui.vertical(|ui| {
@@ -252,7 +305,7 @@ fn embed(ui: &mut Ui, ctx: &egui::Context, m: &ChatMessage, idx: usize, e: &Embe
             if let Some((i, a)) = small {
                 let id = pic_tex(ctx, tex, format!("att:{}:{i}", m.item), a.preview.as_ref().unwrap());
                 let (r, _) = ui.allocate_exact_size(vec2(72.0, 72.0), Sense::hover());
-                egui::Image::new(egui::load::SizedTexture::new(id, r.size())).corner_radius(6.0).paint_at(ui, r);
+                egui::Image::new(egui::load::SizedTexture::new(id, r.size())).corner_radius(10.0).paint_at(ui, r);
             }
         });
         if let Some((i, a)) = big {
@@ -266,12 +319,12 @@ fn embed(ui: &mut Ui, ctx: &egui::Context, m: &ChatMessage, idx: usize, e: &Embe
             };
             let (r, resp) = ui.allocate_exact_size(size, Sense::click());
             let Some(pic) = a.preview.as_ref() else {
-                ui.painter().rect_filled(r, 6.0, k_raised());
+                ui.painter().rect_filled(r, 10.0, k_raised());
                 return_footer(ui, e);
                 return;
             };
             let id = pic_tex(ctx, tex, format!("att:{}:{i}", m.item), pic);
-            egui::Image::new(egui::load::SizedTexture::new(id, r.size())).corner_radius(6.0).paint_at(ui, r);
+            egui::Image::new(egui::load::SizedTexture::new(id, r.size())).corner_radius(10.0).paint_at(ui, r);
             if e.video {
                 ui.painter().circle_filled(r.center(), 24.0, Color32::from_black_alpha(150));
                 glyph(ui.painter(), r.center(), "\u{E768}", 22.0, Color32::WHITE, false);
@@ -296,18 +349,18 @@ fn embed(ui: &mut Ui, ctx: &egui::Context, m: &ChatMessage, idx: usize, e: &Embe
 fn poll_card(ui: &mut Ui, m: &ChatMessage, q: &Poll, acts: &mut Vec<Action>) {
     let total: usize = q.answers.iter().map(|a| a.votes).sum();
     let pal = p();
-    egui::Frame::new().fill(k_sidebar()).corner_radius(8.0).inner_margin(egui::Margin::same(14)).show(ui, |ui| {
+    egui::Frame::new().fill(k_sidebar()).corner_radius(12.0).inner_margin(egui::Margin::same(14)).show(ui, |ui| {
         ui.set_width((MAX_W - 20.0).min(ui.available_width()));
         ui.add(egui::Label::new(sb(&q.question, 15.0).color(TEXT)).wrap());
         ui.label(rt(if q.finalized { "Final results" } else if q.multiselect { "Select one or more answers" } else { "Select one answer" }, 11.5).color(MUTED));
         ui.add_space(6.0);
         for a in &q.answers {
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
-            ui.painter().rect_filled(rect, 6.0, k_raised());
+            ui.painter().rect_filled(rect, 10.0, k_raised());
             if total > 0 && a.votes > 0 {
                 let mut bar = rect;
                 bar.set_width(rect.width() * a.votes as f32 / total as f32);
-                ui.painter().rect_filled(bar, 6.0, if a.mine { pal.accent.gamma_multiply(0.45) } else { k_active() });
+                ui.painter().rect_filled(bar, 10.0, if a.mine { pal.accent.gamma_multiply(0.45) } else { k_active() });
             }
             if a.mine {
                 ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.5, pal.accent), egui::StrokeKind::Inside);
@@ -330,21 +383,35 @@ fn poll_card(ui: &mut Ui, m: &ChatMessage, q: &Poll, acts: &mut Vec<Action>) {
             }
             ui.add_space(3.0);
         }
-        ui.label(rt(format!("{total} vote{}", if total == 1 { "" } else { "s" }), 11.5).color(MUTED));
+        ui.horizontal(|ui| {
+            ui.label(rt(format!("{total} vote{}", if total == 1 { "" } else { "s" }), 11.5).color(MUTED));
+            // its author may close it early (asks once more: it cannot be reopened)
+            if q.can_end && !q.finalized && super::sure(ui, ("end_poll", &m.item), "End poll", |ui, l| ui.link(rt(l, 11.5)).clicked()) {
+                acts.push(Action::AskEndPoll(m.item.clone()));
+                acts.push(Action::EndPoll);
+            }
+        });
     });
 }
 
 /// The full-size picture over the page: click outside or Esc closes, arrow keys step through the message's pictures.
 pub fn viewer(ctx: &egui::Context, s: &AppState, tex: &mut HashMap<String, TextureHandle>, acts: &mut Vec<Action>) {
     let Some(v) = &s.viewer else { return };
-    let name = s.message(&v.item).and_then(|m| m.attachments.get(v.index).map(|a| (a.name.clone(), a.url.clone())));
+    let msg = s.message(&v.item);
+    let att = msg.and_then(|m| m.attachments.get(v.index));
     let screen = ctx.content_rect();
     let modal = egui::Modal::new(egui::Id::new("image_viewer")).show(ctx, |ui| {
         match v.pictures.get(&v.index) {
             Some(Some(Ok(pic))) => {
-                let size = fit((pic.width as f32, pic.height as f32), screen.width() * 0.8, screen.height() * 0.78);
+                // small pictures are enlarged to the same box as big ones
+                let (w, h) = (pic.width.max(1) as f32, pic.height.max(1) as f32);
+                let k = (screen.width() * 0.8 / w).min(screen.height() * 0.78 / h);
+                let size = vec2(w * k, h * k);
                 let id = pic_tex(ctx, tex, format!("view:{}:{}", v.item, v.index), pic);
-                ui.add(egui::Image::new(egui::load::SizedTexture::new(id, size)).corner_radius(6.0));
+                let resp = ui.add(egui::Image::new(egui::load::SizedTexture::new(id, size)).corner_radius(10.0).sense(Sense::click()));
+                if let (Some(m), Some(a)) = (msg, att) {
+                    attachment_menu(&resp, ctx, m, v.index, a, acts);
+                }
             }
             Some(Some(Err(why))) => {
                 ui.label(rt(*why, 14.0).color(DANGER));
@@ -353,23 +420,6 @@ pub fn viewer(ctx: &egui::Context, s: &AppState, tex: &mut HashMap<String, Textu
                 ui.add(egui::Spinner::new());
             }
         }
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if let Some((n, url)) = &name {
-                ui.label(sb(n, 13.0).color(TEXT));
-                if let Some(u) = url {
-                    if ui.add(egui::Button::new(rt("Open original", 12.0).color(TEXT)).fill(k_raised())).clicked() {
-                        super::extras::open_link(ctx, u);
-                    }
-                }
-            }
-            if ui.add(egui::Button::new(rt("\u{2039} Previous", 12.0).color(TEXT)).fill(k_raised())).clicked() {
-                acts.push(Action::StepImage(-1));
-            }
-            if ui.add(egui::Button::new(rt("Next \u{203A}", 12.0).color(TEXT)).fill(k_raised())).clicked() {
-                acts.push(Action::StepImage(1));
-            }
-        });
     });
     if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
         acts.push(Action::StepImage(-1));

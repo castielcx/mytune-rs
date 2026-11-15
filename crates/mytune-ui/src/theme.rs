@@ -26,7 +26,7 @@ pub struct Palette {
 
 pub const TEXT: Color32 = Color32::WHITE;
 pub fn text2() -> Color32 { Color32::from_white_alpha(0xCC) }
-pub fn text3() -> Color32 { Color32::from_white_alpha(0x90) }
+pub fn text3() -> Color32 { Color32::from_white_alpha(0xB0) } // 4.5:1 on the brightest backdrop spot under glass
 pub fn control_bg() -> Color32 { Color32::from_white_alpha(0x14) }
 pub fn control_border() -> Color32 { Color32::from_white_alpha(0x33) }
 pub const SUCCESS: Color32 = Color32::from_rgb(0x6C, 0xCB, 0x5F);
@@ -105,12 +105,12 @@ impl Palette {
             on_accent: if (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) / 255.0 < 0.62 { Color32::WHITE } else { scale(c, 0.17) }, // white unless the accent is too light for it
             accent_soft: Color32::from_rgba_unmultiplied(c[0] as u8, c[1] as u8, c[2] as u8, 0x26),
             // glass: side, side_selected and card_bg are translucent white, drawn over `backdrop`
-            side: Color32::from_white_alpha(0x14),
+            side: Color32::from_white_alpha(0x0D),
             side_selected: Color32::from_white_alpha(0x2C),
             side_text: Color32::WHITE,
             side_muted: Color32::from_white_alpha(0xB8),
             layer_bg: t(0.0, 0.35, 0.06),
-            card_bg: Color32::from_white_alpha(0x14),
+            card_bg: Color32::from_white_alpha(0x0D),
             card_hover: t(0.0, 0.3, 0.17),
             ink: t(0.0, 0.5, 0.045),
             hero_bg: t(0.0, 0.7, 0.42),
@@ -152,13 +152,19 @@ pub fn install_fonts(ctx: &egui::Context) {
     use egui::epaint::text::VariationCoords;
     let mut fonts = egui::FontDefinitions::default();
     let fonts_dir = r"C:\Windows\Fonts\";
-    let read = |f: &str| std::fs::read(format!("{fonts_dir}{f}")).ok();
+    // Mapped from disk, not read into memory: about 17 MB of font files (12 MB of emoji alone) stay out of
+    // the app's own memory, and only the parts in use are loaded.
+    let read = |f: &str| -> Option<std::sync::Arc<memmap2::Mmap>> {
+        let file = std::fs::File::open(format!("{fonts_dir}{f}")).ok()?;
+        // SAFETY: Windows font files are not rewritten while mapped (the map keeps them open).
+        unsafe { memmap2::Mmap::map(&file) }.ok().map(std::sync::Arc::new)
+    };
     let base = fonts.families[&FontFamily::Proportional].clone();
     let mut add = |fonts: &mut egui::FontDefinitions, key: &str, data: egui::FontData| {
         fonts.font_data.insert(key.into(), std::sync::Arc::new(data));
     };
     if let Some(bytes) = read("SegUIVar.ttf") {
-        let blob: std::sync::Arc<Vec<u8>> = std::sync::Arc::new(bytes);
+        let blob = bytes;
         // (family, key, weight, optical size)
         let variants = [("regular", 400.0, 10.5), ("semibold", 600.0, 10.5), ("bold", 700.0, 10.5), ("dsemibold", 600.0, 36.0), ("dbold", 700.0, 36.0), ("onlight", 560.0, 10.5)];
         for (name, wght, opsz) in variants {
@@ -178,7 +184,7 @@ pub fn install_fonts(ctx: &egui::Context) {
             let mut list = base.clone();
             if let Some(b) = read(file) {
                 let key = format!("segoe-static-{name}");
-                add(&mut fonts, &key, egui::FontData::from_owned(b));
+                add(&mut fonts, &key, egui::FontData::from_blob(b, 0));
                 list.insert(0, key);
             }
             if name == "regular" {
@@ -190,13 +196,13 @@ pub fn install_fonts(ctx: &egui::Context) {
     }
     let mut list = base;
     if let Some(b) = read("SegoeIcons.ttf") {
-        add(&mut fonts, "segoe-icons", egui::FontData::from_owned(b));
+        add(&mut fonts, "segoe-icons", egui::FontData::from_blob(b, 0));
         list.insert(0, "segoe-icons".into());
     }
     fonts.families.insert(FontFamily::Name("icons".into()), list);
     // Chat names and messages hold symbols Segoe UI lacks (e.g. U+271E): last-resort fallback, ~1 MB.
     if let Some(b) = read("seguisym.ttf") {
-        add(&mut fonts, "segoe-symbols", egui::FontData::from_owned(b));
+        add(&mut fonts, "segoe-symbols", egui::FontData::from_blob(b, 0));
         for fam in [FontFamily::Proportional, FontFamily::Name("semibold".into()), FontFamily::Name("bold".into())] {
             if let Some(l) = fonts.families.get_mut(&fam) {
                 l.push("segoe-symbols".into());
@@ -205,7 +211,7 @@ pub fn install_fonts(ctx: &egui::Context) {
     }
     // Emoji in reactions, names and messages: Segoe UI Emoji's outlines (egui draws them one colour). ~12 MB.
     if let Some(b) = read("seguiemj.ttf") {
-        add(&mut fonts, "segoe-emoji", egui::FontData::from_owned(b));
+        add(&mut fonts, "segoe-emoji", egui::FontData::from_blob(b, 0));
         for fam in [FontFamily::Proportional, FontFamily::Name("semibold".into()), FontFamily::Name("bold".into())] {
             if let Some(l) = fonts.families.get_mut(&fam) {
                 l.push("segoe-emoji".into());
@@ -260,14 +266,22 @@ pub fn round_corners(p: &egui::Painter, rect: Rect, r: f32, bg: &dyn Fn(Pos2) ->
         let c = corner + vec2(sx * r, sy * r);
         let mut m = egui::Mesh::default();
         m.colored_vertex(corner, bg(corner));
-        for k in 0..=10 {
+        const N: u32 = 28;
+        for k in 0..=N {
             // arc from one edge point to the other
-            let t = k as f32 / 10.0 * std::f32::consts::FRAC_PI_2;
+            let t = k as f32 / N as f32 * std::f32::consts::FRAC_PI_2;
             let q = c + vec2(-sx * r * t.sin(), -sy * r * t.cos());
             m.colored_vertex(q, bg(q));
         }
-        for k in 1..=10 {
+        for k in 0..=N {
+            // the same arc 1 px further in, clear: the cover fades out instead of ending in steps
+            let t = k as f32 / N as f32 * std::f32::consts::FRAC_PI_2;
+            m.colored_vertex(c + vec2(-sx * (r - 1.0) * t.sin(), -sy * (r - 1.0) * t.cos()), Color32::TRANSPARENT);
+        }
+        for k in 1..=N {
             m.add_triangle(0, k, k + 1);
+            m.add_triangle(k, N + 1 + k, k + 1);
+            m.add_triangle(k + 1, N + 1 + k, N + 2 + k);
         }
         p.add(egui::Shape::mesh(m));
     }
@@ -278,14 +292,33 @@ fn blobs(rect: Rect) -> [(Pos2, f32, Color32, f32); 4] {
     let a = p_accent_hsv();
     let big = rect.width().max(rect.height());
     let at = |fx: f32, fy: f32| pos2(rect.left() + rect.width() * fx, rect.top() + rect.height() * fy);
-    [(0.92, 0.05, 0.62, 0.0, 0.6, 0.85, 0.7), (0.08, 1.0, 0.58, 0.14, 0.6, 0.7, 0.62), (0.62, 1.05, 0.4, -0.12, 0.55, 0.7, 0.55), (0.3, 0.1, 0.28, 0.07, 0.5, 0.7, 0.38)]
+    // soft colour behind the glass stands in for blur; `backdrop_at` keeps it dark enough for text
+    [(0.92, 0.05, 0.66, 0.0, 0.6, 0.8, 0.7), (0.08, 1.0, 0.62, 0.14, 0.55, 0.7, 0.6), (0.62, 1.05, 0.42, -0.12, 0.5, 0.7, 0.5), (0.3, 0.1, 0.3, 0.07, 0.45, 0.7, 0.36)]
         .map(|(fx, fy, r, dh, s, v, al)| (at(fx, fy), big * r, from_hsv(a.0 + dh, s * a.1, v), al))
 }
 
+/// Relative luminance (WCAG) of gamma-space RGB in 0..=255.
+fn lum_f(c: [f32; 3]) -> f32 {
+    let f = |v: f32| {
+        let x = v / 255.0;
+        if x <= 0.04045 { x / 12.92 } else { ((x + 0.055) / 1.055).powf(2.4) }
+    };
+    0.2126 * f(c[0]) + 0.7152 * f(c[1]) + 0.0722 * f(c[2])
+}
+
+/// Relative luminance (WCAG) of an opaque colour.
+fn lum(c: Color32) -> f32 {
+    lum_f([c.r() as f32, c.g() as f32, c.b() as f32])
+}
+
+/// Brightest the backdrop may get: white, `text2` and `text3` keep 4.5:1 on a base panel over it (see the test).
+const BACKDROP_LUM: f32 = 0.022;
+
 /// Page background: dark base with four soft blobs in the accent's hue (a grey accent gets a calm blue).
-/// Rendered once into a small texture (1/8 size, smoothed when stretched) and redrawn as one quad; it is made
-/// again only when the window size (in 16 px steps) or the accent changes.
+/// Rendered once into a half-size dithered texture and redrawn as one quad; it is made again only when the
+/// window size (in 16 px steps) or the accent changes.
 pub fn backdrop(ctx: &egui::Context, p: &egui::Painter, rect: Rect) {
+    glow_textures(ctx);
     let (w, h) = (((rect.width() / 16.0).ceil() as usize).max(1), ((rect.height() / 16.0).ceil() as usize).max(1));
     let key = (w, h, self::p().accent.to_array(), self::p().layer_bg.to_array());
     let id = egui::Id::new("backdrop_tex");
@@ -293,16 +326,7 @@ pub fn backdrop(ctx: &egui::Context, p: &egui::Painter, rect: Rect) {
     let tex = match cached {
         Some((k, t)) if k == key => t,
         _ => {
-            let (iw, ih) = (w * 2, h * 2); // 8 px per texel
-            let mut px = Vec::with_capacity(iw * ih * 3);
-            let step = rect.width() / iw as f32;
-            for y in 0..ih {
-                for x in 0..iw {
-                    let c = backdrop_at(rect, rect.min + vec2((x as f32 + 0.5) * step, (y as f32 + 0.5) * rect.height() / ih as f32));
-                    px.extend([c.r(), c.g(), c.b()]);
-                }
-            }
-            let t = ctx.load_texture("backdrop", egui::ColorImage::from_rgb([iw, ih], &px), egui::TextureOptions::LINEAR);
+            let t = ctx.load_texture("backdrop", backdrop_image(rect, w * 8, h * 8), egui::TextureOptions::LINEAR);
             ctx.data_mut(|d| d.insert_temp(id, (key, t.clone())));
             t
         }
@@ -310,16 +334,115 @@ pub fn backdrop(ctx: &egui::Context, p: &egui::Painter, rect: Rect) {
     p.image(tex.id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
 }
 
-/// The colour `backdrop` paints at `pos`, for shapes that must blend into it.
-pub fn backdrop_at(rect: Rect, pos: Pos2) -> Color32 {
-    let mut c = self::p().layer_bg;
-    for (centre, r, col, al) in blobs(rect) {
-        let k = 1.0 - pos.distance(centre) / r;
-        if k > 0.0 {
-            c = c.lerp_to_gamma(col, al * k * k * k);
+/// Interleaved gradient noise in 0..1 for a pixel: even, with no pattern the eye picks up. Added before a
+/// colour is cut to 8 bits, it turns the steps of a slow gradient into grain too fine to see.
+fn noise(x: usize, y: usize) -> f32 {
+    (52.982_918 * (0.067_110_56 * x as f32 + 0.005_837_15 * y as f32).fract()).fract()
+}
+
+const GLOW_W: usize = 64;
+const GLOW_H: usize = 2048;
+
+thread_local! {
+    /// Pixels per point and, per light strength, the picture `sheen_into` draws the light on a plate with.
+    static GLOW: std::cell::RefCell<(f32, Vec<(u8, egui::TextureId)>)> = const { std::cell::RefCell::new((1.0, Vec::new())) };
+}
+
+/// The light inside a glass plate fades from its top to its bottom. On a tall plate that is one 8-bit step
+/// every 40 px or so, which showed as stripes, so the fade is a picture rounded with noise: white, strongest
+/// in its first row and clear in its last, repeating sideways. Made once per strength; call every frame.
+fn glow_textures(ctx: &egui::Context) {
+    let id = egui::Id::new("glow_tex");
+    let tex = ctx.data(|d| d.get_temp::<std::sync::Arc<Vec<(u8, egui::TextureHandle)>>>(id)).unwrap_or_else(|| {
+        let opts = egui::TextureOptions { magnification: egui::TextureFilter::Nearest, minification: egui::TextureFilter::Nearest, wrap_mode: egui::TextureWrapMode::Repeat, mipmap_mode: None };
+        let made = [Glass::Base, Glass::Raised, Glass::Float].map(|l| {
+            let glow = l.light().2;
+            let mut px = Vec::with_capacity(GLOW_W * GLOW_H * 4);
+            for y in 0..GLOW_H {
+                for x in 0..GLOW_W {
+                    // the right half holds the opposite noise: two lights on one plate (`material` under,
+                    // `sheen` over) round up on different pixels, so together they stay within one step
+                    let n = if x < GLOW_W / 2 { noise(x, y) } else { 1.0 - noise(x - GLOW_W / 2, y) };
+                    let a = (glow as f32 * (1.0 - (y as f32 + 0.5) / GLOW_H as f32) + n) as u8;
+                    px.extend([a; 4]);
+                }
+            }
+            (glow, ctx.load_texture("glow", egui::ColorImage::from_rgba_premultiplied([GLOW_W, GLOW_H], &px), opts))
+        });
+        let made = std::sync::Arc::new(made.to_vec());
+        ctx.data_mut(|d| d.insert_temp(id, made.clone()));
+        made
+    });
+    GLOW.with(|g| *g.borrow_mut() = (ctx.pixels_per_point(), tex.iter().map(|(s, t)| (*s, t.id())).collect()));
+}
+
+/// The backdrop for `rect` as an `ow` x `oh` picture (both multiples of 4). The colour is worked out unrounded
+/// on a coarse grid (it is smooth, so 4 texels between nodes lose nothing), and every texel is rounded with
+/// its own noise: 8-bit steps in so dark a gradient showed as bands and contour shapes.
+fn backdrop_image(rect: Rect, ow: usize, oh: usize) -> egui::ColorImage {
+    let f = field(rect);
+    let (gw, gh) = (ow / 4, oh / 4);
+    let mut grid = Vec::with_capacity((gw + 1) * (gh + 1));
+    for gy in 0..=gh {
+        for gx in 0..=gw {
+            grid.push(f(rect.min + vec2(gx as f32 / gw as f32 * rect.width(), gy as f32 / gh as f32 * rect.height())));
         }
     }
-    c
+    let mut px = Vec::with_capacity(ow * oh * 3);
+    for y in 0..oh {
+        let v = (y as f32 + 0.5) / 4.0;
+        let (j, fy) = ((v as usize).min(gh - 1), v.fract());
+        for x in 0..ow {
+            let u = (x as f32 + 0.5) / 4.0;
+            let (i, fx) = ((u as usize).min(gw - 1), u.fract());
+            let n = noise(x, y);
+            let at = j * (gw + 1) + i;
+            let (a, b, c, d) = (grid[at], grid[at + 1], grid[at + gw + 1], grid[at + gw + 2]);
+            for k in 0..3 {
+                let (top, bot) = (a[k] + (b[k] - a[k]) * fx, c[k] + (d[k] - c[k]) * fx);
+                px.push((top + (bot - top) * fy + n) as u8);
+            }
+        }
+    }
+    egui::ColorImage::from_rgb([ow, oh], &px)
+}
+
+/// The colour `backdrop` paints at `pos`, for shapes that must blend into it.
+pub fn backdrop_at(rect: Rect, pos: Pos2) -> Color32 {
+    let c = field(rect)(pos);
+    Color32::from_rgb(c[0].round() as u8, c[1].round() as u8, c[2].round() as u8)
+}
+
+/// The backdrop colour of a window rect as a function of the point: gamma-space RGB in 0..=255, unrounded,
+/// and smooth everywhere (no kink at a blob's centre or edge, nor where the brightness limit starts).
+fn field(rect: Rect) -> impl Fn(Pos2) -> [f32; 3] {
+    let rgb = |c: Color32| [c.r() as f32, c.g() as f32, c.b() as f32];
+    let bg = rgb(self::p().layer_bg);
+    let blobs = blobs(rect).map(|(centre, r, col, al)| (centre, r, rgb(col), al));
+    move |pos| {
+        let mut c = bg;
+        for (centre, r, col, al) in blobs {
+            // 1 at the centre, 0 at the radius; TIP rounds the centre, which was a cone point
+            const TIP: f32 = 0.08;
+            let t = pos.distance(centre) / r;
+            let k = 1.0 - ((t * t + TIP * TIP).sqrt() - TIP) / ((1.0 + TIP * TIP).sqrt() - TIP);
+            if k > 0.0 {
+                let a = al * k * k;
+                for i in 0..3 {
+                    c[i] += (col[i] - c[i]) * a;
+                }
+            }
+        }
+        // darker, same hue: the colour stays vivid while text on the glass above stays readable. From half the
+        // limit on, brightness bends towards the limit and never reaches it (a hard stop drew its outline).
+        let (l, knee) = (lum_f(c), BACKDROP_LUM * 0.5);
+        if l > knee {
+            let span = BACKDROP_LUM - knee;
+            let f = ((knee + span * (1.0 - (-(l - knee) / span).exp())) / l).powf(1.0 / 2.4);
+            c = c.map(|v| v * f);
+        }
+        c
+    }
 }
 
 fn p_accent_hsv() -> (f32, f32) {
@@ -328,42 +451,219 @@ fn p_accent_hsv() -> (f32, f32) {
     if s < 0.1 { (0.6, 0.55) } else { (h, 1.0) }
 }
 
-/// Rounded translucent plate with a soft shadow and a thin rim that is brighter at the top left.
-pub fn glass(rect: Rect, radius: f32, fill: Color32) -> egui::Shape {
+// ---------------------------------------------------------------- glass material
+
+/// The three glass levels, lowest first: a panel on the page, a control on a panel, and what floats over both
+/// (menus, popovers, dialogs). Each is a translucent fill with a bright top-left rim, light from the top inside,
+/// a darker bottom edge and a soft shadow; a higher level is lighter and its shadow reaches further.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Glass {
+    Base,
+    Raised,
+    Float,
+}
+
+/// Corner radii: panels and cards, dialogs, menus and popovers. Controls are capsules (half their height).
+pub const R_PANEL: f32 = 22.0;
+pub const R_FLOAT: f32 = 22.0;
+pub const R_MENU: f32 = 16.0;
+
+/// Radius of a shape that sits `gap` px inside one of radius `outer`, so both curves share a centre.
+pub fn nested(outer: f32, gap: f32) -> f32 {
+    (outer - gap).max(6.0)
+}
+
+impl Glass {
+    pub fn fill(self) -> Color32 {
+        match self {
+            Glass::Base => Color32::from_white_alpha(0x0D),
+            Glass::Raised => Color32::from_white_alpha(0x18),
+            // egui cannot blur what is behind, so what floats is solid: at 85% the text under a menu showed
+            // through its rows and neither could be read
+            Glass::Float => tone(0.1),
+        }
+    }
+
+    pub fn shadow(self) -> egui::Shadow {
+        let (y, blur, a) = match self {
+            Glass::Base => (10, 36, 84),
+            Glass::Raised => (3, 12, 70),
+            Glass::Float => (18, 56, 150),
+        };
+        egui::Shadow { offset: [0, y], blur, spread: 0, color: Color32::from_black_alpha(a) }
+    }
+
+    /// Opacity of the rim, of the top-left highlight and of the light inside at the top.
+    fn light(self) -> (u8, u8, u8) {
+        match self {
+            Glass::Base => (0x2A, 0x78, 0x12),
+            Glass::Raised => (0x36, 0x88, 0x18),
+            Glass::Float => (0x3C, 0x88, 0x0E),
+        }
+    }
+}
+
+/// A glass plate of `level`: shadow, `fill` and the light on it (`sheen`).
+pub fn material(rect: Rect, radius: f32, level: Glass, fill: Color32) -> egui::Shape {
     let r = radius.min(rect.height() / 2.0).min(rect.width() / 2.0);
-    let shadow = egui::Shadow { offset: [0, 6], blur: 22, spread: 0, color: Color32::from_black_alpha(46) };
-    let mut shapes = vec![shadow.as_shape(rect, CornerRadius::from(r)).into(), egui::Shape::rect_filled(rect, r, fill)];
-    shapes.push(egui::Shape::rect_stroke(rect, r, Stroke::new(1.0, Color32::from_white_alpha(0x1E)), StrokeKind::Inside));
-    // highlight: up the left edge, round the corner, along the top (fading out at both ends)
-    let (l, t) = (rect.left() + 0.5, rect.top() + 0.5);
-    let mut pts = vec![pos2(l, t + (rect.height() * 0.45).max(r))];
-    for k in 0..=8 {
-        let a = std::f32::consts::PI + k as f32 / 8.0 * std::f32::consts::FRAC_PI_2;
-        pts.push(pos2(l + r + r * a.cos(), t + r + r * a.sin()));
-    }
-    pts.push(pos2((l + r + rect.width() * 0.55).min(rect.right() - r), t));
-    let n = pts.len();
-    for (seg, alpha) in [(0..n / 2 + 1, 0x78u8), (n / 2..n, 0x38u8)] {
-        shapes.push(egui::Shape::line(pts[seg].to_vec(), Stroke::new(1.0, Color32::from_white_alpha(alpha))));
-    }
+    let mut shapes = Vec::with_capacity(8);
+    shapes.push(level.shadow().as_shape(rect, CornerRadius::from(r)).into());
+    shapes.push(egui::Shape::rect_filled(rect, r, fill));
+    sheen_into(&mut shapes, rect, r, level.light(), false);
     egui::Shape::Vec(shapes)
+}
+
+/// A base-level glass plate (cards, the sidebar).
+pub fn glass(rect: Rect, radius: f32, fill: Color32) -> egui::Shape {
+    material(rect, radius, Glass::Base, fill)
+}
+
+/// Only the light on a glass plate, for a frame egui filled itself (windows, modals): painted over its edge.
+pub fn sheen(p: &egui::Painter, rect: Rect, radius: f32, level: Glass) {
+    let mut shapes = Vec::with_capacity(6);
+    sheen_into(&mut shapes, rect, radius.min(rect.height() / 2.0).min(rect.width() / 2.0), level.light(), true);
+    p.add(egui::Shape::Vec(shapes));
+}
+
+fn sheen_into(out: &mut Vec<egui::Shape>, rect: Rect, r: f32, (rim, hi, glow): (u8, u8, u8), over: bool) {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let white = Color32::from_white_alpha;
+    // light from above inside the plate: one fan over the rounded outline, fading to nothing at the bottom
+    let inner = rect.shrink(1.0);
+    let ri = (r - 1.0).max(0.0);
+    const SEG: usize = 16; // per corner: fine enough that no corner shows its straight pieces
+    let shade = |y: f32| white((glow as f32 * (1.0 - (y - inner.top()) / inner.height().max(1.0))) as u8);
+    let mut m = egui::Mesh::default();
+    m.colored_vertex(inner.center(), shade(inner.center().y));
+    for (cx, cy, a0) in [(inner.left() + ri, inner.top() + ri, PI), (inner.right() - ri, inner.top() + ri, 1.5 * PI), (inner.right() - ri, inner.bottom() - ri, 0.0), (inner.left() + ri, inner.bottom() - ri, FRAC_PI_2)] {
+        for k in 0..=SEG {
+            let a = a0 + k as f32 / SEG as f32 * FRAC_PI_2;
+            let q = pos2(cx + ri * a.cos(), cy + ri * a.sin());
+            m.colored_vertex(q, shade(q.y));
+        }
+    }
+    let n = 4 * (SEG as u32 + 1);
+    for i in 0..n {
+        m.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+    }
+    let ring: Vec<Pos2> = m.vertices[1..].iter().map(|v| v.pos).collect();
+    for q in &ring {
+        // 1.5 px further in, at full strength; the vertices above become the clear outer edge
+        let c = pos2(q.x.clamp(inner.left() + ri, inner.right() - ri), q.y.clamp(inner.top() + ri, inner.bottom() - ri));
+        let d = *q - c;
+        let q2 = if d.length() > 1.5 { *q - d.normalized() * 1.5 } else { *q };
+        m.colored_vertex(q2, shade(q2.y));
+    }
+    m.indices.clear();
+    for i in 0..n {
+        let j = (i + 1) % n;
+        m.add_triangle(0, 1 + n + i, 1 + n + j); // the fan, on the inner ring
+        m.add_triangle(1 + i, 1 + j, 1 + n + i); // the feather between the rings
+        m.add_triangle(1 + j, 1 + n + j, 1 + n + i);
+    }
+    for v in &mut m.vertices[1..=n as usize] {
+        v.color = Color32::TRANSPARENT;
+    }
+    // with the dithered picture at hand, it carries the fade: the vertices only place it and feather its edge
+    let (ppp, tex) = GLOW.with(|g| (g.borrow().0, g.borrow().1.iter().find(|(s, _)| *s == glow).map(|(_, t)| *t)));
+    if let Some(tex) = tex {
+        for (i, v) in m.vertices.iter_mut().enumerate() {
+            v.uv = pos2(v.pos.x * ppp / GLOW_W as f32 + if over { 0.5 } else { 0.0 }, (v.pos.y - inner.top()) / inner.height().max(1.0));
+            if !(1..=n as usize).contains(&i) {
+                v.color = Color32::WHITE;
+            }
+        }
+        m.texture_id = tex;
+    }
+    out.push(egui::Shape::mesh(m));
+    out.push(egui::Shape::rect_stroke(rect, r, Stroke::new(1.0, white(rim)), StrokeKind::Inside));
+    let ra = (r - 1.0).max(0.0);
+    let steps = ((r * 0.8) as usize).clamp(6, 32);
+    let arc = |cx: f32, cy: f32, a0: f32| (0..=steps).map(move |k| a0 + k as f32 / steps as f32 * FRAC_PI_2).map(move |a| (pos2(cx + ra * a.cos(), cy + ra * a.sin()), 1.0));
+    let side = (rect.height() * 0.45).max(r);
+    // bright rim: fades in up the left edge, full round the top-left corner, then a specular streak that dies
+    // out along the top edge
+    let (l, t) = (rect.left() + 1.0, rect.top() + 1.0);
+    let (x0, x1) = (rect.left() + r, rect.right() - r);
+    let mut pts = Vec::with_capacity(steps + 5);
+    pts.push((pos2(l, rect.top() + side), 0.0));
+    pts.extend(arc(rect.left() + r, rect.top() + r, PI));
+    for (f, a) in [(0.25, 0.5), (0.6, 0.2), (1.0, 0.0)] {
+        pts.push((pos2(x0 + (x1 - x0) * f, t), a));
+    }
+    ribbon(out, &pts, true, hi);
+    // darker edge: fades in down the right side, full round the bottom-right corner, fades out along the bottom
+    let (rr, b) = (rect.right() - 1.0, rect.bottom() - 1.0);
+    pts.clear();
+    pts.push((pos2(rr, rect.bottom() - side), 0.0));
+    pts.extend(arc(rect.right() - r, rect.bottom() - r, 0.0));
+    pts.push((pos2((rr - r - rect.width() * 0.55).max(rect.left() + r), b), 0.0));
+    ribbon(out, &pts, false, 0x80);
+}
+
+/// A soft line through `pts` (place, strength 0..1) that fades along its length: a strip that has the colour on
+/// its middle and nothing 1.7 px to either side, so curves and slopes come out smooth (a plain 1 px line shows
+/// its pixels on a bright rim).
+fn ribbon(out: &mut Vec<egui::Shape>, pts: &[(Pos2, f32)], white: bool, alpha: u8) {
+    const HALF: f32 = 1.7;
+    let mut m = egui::Mesh::default();
+    let mut rows = 0u32;
+    for (i, &(q, k)) in pts.iter().enumerate() {
+        let (prev, next) = (pts[i.saturating_sub(1)].0, pts[(i + 1).min(pts.len() - 1)].0);
+        let d = next - prev;
+        if d.length() < 0.01 {
+            continue;
+        }
+        let n = d.normalized().rot90() * HALF;
+        let a = (alpha as f32 * k) as u8;
+        let col = if white { Color32::from_white_alpha(a) } else { Color32::from_black_alpha(a) };
+        m.colored_vertex(q - n, Color32::TRANSPARENT);
+        m.colored_vertex(q, col);
+        m.colored_vertex(q + n, Color32::TRANSPARENT);
+        if rows > 0 {
+            let v = (rows - 1) * 3;
+            for (a, b, c) in [(0, 1, 3), (1, 4, 3), (1, 2, 4), (2, 5, 4)] {
+                m.add_triangle(v + a, v + b, v + c);
+            }
+        }
+        rows += 1;
+    }
+    out.push(egui::Shape::mesh(m));
+}
+
+/// A raised glass capsule for a control (button, thumb, knob): fill and the same light as a glass plate, so its
+/// rim follows the curve (a straight highlight line on top read as a white bar). `rim` sets how strong.
+pub fn capsule(p: &egui::Painter, rect: Rect, fill: Color32, rim: u8) {
+    let r = (rect.height() / 2.0).min(rect.width() / 2.0);
+    let mut shapes = Vec::with_capacity(6);
+    shapes.push(egui::Shape::rect_filled(rect, r, fill));
+    sheen_into(&mut shapes, rect, r, (rim, (rim as u16 * 2).min(0x90) as u8, 0x18), false);
+    p.add(egui::Shape::Vec(shapes));
+}
+
+/// A floating glass panel (menu, popover, picker) around `add`: the top level, `margin` px of padding.
+pub fn float<R>(ui: &mut Ui, radius: f32, margin: i8, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let slot = ui.painter().add(egui::Shape::Noop);
+    let out = egui::Frame::new().inner_margin(Margin::same(margin)).show(ui, add);
+    ui.painter().set(slot, material(out.response.rect, radius, Glass::Float, Glass::Float.fill()));
+    out.inner
 }
 
 pub fn apply_visuals(ctx: &egui::Context) {
     let pal = p();
     let mut v = egui::Visuals::dark();
-    let zero = CornerRadius::same(8);
+    let zero = CornerRadius::same(12);
     v.override_text_color = Some(TEXT);
     v.panel_fill = pal.layer_bg;
-    v.window_fill = tone(0.13); // dialogs and menus are not blurred, so they stay opaque
+    v.window_fill = Glass::Float.fill();
     v.extreme_bg_color = pal.ink;
-    // Dialogs, menus and combo lists share one soft shape and shadow, like the custom popups.
-    let soft = egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(102) };
-    v.window_corner_radius = CornerRadius::same(16);
-    v.menu_corner_radius = CornerRadius::same(12);
+    // Dialogs, menus and combo lists are the floating glass level, like the custom popups.
+    let soft = Glass::Float.shadow();
+    v.window_corner_radius = CornerRadius::same(R_FLOAT as u8);
+    v.menu_corner_radius = CornerRadius::same(R_MENU as u8);
     v.window_shadow = soft;
     v.popup_shadow = soft;
-    v.window_stroke = Stroke::new(1.0, Color32::from_white_alpha(0x24));
+    v.window_stroke = Stroke::new(1.0, Color32::from_white_alpha(0x3C));
     v.selection.bg_fill = pal.accent_dark;
     v.selection.stroke = Stroke::new(1.0, TEXT);
     let w = &mut v.widgets;
@@ -378,7 +678,16 @@ pub fn apply_visuals(ctx: &egui::Context) {
     w.active.bg_fill = Color32::from_white_alpha(0x0A);
     w.active.weak_bg_fill = Color32::from_white_alpha(0x0A);
     ctx.set_visuals(v);
-    ctx.global_style_mut(|s| { s.spacing.item_spacing = vec2(8.0, 0.0); s.animation_time = 0.16; });
+    ctx.global_style_mut(|s| {
+        s.spacing.item_spacing = vec2(8.0, 0.0);
+        s.animation_time = 0.16;
+        // content keeps clear of the large corners
+        s.spacing.window_margin = Margin::same(18);
+        s.spacing.menu_margin = Margin::same(16); // egui modals take this one
+        // egui fades scrolled content into the panel's fill; on see-through glass that fill is a dark veil, so
+        // the fade showed as a darker box with hard edges over the messages
+        s.spacing.scroll.fade.strength = 0.0;
+    });
 }
 
 // ---------------------------------------------------------------- widgets
@@ -401,7 +710,10 @@ pub fn card_fill<R>(ui: &mut Ui, pad: (i8, i8, i8, i8), fill: Color32, add: impl
             }
             add(ui)
         });
-    ui.painter().set(slot, glass(out.response.rect, 16.0, fill));
+    if ui.is_rect_visible(out.response.rect.expand(40.0)) {
+        // rows scrolled out of view get no plate (the margin keeps their shadow while they are just outside)
+        ui.painter().set(slot, glass(out.response.rect, R_PANEL, fill));
+    }
     out.inner
 }
 
@@ -414,9 +726,15 @@ pub fn section(ui: &mut Ui, text: &str) {
 
 /// XAML button: default (ControlBg + 1px border) or accent (filled, bold OnAccent text).
 pub fn button(ui: &mut Ui, text: &str, accent: bool, pad: (f32, f32, f32, f32)) -> egui::Response {
+    button_tint(ui, text, accent, None, pad)
+}
+
+/// Like `button`, with a solid `tint` fill (e.g. DANGER) and white text instead of the accent.
+pub fn button_tint(ui: &mut Ui, text: &str, accent: bool, tint: Option<Color32>, pad: (f32, f32, f32, f32)) -> egui::Response {
     let pal = p();
+    let accent = accent || tint.is_some();
     let family = if accent { on_light() } else { FontFamily::Proportional };
-    let color = if accent { pal.on_accent } else { TEXT };
+    let color = if tint.is_some() { Color32::BLACK } else if accent { pal.on_accent } else { TEXT };
     let size = {
         let g = ui.painter().layout_no_wrap(text.to_string(), FontId::new(14.0, family.clone()), color);
         vec2(g.size().x + pad.0 + pad.2, g.size().y + pad.1 + pad.3)
@@ -424,16 +742,16 @@ pub fn button(ui: &mut Ui, text: &str, accent: bool, pad: (f32, f32, f32, f32)) 
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
     // pill that grows 5% under the pointer and shrinks 4% while pressed (text grows with it)
     let ctx = ui.ctx().clone();
-    let hov = ctx.animate_bool_with_time(resp.id.with("hover"), resp.hovered(), 0.12);
-    let down = ctx.animate_bool_with_time(resp.id.with("down"), resp.is_pointer_button_down_on(), 0.08);
+    let ease = egui::emath::easing::cubic_out;
+    let hov = ctx.animate_bool_with_time_and_easing(resp.id.with("hover"), resp.hovered(), 0.14, ease);
+    let down = ctx.animate_bool_with_time_and_easing(resp.id.with("down"), resp.is_pointer_button_down_on(), 0.12, ease);
     let s = 1.0 + 0.05 * hov - 0.09 * down;
     let plate = Rect::from_center_size(rect.center(), rect.size() * s);
     let paint = ui.painter();
     if accent {
-        paint.rect_filled(plate, plate.height() / 2.0, pal.accent.lerp_to_gamma(Color32::WHITE, 0.12 * hov));
+        capsule(paint, plate, tint.unwrap_or(pal.accent).lerp_to_gamma(Color32::WHITE, 0.12 * hov), 0x68);
     } else {
-        paint.rect_filled(plate, plate.height() / 2.0, Color32::from_white_alpha(20 + (16.0 * hov) as u8));
-        paint.rect_stroke(plate, plate.height() / 2.0, Stroke::new(1.0, Color32::from_white_alpha(0x2A + (16.0 * hov) as u8)), StrokeKind::Inside);
+        capsule(paint, plate, Color32::from_white_alpha(0x18 + (16.0 * hov) as u8), 0x38 + (16.0 * hov) as u8);
     }
     let galley = paint.layout_no_wrap(text.to_string(), FontId::new(14.0 * s, family), color);
     paint.galley(pos2(plate.left() + pad.0 * s, plate.top() + pad.1 * s), galley, color);
@@ -469,18 +787,91 @@ pub fn switch(ui: &mut Ui, on: bool) -> egui::Response {
     let rect = slot.scale_from_center(1.0 + 0.05 * hov);
     let paint = ui.painter();
     let off_bg = Color32::from_white_alpha(0x24 + (10.0 * hov) as u8);
-    paint.rect_filled(rect, rect.height() / 2.0, off_bg.lerp_to_gamma(pal.accent, t));
-    paint.rect_stroke(rect, rect.height() / 2.0, Stroke::new(1.0, Color32::from_white_alpha(0x30)), StrokeKind::Inside);
-    let kw = 24.0 + 8.0 * held;
-    let kh = 20.0 + 4.0 * held;
+    // the track is a well: shade under its top edge, light on its bottom one
+    let rad = rect.height() / 2.0;
+    paint.rect_filled(rect, rad, off_bg.lerp_to_gamma(pal.accent, t));
+    paint.rect_stroke(rect, rad, Stroke::new(1.0, Color32::from_white_alpha(0x30)), StrokeKind::Inside);
+    paint.line_segment([pos2(rect.left() + rad * 0.7, rect.top() + 1.5), pos2(rect.right() - rad * 0.7, rect.top() + 1.5)], Stroke::new(1.0, Color32::from_black_alpha(0x30)));
+    // glass knob: stretches sideways while pressed
+    let kw = 24.0 + 10.0 * held;
+    let kh = 20.0 + 3.0 * held;
     let half = kw / 2.0 + 3.0;
     let cx = egui::lerp((rect.left() + half)..=(rect.right() - half), t) + wobble;
     let knob = Rect::from_center_size(pos2(cx, rect.center().y), vec2(kw, kh));
     let off_knob = Color32::WHITE;
     let fill = off_knob.lerp_to_gamma(pal.on_accent, t);
-    paint.rect_filled(knob, kh / 2.0, fill.gamma_multiply(1.0 - 0.7 * held));
-    paint.rect_stroke(knob, kh / 2.0, Stroke::new(1.0, Color32::from_white_alpha((0x50 as f32 + 0xA0 as f32 * held) as u8)), StrokeKind::Inside);
+    paint.add(egui::Shadow { offset: [0, 2], blur: 6, spread: 0, color: Color32::from_black_alpha(70) }.as_shape(knob, CornerRadius::from(kh / 2.0)));
+    capsule(paint, knob, fill.gamma_multiply(1.0 - 0.7 * held), (0x50 as f32 + 0x2F as f32 * held) as u8);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// One row of segmented tabs: the first tab of a frame takes a shape slot under all of them, every tab redraws
+/// the track and the glass thumb into it.
+#[derive(Clone, Copy)]
+struct TabRow {
+    pass: u64,
+    slot: egui::layers::ShapeIdx,
+    /// Top left of the first tab; the thumb is kept relative to it, so scrolling does not animate it.
+    origin: Pos2,
+    right: f32,
+    /// Thumb travel: from, to (both relative to `origin`) and when it set off.
+    from: Rect,
+    to: Rect,
+    t0: f64,
+}
+
+const TAB_SLIDE: f32 = 0.3;
+
+fn tab_plate(ui: &Ui, rect: Rect, selected: bool) {
+    let ctx = ui.ctx();
+    let id = ui.id().with("tab_row");
+    let pass = ctx.cumulative_pass_nr();
+    let now = ctx.input(|i| i.time);
+    let old = ctx.data(|d| d.get_temp::<TabRow>(id));
+    let mut row = match old {
+        Some(mut r) if r.pass == pass => {
+            r.right = r.right.max(rect.right());
+            r
+        }
+        _ => {
+            let slot = ui.painter().add(egui::Shape::Noop);
+            let (from, to, t0) = old.map_or((Rect::NOTHING, Rect::NOTHING, 0.0), |r| (r.from, r.to, r.t0));
+            TabRow { pass, slot, origin: rect.min, right: rect.right(), from, to, t0 }
+        }
+    };
+    if selected {
+        let rel = rect.translate(-row.origin.to_vec2());
+        if row.to == Rect::NOTHING {
+            (row.from, row.to) = (rel, rel); // first time on screen: no travel
+        } else if (rel.min - row.to.min).length() > 0.5 || (rel.width() - row.to.width()).abs() > 0.5 {
+            row.from = thumb_at(&row, now);
+            row.to = rel;
+            row.t0 = now;
+        }
+    }
+    let mut shapes = Vec::with_capacity(8);
+    let track = Rect::from_min_max(row.origin, pos2(row.right, rect.bottom())).expand(3.0);
+    shapes.push(egui::Shape::rect_filled(track, track.height() / 2.0, Color32::from_black_alpha(0x38)));
+    shapes.push(egui::Shape::rect_stroke(track, track.height() / 2.0, Stroke::new(1.0, Color32::from_white_alpha(0x16)), StrokeKind::Inside));
+    if row.to != Rect::NOTHING {
+        let thumb = thumb_at(&row, now).translate(row.origin.to_vec2());
+        shapes.push(material(thumb, thumb.height() / 2.0, Glass::Raised, Color32::from_white_alpha(0x34)));
+        if (now - row.t0) < TAB_SLIDE as f64 {
+            ctx.request_repaint();
+        }
+    }
+    ui.painter().set(row.slot, egui::Shape::Vec(shapes));
+    ctx.data_mut(|d| d.insert_temp(id, row));
+}
+
+/// Where the thumb is now: it eases into its target and never passes it (user choice: no spring).
+fn thumb_at(row: &TabRow, now: f64) -> Rect {
+    slide(row.from, row.to, ((now - row.t0) as f32) / TAB_SLIDE)
+}
+
+fn slide(from: Rect, to: Rect, t: f32) -> Rect {
+    let k = egui::emath::easing::cubic_out(t.clamp(0.0, 1.0));
+    Rect::from_min_size(from.min + (to.min - from.min) * k, from.size() + (to.size() - from.size()) * k)
 }
 
 pub fn spark(ui: &mut Ui, values: &[f32], height: f32) {
@@ -577,18 +968,17 @@ pub fn subtle_button_bleed(ui: &mut Ui, text: &str, pad: (f32, f32, f32, f32), b
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// `TabItem` radio tab: hover tint, selected = accent fill with bold OnAccent text. Padding 15,6,15,7.
+/// One tab of a segmented row (call it for each tab inside one `ui.horizontal`): the row has a dark track and a
+/// glass thumb that slides to the selected tab. Padding 15,6,15,7.
 pub fn tab(ui: &mut Ui, text: &str, selected: bool) -> egui::Response {
-    let pal = p();
-    let font = if selected { FontId::new(14.0, bold()) } else { FontId::proportional(14.0) };
-    let fg = if selected { pal.on_accent } else { text2() };
+    let font = if selected { FontId::new(14.0, semibold()) } else { FontId::proportional(14.0) };
+    let fg = if selected { TEXT } else { text2() };
     let galley = ui.painter().layout_no_wrap(text.to_string(), font, fg);
     let size = vec2(galley.size().x + 30.0, galley.size().y + 13.0);
     let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+    tab_plate(ui, rect, selected);
     let paint = ui.painter();
-    if selected {
-        paint.rect_filled(rect, rect.height() / 2.0, pal.accent);
-    } else if resp.hovered() {
+    if !selected && resp.hovered() {
         paint.rect_filled(rect, rect.height() / 2.0, Color32::from_white_alpha(0x14));
     }
     let col = if !selected && resp.hovered() { TEXT } else { fg };
@@ -602,4 +992,132 @@ pub fn tone(v: f32) -> Color32 {
     let a = p().accent;
     let (h, s, _) = to_hsv([a.r() as f32, a.g() as f32, a.b() as f32]);
     from_hsv(h, 0.33 * (s / 0.3).min(1.0), v)
+}
+
+/// A small pick chip (one of several choices, a filter, a category): a glass capsule, filled with the accent
+/// when it is the chosen one. 28 px high unless `min_size` asks for more.
+pub struct Choice {
+    text: String,
+    on: bool,
+    min: Vec2,
+}
+
+impl Choice {
+    pub fn new(text: impl Into<String>, on: bool) -> Choice {
+        Choice { text: text.into(), on, min: vec2(0.0, 28.0) }
+    }
+
+    pub fn min_size(mut self, min: Vec2) -> Choice {
+        self.min = min;
+        self
+    }
+}
+
+impl egui::Widget for Choice {
+    fn ui(self, ui: &mut Ui) -> egui::Response {
+        let pal = p();
+        let fg = if self.on { pal.on_accent } else { text2() };
+        let family = if self.on { on_light() } else { semibold() };
+        let galley = ui.painter().layout_no_wrap(self.text, FontId::new(13.0, family), fg);
+        let size = vec2((galley.size().x + 26.0).max(self.min.x), (galley.size().y + 10.0).max(self.min.y));
+        let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
+        let hov = ui.ctx().animate_bool_with_time_and_easing(resp.id.with("hover"), resp.hovered(), 0.14, egui::emath::easing::cubic_out);
+        if self.on {
+            capsule(ui.painter(), rect, pal.accent.lerp_to_gamma(Color32::WHITE, 0.12 * hov), 0x68);
+        } else {
+            capsule(ui.painter(), rect, Color32::from_white_alpha(0x18 + (16.0 * hov) as u8), 0x30);
+        }
+        let at = rect.center() - galley.size() / 2.0;
+        ui.painter().galley(at, galley, fg);
+        resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `fg` (maybe translucent) drawn over opaque `bg`.
+    fn over(bg: Color32, fg: Color32) -> Color32 {
+        let a = fg.a() as f32 / 255.0;
+        // `fg` is premultiplied
+        Color32::from_rgb((fg.r() as f32 + bg.r() as f32 * (1.0 - a)) as u8, (fg.g() as f32 + bg.g() as f32 * (1.0 - a)) as u8, (fg.b() as f32 + bg.b() as f32 * (1.0 - a)) as u8)
+    }
+
+    fn ratio(a: Color32, b: Color32) -> f32 {
+        let (x, y) = (lum(a), lum(b));
+        (x.max(y) + 0.05) / (x.min(y) + 0.05)
+    }
+
+    /// The tab thumb never passes its target, however far it slides.
+    #[test]
+    fn tab_thumb_stays_near_target() {
+        let from = Rect::from_min_size(pos2(0.0, 0.0), vec2(80.0, 30.0));
+        let to = Rect::from_min_size(pos2(250.0, 0.0), vec2(150.0, 30.0));
+        for i in 0..=100 {
+            let r = slide(from, to, i as f32 / 100.0);
+            assert!(r.left() <= to.left() + 0.01 && r.right() <= to.right() + 0.01, "{r:?}");
+        }
+        assert_eq!(slide(from, to, 1.0), to);
+    }
+
+    /// The accent is one global: tests that set it run one at a time.
+    static ACCENT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The backdrop picture follows the unrounded colour: averaged over a block, rounding leaves no step.
+    #[test]
+    fn backdrop_has_no_bands() {
+        let _one = ACCENT.lock().unwrap_or_else(|e| e.into_inner());
+        set_accent_value("#F2F2F2");
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(1184.0, 784.0));
+        let (ow, oh) = (592, 392);
+        let (img, f) = (backdrop_image(rect, ow, oh), field(rect));
+        for by in 0..oh / 16 {
+            for bx in 0..ow / 16 {
+                let (mut got, mut want) = ([0.0f32; 3], [0.0f32; 3]);
+                for y in by * 16..by * 16 + 16 {
+                    for x in bx * 16..bx * 16 + 16 {
+                        let (c, w) = (img.pixels[y * ow + x], f(pos2(x as f32 * 2.0 + 1.0, y as f32 * 2.0 + 1.0)));
+                        for (k, v) in [c.r(), c.g(), c.b()].into_iter().enumerate() {
+                            got[k] += v as f32 / 256.0;
+                            want[k] += w[k] / 256.0;
+                        }
+                    }
+                }
+                for k in 0..3 {
+                    assert!((got[k] - want[k]).abs() < 0.2, "block {bx},{by} channel {k}: {} vs {}", got[k], want[k]);
+                }
+            }
+        }
+    }
+
+    /// Text keeps 4.5:1 on every glass level over the brightest backdrop spot, for each accent.
+    #[test]
+    fn text_contrast_on_glass() {
+        let _one = ACCENT.lock().unwrap_or_else(|e| e.into_inner());
+        let rect = Rect::from_min_size(pos2(0.0, 0.0), vec2(1180.0, 780.0));
+        for hex in ["#FF5A0A", "#F2F2F2", "#FF3B30", "#FFD400", "#34C759", "#00C7BE", "#0A84FF", "#BF5AF2", "#FF2D92"] {
+            set_accent_value(hex);
+            let mut worst = Color32::BLACK;
+            for y in (0..=780).step_by(20) {
+                for x in (0..=1180).step_by(20) {
+                    let c = backdrop_at(rect, pos2(x as f32, y as f32));
+                    if lum(c) > lum(worst) {
+                        worst = c;
+                    }
+                }
+            }
+            // a panel adds its fill and, at its top, the light inside; a control on it adds its own fill
+            let glow = |l: Glass| Color32::from_white_alpha(l.light().2);
+            let base = over(over(worst, Glass::Base.fill()), glow(Glass::Base));
+            let raised = over(over(base, Glass::Raised.fill()), glow(Glass::Raised));
+            let float = over(over(base, Glass::Float.fill()), glow(Glass::Float));
+            for (name, bg, texts) in [("base", base, &[TEXT, text2(), text3()][..]), ("raised", raised, &[TEXT][..]), ("float", float, &[TEXT, text2(), text3()][..])] {
+                for &fg in texts {
+                    let r = ratio(over(bg, fg), bg);
+                    assert!(r >= 4.5, "{hex} {name}: {r:.2}:1 for text alpha {}", fg.a());
+                }
+            }
+        }
+    }
 }

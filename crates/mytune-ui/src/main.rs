@@ -24,9 +24,65 @@ fn show(ctx: &egui::Context) {
     ctx.request_repaint();
 }
 
+/// True when another MyTune already runs: its window is brought to the front and this start should end.
+/// The named mutex is held until this process exits.
+fn already_running() -> bool {
+    use windows_sys::Win32::{Foundation::{GetLastError, ERROR_ALREADY_EXISTS}, System::Threading::CreateMutexW, UI::WindowsAndMessaging::*};
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    unsafe {
+        CreateMutexW(std::ptr::null(), 0, wide("Local\\MyTuneRs.SingleInstance").as_ptr());
+        if GetLastError() != ERROR_ALREADY_EXISTS {
+            return false;
+        }
+        raise();
+        true
+    }
+}
+
+/// Shows MyTune's window (hidden in the tray, minimised or behind others) and puts it in front.
+fn raise() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::*;
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    unsafe {
+        // "Window Class" is winit's class name: an Explorer window of a folder named MyTune must not match
+        let w = FindWindowW(wide("Window Class").as_ptr(), wide("MyTune").as_ptr());
+        if !w.is_null() {
+            ShowWindow(w, if IsIconic(w) != 0 { SW_RESTORE } else { SW_SHOW });
+            SetForegroundWindow(w);
+        }
+    }
+}
+
+/// Win+Y from anywhere brings the window up (out of the tray too). The hotkey lives on its own thread:
+/// `WM_HOTKEY` goes to the thread that registered it, and winit's loop would drop it.
+fn open_hotkey(ctx: egui::Context) {
+    use windows_sys::Win32::UI::{Input::KeyboardAndMouse::{RegisterHotKey, MOD_NOREPEAT, MOD_WIN}, WindowsAndMessaging::{GetMessageW, MSG, WM_HOTKEY}};
+    std::thread::spawn(move || unsafe {
+        if RegisterHotKey(std::ptr::null_mut(), 1, MOD_WIN | MOD_NOREPEAT, b'Y' as u32) == 0 {
+            mytune_core::log::info("Win+Y is taken by another program: the open-MyTune hotkey is off");
+            return;
+        }
+        let mut msg: MSG = std::mem::zeroed();
+        while GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) > 0 {
+            if msg.message == WM_HOTKEY {
+                show(&ctx);
+                raise(); // this thread got the key press, so Windows lets it take the foreground
+            }
+        }
+    });
+}
+
 fn main() -> eframe::Result {
     // Go Live and the share picker's screen pictures run in a copy of this exe; it opens no window.
     mytune_chat::run_stream_worker();
+    // Setup runs this after it removed the C# MyTune, whose uninstaller deletes the "Start with Windows" task.
+    if std::env::args().any(|a| a == "--enable-autostart") {
+        mytune_core::autostart::enable();
+        return Ok(());
+    }
+    if already_running() {
+        return Ok(());
+    }
     let hidden = std::env::args().any(|a| a == "--minimized");
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -35,6 +91,9 @@ fn main() -> eframe::Result {
             .with_decorations(false)
             .with_visible(!hidden)
             .with_title("MyTune").with_icon(std::sync::Arc::new(window_icon())),
+        // egui's dither uses the same noise for every shape, so it adds up through stacked see-through layers
+        // (2-level grain on the chat page); the backdrop picture is dithered once by `theme::backdrop_image`
+        dithering: false,
         ..Default::default()
     };
     eframe::run_native("MyTune", opts, Box::new(move |cc| {
@@ -51,6 +110,7 @@ fn main() -> eframe::Result {
                 show(&ctx);
             }
         }));
+        open_hotkey(cc.egui_ctx.clone());
         let ctx = cc.egui_ctx.clone();
         TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
             if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = e {

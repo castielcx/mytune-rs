@@ -2,7 +2,7 @@
 //! what it offers (`Application::menu_choices`, as Yapfast's own menus do); this draws those choices and turns
 //! a pick into an engine action: Mark As Read, Invite People, Mute for a time, notification levels and the
 //! server switches, Server Settings, channel create/edit/duplicate/delete, Leave Server, copy link and ID.
-//! Submenus (mute times, levels) open in place under their row.
+//! Submenus (mute times, levels) open beside their row, as Discord's do (`arrow_row`, `flyout`).
 
 use super::voice::{glyph, k_edge, k_panel, k_raised, QUICK};
 use super::*;
@@ -38,12 +38,47 @@ fn close(ctx: &egui::Context) {
 
 const W: f32 = 240.0;
 
-fn row(ui: &mut Ui, g: &str, text: &str, danger: bool, chevron: bool, checked: Option<bool>) -> bool {
+pub(super) fn row(ui: &mut Ui, g: &str, text: &str, danger: bool, chevron: bool, checked: Option<bool>) -> bool {
+    row_resp(ui, g, text, danger, chevron, checked, false).clicked()
+}
+
+/// A row with an arrow that has a submenu beside it; it stays lit while that submenu is `open`.
+pub(super) fn arrow_row(ui: &mut Ui, g: &str, text: &str, open: bool) -> egui::Response {
+    row_resp(ui, g, text, false, true, None, open)
+}
+
+/// The submenu of an `arrow_row`: its own panel beside the menu, level with the row; left of the menu when
+/// the right has no room. Returns where it is, so the menu can count clicks in it as its own.
+pub(super) fn flyout(ctx: &egui::Context, id: egui::Id, row: egui::Rect, menu: egui::Rect, add: impl FnOnce(&mut Ui)) -> egui::Rect {
+    let w = W + 12.0;
+    let x = if menu.right() + 4.0 + w <= ctx.content_rect().right() { menu.right() + 4.0 } else { menu.left() - 4.0 - w };
+    let shown = egui::Area::new(id).order(egui::Order::Foreground).fixed_pos(egui::pos2(x, row.top() - 6.0)).constrain(true).show(ctx, |ui| {
+        crate::theme::float(ui, crate::theme::R_MENU, 6, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            add(ui);
+        });
+    });
+    ctx.move_to_top(shown.response.layer_id);
+    shown.response.rect
+}
+
+/// True when the pointer rests on another row of the menu: the submenu closes then. Crossing other rows on
+/// the way to the submenu keeps it open.
+pub(super) fn left_sub(ctx: &egui::Context, menu: egui::Rect, row: egui::Rect, sub: egui::Rect) -> bool {
+    ctx.input(|i| {
+        i.pointer.hover_pos().is_some_and(|p| {
+            let toward = i.pointer.velocity().x * (sub.center().x - menu.center().x).signum();
+            menu.contains(p) && !sub.contains(p) && !row.expand2(vec2(8.0, 0.0)).contains(p) && toward < 20.0
+        })
+    })
+}
+
+fn row_resp(ui: &mut Ui, g: &str, text: &str, danger: bool, chevron: bool, checked: Option<bool>, lit: bool) -> egui::Response {
     let c = if danger { DANGER } else { SECONDARY };
     let (r, resp) = ui.allocate_exact_size(vec2(W, 32.0), Sense::click());
-    let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
+    let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered() || lit, QUICK);
     if t > 0.0 {
-        ui.painter().rect_filled(r, 4.0, (if danger { DANGER } else { p().accent }).gamma_multiply(0.25 * t));
+        ui.painter().rect_filled(r, 10.0, (if danger { DANGER } else { p().accent }).gamma_multiply(0.25 * t));
     }
     let col = c.lerp_to_gamma(TEXT, t);
     glyph(ui.painter(), egui::pos2(r.left() + 16.0, r.center().y), g, 14.0, col, false);
@@ -55,20 +90,20 @@ fn row(ui: &mut Ui, g: &str, text: &str, danger: bool, chevron: bool, checked: O
         let b = egui::Rect::from_center_size(egui::pos2(r.right() - 18.0, r.center().y), vec2(16.0, 16.0));
         ui.painter().rect(b, 3.0, if on { p().accent } else { Color32::TRANSPARENT }, egui::Stroke::new(1.5, if on { p().accent } else { MUTED }), egui::StrokeKind::Inside);
     }
-    resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// A row of a submenu, indented, with a tick on the chosen one.
-fn sub_row(ui: &mut Ui, text: &str, note: &str, on: bool) -> bool {
+/// A row of a submenu, with a tick on the chosen one.
+pub(super) fn sub_row(ui: &mut Ui, text: &str, note: &str, on: bool) -> bool {
     let (r, resp) = ui.allocate_exact_size(vec2(W, if note.is_empty() { 28.0 } else { 40.0 }), Sense::click());
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
     if t > 0.0 {
-        ui.painter().rect_filled(r, 4.0, p().accent.gamma_multiply(0.2 * t));
+        ui.painter().rect_filled(r, 10.0, p().accent.gamma_multiply(0.2 * t));
     }
     let y = if note.is_empty() { r.center().y } else { r.top() + 14.0 };
-    ui.painter().text(egui::pos2(r.left() + 36.0, y), egui::Align2::LEFT_CENTER, text, egui::FontId::proportional(13.5), if on { TEXT } else { SECONDARY });
+    ui.painter().text(egui::pos2(r.left() + 14.0, y), egui::Align2::LEFT_CENTER, text, egui::FontId::proportional(13.5), if on { TEXT } else { SECONDARY });
     if !note.is_empty() {
-        ui.painter().text(egui::pos2(r.left() + 36.0, r.top() + 29.0), egui::Align2::LEFT_CENTER, note, egui::FontId::proportional(11.5), MUTED);
+        ui.painter().text(egui::pos2(r.left() + 14.0, r.top() + 29.0), egui::Align2::LEFT_CENTER, note, egui::FontId::proportional(11.5), MUTED);
     }
     if on {
         glyph(ui.painter(), egui::pos2(r.right() - 18.0, r.center().y), "\u{E73E}", 13.0, p().accent, false);
@@ -76,14 +111,14 @@ fn sub_row(ui: &mut Ui, text: &str, note: &str, on: bool) -> bool {
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
-fn sep(ui: &mut Ui) {
+pub(super) fn sep(ui: &mut Ui) {
     ui.add_space(3.0);
     let (r, _) = ui.allocate_exact_size(vec2(W, 1.0), Sense::hover());
     ui.painter().rect_filled(r.shrink2(vec2(8.0, 0.0)), 0.0, super::k_line());
     ui.add_space(3.0);
 }
 
-fn mute_text(m: Muting) -> String {
+pub(super) fn mute_text(m: Muting) -> String {
     match m {
         Muting::Minutes(15) => "For 15 minutes".into(),
         Muting::Minutes(60) => "For 1 hour".into(),
@@ -115,12 +150,22 @@ pub fn show(ctx: &egui::Context, app: &Application, acts: &mut Vec<Action>) {
     let screen = ctx.content_rect();
     let pos = egui::pos2(st.at.x.min(screen.right() - W - 24.0), st.at.y.min(screen.bottom() - 520.0).max(screen.top()));
     let mut done = false;
+    let mut sub_at = None; // the arrow row whose submenu is open
     let notes = app.notifications(&id);
     let snotes = if server { app.server_notifications(&id) } else { None };
     let shown = egui::Area::new(egui::Id::new("place_menu_area")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
-        egui::Frame::new().fill(k_panel()).stroke(egui::Stroke::new(1.0, k_edge())).corner_radius(8.0).inner_margin(egui::Margin::same(6)).shadow(egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(0x66) }).show(ui, |ui| {
+        crate::theme::float(ui, crate::theme::R_MENU, 6, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             let mut last_group = 0;
+            // UI-only row: a text channel or DM other than the open one shows beside it
+            let st8 = &app.state;
+            if st8.selected.as_ref().is_some_and(|sel| *sel != id) && st8.rooms.iter().any(|r| r.id == id && !r.forum && !r.voice && !r.locked) {
+                if row(ui, "\u{E90D}", "Open Side by Side", false, false, None) {
+                    acts.push(Action::OpenBeside(id.clone()));
+                    done = true;
+                }
+                sep(ui);
+            }
             for c in &choices {
                 // groups, so separators fall where Discord's menus have them
                 let group = match c {
@@ -193,16 +238,12 @@ pub fn show(ctx: &egui::Context, app: &Application, acts: &mut Vec<Action>) {
                                 done = true;
                             }
                         } else {
-                            if row(ui, "\u{E7ED}", &format!("Mute {what}"), false, true, None) {
-                                st.sub = if st.sub == Some(Sub::Mute) { None } else { Some(Sub::Mute) };
+                            let r = arrow_row(ui, "\u{E7ED}", &format!("Mute {what}"), st.sub == Some(Sub::Mute));
+                            if r.hovered() || r.clicked() {
+                                st.sub = Some(Sub::Mute);
                             }
                             if st.sub == Some(Sub::Mute) {
-                                for m in MUTE_TIMES {
-                                    if sub_row(ui, &mute_text(m), "", false) {
-                                        acts.push(if dm { Action::MuteDm { room: id.clone(), muting: m } } else { Action::ChangeNotifications { place: id.clone(), change: NotificationChange::Mute(m) } });
-                                        done = true;
-                                    }
-                                }
+                                sub_at = Some(r.rect);
                             }
                         }
                     }
@@ -219,42 +260,12 @@ pub fn show(ctx: &egui::Context, app: &Application, acts: &mut Vec<Action>) {
                         }
                     }
                     MenuChoice::ServerNotifications | MenuChoice::ChannelNotifications => {
-                        if row(ui, "\u{E7E7}", "Notification Settings", false, true, None) {
-                            st.sub = if st.sub == Some(Sub::Levels) { None } else { Some(Sub::Levels) };
+                        let r = arrow_row(ui, "\u{E7E7}", "Notification Settings", st.sub == Some(Sub::Levels));
+                        if r.hovered() || r.clicked() {
+                            st.sub = Some(Sub::Levels);
                         }
                         if st.sub == Some(Sub::Levels) {
-                            if server {
-                                if let Some(sn) = snotes {
-                                    let current = sn.own.level.unwrap_or(sn.own.inherited);
-                                    for l in [NotifyLevel::All, NotifyLevel::Mentions, NotifyLevel::Nothing] {
-                                        if sub_row(ui, level_text(l), "", l == current) {
-                                            acts.push(Action::ChangeNotifications { place: id.clone(), change: NotificationChange::Level(Some(l)) });
-                                            done = true;
-                                        }
-                                    }
-                                    sep(ui);
-                                    if sub_row(ui, "Suppress @everyone and @here", "", sn.suppress_everyone) {
-                                        acts.push(Action::ChangeNotifications { place: id.clone(), change: NotificationChange::SuppressEveryone(!sn.suppress_everyone) });
-                                        done = true;
-                                    }
-                                    if sub_row(ui, "Suppress all role @mentions", "", sn.suppress_roles) {
-                                        acts.push(Action::ChangeNotifications { place: id.clone(), change: NotificationChange::SuppressRoles(!sn.suppress_roles) });
-                                        done = true;
-                                    }
-                                }
-                            } else if let Some(n) = notes {
-                                let default = if app.category_of(&id).is_some() { "Use category default" } else { "Use server default" };
-                                if sub_row(ui, default, level_text(n.inherited), n.level.is_none()) {
-                                    acts.push(Action::ChangeNotifications { place: id.clone(), change: NotificationChange::Level(None) });
-                                    done = true;
-                                }
-                                for l in [NotifyLevel::All, NotifyLevel::Mentions, NotifyLevel::Nothing] {
-                                    if sub_row(ui, level_text(l), "", n.level == Some(l)) {
-                                        acts.push(Action::ChangeNotifications { place: id.clone(), change: NotificationChange::Level(Some(l)) });
-                                        done = true;
-                                    }
-                                }
-                            }
+                            sub_at = Some(r.rect);
                         }
                     }
                     MenuChoice::HideMuted => {
@@ -373,8 +384,59 @@ pub fn show(ctx: &egui::Context, app: &Application, acts: &mut Vec<Action>) {
     let _ = k_raised;
     // closes on a click outside it (any button, though a new right click just moves it) and on scrolling
     let rect = shown.response.rect;
+    let mut sub_rect = None;
+    if let (Some(sub), Some(at)) = (st.sub, sub_at) {
+        let r = flyout(ctx, key().with(sub as u8), at, rect, |ui| match sub {
+            Sub::Mute => {
+                for m in MUTE_TIMES {
+                    if sub_row(ui, &mute_text(m), "", false) {
+                        acts.push(if dm { Action::MuteDm { room: id.clone(), muting: m } } else { Action::ChangeNotifications { place: id.clone(), change: NotificationChange::Mute(m) } });
+                        done = true;
+                    }
+                }
+            }
+            Sub::Levels => {
+                if server {
+                    if let Some(sn) = snotes {
+                        let current = sn.own.level.unwrap_or(sn.own.inherited);
+                        for l in [NotifyLevel::All, NotifyLevel::Mentions, NotifyLevel::Nothing] {
+                            if sub_row(ui, level_text(l), "", l == current) {
+                                acts.push(Action::ChangeNotifications { place: id.clone(), change: NotificationChange::Level(Some(l)) });
+                                done = true;
+                            }
+                        }
+                        sep(ui);
+                        if sub_row(ui, "Suppress @everyone and @here", "", sn.suppress_everyone) {
+                            acts.push(Action::ChangeNotifications { place: id.clone(), change: NotificationChange::SuppressEveryone(!sn.suppress_everyone) });
+                            done = true;
+                        }
+                        if sub_row(ui, "Suppress all role @mentions", "", sn.suppress_roles) {
+                            acts.push(Action::ChangeNotifications { place: id.clone(), change: NotificationChange::SuppressRoles(!sn.suppress_roles) });
+                            done = true;
+                        }
+                    }
+                } else if let Some(n) = notes {
+                    let default = if app.category_of(&id).is_some() { "Use category default" } else { "Use server default" };
+                    if sub_row(ui, default, level_text(n.inherited), n.level.is_none()) {
+                        acts.push(Action::ChangeNotifications { place: id.clone(), change: NotificationChange::Level(None) });
+                        done = true;
+                    }
+                    for l in [NotifyLevel::All, NotifyLevel::Mentions, NotifyLevel::Nothing] {
+                        if sub_row(ui, level_text(l), "", n.level == Some(l)) {
+                            acts.push(Action::ChangeNotifications { place: id.clone(), change: NotificationChange::Level(Some(l)) });
+                            done = true;
+                        }
+                    }
+                }
+            }
+        });
+        if left_sub(ctx, rect, at, r) {
+            st.sub = None;
+        }
+        sub_rect = Some(r);
+    }
     let clicked_away = ctx.input(|i| {
-        let outside = i.pointer.interact_pos().is_none_or(|p| !rect.contains(p));
+        let outside = i.pointer.interact_pos().is_none_or(|p| !rect.contains(p) && !sub_rect.is_some_and(|r| r.contains(p)));
         (i.pointer.any_pressed() && outside) || i.smooth_scroll_delta != egui::Vec2::ZERO || i.raw.events.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. }))
     });
     if done || clicked_away || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {

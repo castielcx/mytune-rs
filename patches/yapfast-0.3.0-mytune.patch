@@ -1,5 +1,538 @@
+diff --git a/crates/yapfast-core/src/application.rs b/crates/yapfast-core/src/application.rs
+index 5cbb066..0b65990 100644
+--- a/crates/yapfast-core/src/application.rs
++++ b/crates/yapfast-core/src/application.rs
+@@ -1262,6 +1262,8 @@ pub enum Action {
+     /// Show a Discord thread beside the open channel, as its link in a
+     /// message does; anything else opens as [`Action::Open`] does.
+     OpenAside(String),
++    /// Show any channel or DM beside the open one (MyTune's split view).
++    OpenBeside(String),
+     CloseAside,
+     /// Show the thread beside the open channel in place of it.
+     ExpandAside,
+@@ -1279,6 +1281,9 @@ pub enum Action {
+     /// spoiler, or not.
+     ToggleAsideSpoiler(usize),
+     SetDraft(String),
++    /// Send this text in the selected room, leaving its composer as it is
++    /// (MyTune edit: a sticker sent as its picture link).
++    SendText(String),
+     /// The `@` word being typed in the composer changed, or there's none now.
+     MentionQuery(Option<String>),
+     /// Open the dialog for starting a DM, look for people in it, start one, or close it.
+@@ -2493,6 +2498,7 @@ impl Application {
+             Action::OpenChat(id) => self.open(id, true),
+             Action::ShowVoiceChat(chat) => self.show_voice_chat(chat),
+             Action::OpenAside(id) => self.open_aside(id),
++            Action::OpenBeside(id) => self.open_beside(id),
+             Action::CloseAside => self.close_aside(),
+             Action::ExpandAside => self.expand_aside(),
+             Action::AsideEarlier => self.aside_earlier(),
+@@ -2539,6 +2545,10 @@ impl Application {
+             Action::MentionQuery(query) => self.mention_query(query),
+             Action::SetDraft(body) => self.set_draft(body),
+             Action::Send => self.send(),
++            Action::SendText(text) => match self.state.selected.clone() {
++                Some(room) => self.send_text_in(room, text),
++                None => vec![],
++            },
+             Action::Reply(item) => self.reply(item),
+             Action::Edit(item) => self.edit(item),
+             Action::CancelCompose => {
+@@ -3827,6 +3837,44 @@ impl Application {
+         vec![]
+     }
+ 
++    /// Every server's stickers, the selected room's server first, each as
++    /// (name, picture, link to post). MyTune edit: no Nitro rule here, the
++    /// link is an ordinary message; Lottie stickers (Discord's own) are left out.
++    pub fn all_stickers(&self) -> Vec<(String, Vec<[String; 3]>)> {
++        #[cfg(feature = "discord")]
++        if let Some(snapshot) = &self.discord {
++            use yapfast_discord::ready;
++            let here = self
++                .state
++                .selected
++                .as_deref()
++                .and_then(discord::parse_room)
++                .map(|(guild, _)| guild);
++            let mut servers: Vec<_> = snapshot.servers.iter().collect();
++            servers.sort_by_key(|server| Some(server.id.as_str()) != here);
++            return servers
++                .into_iter()
++                .map(|server| {
++                    let stickers = server
++                        .stickers
++                        .iter()
++                        .filter(|sticker| sticker.format != ready::STICKER_LOTTIE)
++                        .map(|sticker| {
++                            [
++                                sticker.name.clone(),
++                                ready::sticker(&sticker.id, sticker.format),
++                                ready::sticker_link(&sticker.id, sticker.format),
++                            ]
++                        })
++                        .collect::<Vec<_>>();
++                    (server.name.clone(), stickers)
++                })
++                .filter(|(_, stickers)| !stickers.is_empty())
++                .collect();
++        }
++        vec![]
++    }
++
+     /// The `count` reactions this device adds most, then the defaults.
+     pub fn frequent_reactions(&self, count: usize) -> Vec<String> {
+         let mut used: Vec<_> = self.reaction_uses.iter().collect();
+diff --git a/crates/yapfast-core/src/application/aside.rs b/crates/yapfast-core/src/application/aside.rs
+index 0d30753..14e7f8c 100644
+--- a/crates/yapfast-core/src/application/aside.rs
++++ b/crates/yapfast-core/src/application/aside.rs
+@@ -21,6 +21,9 @@ pub struct Aside {
+     /// selected room's: the last read when it showed, or the newest its
+     /// first messages had.
+     pub seen: Option<String>,
++    /// A channel or DM shown side by side (MyTune's split view), not a
++    /// thread: it stays while other rooms show.
++    pub chat: bool,
+ }
+ 
+ impl AppState {
+@@ -139,6 +142,22 @@ impl Application {
+         }
+     }
+ 
++    /// Shows any listed channel or DM beside the open one (MyTune's split
++    /// view); it stays while other rooms show.
++    pub(super) fn open_beside(&mut self, room: String) -> Vec<Effect> {
++        if self.state.selected.is_none()
++            || self.state.selected.as_ref() == Some(&room)
++            || !self.state.rooms.iter().any(|listed| listed.id == room)
++        {
++            return vec![];
++        }
++        let effects = self.show_aside(room);
++        if let Some(aside) = self.state.aside.as_mut() {
++            aside.chat = true;
++        }
++        effects
++    }
++
+     pub(super) fn show_aside(&mut self, room: String) -> Vec<Effect> {
+         self.state.new_thread = None;
+         let seen = self
+diff --git a/crates/yapfast-core/src/application/preview.rs b/crates/yapfast-core/src/application/preview.rs
+index d67ea8b..34e328a 100644
+--- a/crates/yapfast-core/src/application/preview.rs
++++ b/crates/yapfast-core/src/application/preview.rs
+@@ -56,10 +56,12 @@ impl Application {
+             preview_room("announcements", "announcements", false, 3),
+             preview_room("looking-for-group", "looking-for-group", false, 3),
+             ChatRoom {
++                group_avatars: Vec::new(),
+                 voice: true,
+                 ..preview_room("lounge", "Lounge", false, 4)
+             },
+             ChatRoom {
++                group_avatars: Vec::new(),
+                 voice: true,
+                 ..preview_room("party-voice", "Party", false, 3)
+             },
+@@ -179,6 +181,7 @@ impl Application {
+ 
+ pub(super) fn preview_room(id: &str, name: &str, direct: bool, members: u64) -> ChatRoom {
+     ChatRoom {
++        group_avatars: Vec::new(),
+         id: id.into(),
+         network: Network::of(id),
+         capabilities: Network::of(id).capabilities(),
+diff --git a/crates/yapfast-core/src/application/rooms.rs b/crates/yapfast-core/src/application/rooms.rs
+index f0da045..d53d088 100644
+--- a/crates/yapfast-core/src/application/rooms.rs
++++ b/crates/yapfast-core/src/application/rooms.rs
+@@ -223,9 +223,9 @@ impl AppState {
+             || (!self.preview
+                 && (user.starts_with('@')
+                     || self.discord_friends.iter().any(|friend| friend == user)
+-                    || (self.discord_user.is_some()
+-                        && self.discord_server_open()
+-                        && self.person(user).is_some())))
++                    // MyTune: anyone but yourself, from any profile; Discord
++                    // refuses the DM itself when it isn't allowed.
++                    || self.discord_user.as_deref().is_some_and(|me| me != user)))
+     }
+ 
+     /// Whether the open conversation is a Discord server's channel.
+@@ -765,7 +765,13 @@ impl Application {
+                 .rooms
+                 .iter()
+                 .any(|room| room.id == id && self.state.in_scope(room));
+-        let mut effects = if changes { self.close_aside() } else { vec![] };
++        // A chat kept side by side stays, unless it is the room that now shows.
++        let kept = self
++            .state
++            .aside
++            .as_ref()
++            .is_some_and(|aside| aside.chat && aside.room != id);
++        let mut effects = if changes && !kept { self.close_aside() } else { vec![] };
+         effects.extend(self.show_room(id, chat));
+         effects
+     }
+diff --git a/crates/yapfast-core/src/application/tests.rs b/crates/yapfast-core/src/application/tests.rs
+index 8587f74..c9b6e9a 100644
+--- a/crates/yapfast-core/src/application/tests.rs
++++ b/crates/yapfast-core/src/application/tests.rs
+@@ -38,10 +38,12 @@ fn connected() -> Application {
+             preview_room("general", "general", false, 3),
+             preview_room("games", "games", false, 3),
+             ChatRoom {
++                group_avatars: Vec::new(),
+                 voice: true,
+                 ..preview_room("lounge", "Lounge", false, 3)
+             },
+             ChatRoom {
++                group_avatars: Vec::new(),
+                 voice: true,
+                 ..preview_room("party-voice", "Party", false, 3)
+             },
+@@ -120,6 +122,7 @@ fn locked_channels_show_without_asking_for_their_messages() {
+         rooms: vec![
+             preview_room("general", "general", false, 3),
+             ChatRoom {
++                group_avatars: Vec::new(),
+                 locked: true,
+                 ..preview_room("secret", "secret", false, 3)
+             },
+@@ -396,11 +399,13 @@ fn forwarding_sends_a_message_to_the_conversations_chosen() {
+     let general = (*app.state.rooms[1]).clone();
+     for id in ["c1", "c2", "c3", "c4", "c5"] {
+         app.state.rooms.push(Arc::new(ChatRoom {
++            group_avatars: Vec::new(),
+             id: id.into(),
+             ..general.clone()
+         }));
+     }
+     app.state.rooms.push(Arc::new(ChatRoom {
++        group_avatars: Vec::new(),
+         id: crate::discord::room_id("10", "11"),
+         network: Network::Discord,
+         ..general.clone()
+@@ -479,6 +484,7 @@ fn forwarding_sends_a_message_to_the_conversations_chosen() {
+ fn discord_forwards_skip_the_note_in_slowmode_and_take_silent() {
+     let mut app = connected();
+     let channel = |id: &str, slowed| ChatRoom {
++        group_avatars: Vec::new(),
+         id: crate::discord::room_id("10", id),
+         network: Network::Discord,
+         capabilities: Network::Discord.capabilities(),
+@@ -519,6 +525,7 @@ fn discord_forwards_skip_the_note_in_slowmode_and_take_silent() {
+ fn discord_forwards_list_places_as_discords_dialog_does() {
+     let mut app = connected();
+     let place = |guild: &str, id: &str, name: &str| ChatRoom {
++        group_avatars: Vec::new(),
+         id: crate::discord::room_id(guild, id),
+         name: name.into(),
+         network: Network::Discord,
+@@ -528,6 +535,7 @@ fn discord_forwards_list_places_as_discords_dialog_does() {
+     };
+     app.state.rooms = [
+         ChatRoom {
++            group_avatars: Vec::new(),
+             person: Some("1".into()),
+             ..place("@me", "20", "Bob")
+         },
+@@ -602,10 +610,12 @@ fn the_quick_switcher_finds_places_as_discords_does() {
+     app.state.rooms.extend(
+         [
+             ChatRoom {
++                group_avatars: Vec::new(),
+                 locked: true,
+                 ..preview_room("staff", "staff", false, 3)
+             },
+             ChatRoom {
++                group_avatars: Vec::new(),
+                 category: crate::discord::REQUESTS.into(),
+                 request: true,
+                 ..preview_room("request", "Ronja", true, 2)
+@@ -664,6 +674,7 @@ fn the_quick_switcher_finds_places_as_discords_does() {
+ fn discord_forwards_list_eight_places_opened_lately_that_can_take_them() {
+     let mut app = connected();
+     let channel = |id: u32| ChatRoom {
++        group_avatars: Vec::new(),
+         id: crate::discord::room_id("10", &id.to_string()),
+         name: format!("c{id}"),
+         network: Network::Discord,
+@@ -1972,6 +1983,7 @@ fn a_discord_dms_menu_manages_its_person_and_notifications() {
+         },
+         conversations: vec![
+             Arc::new(Conversation {
++                member_avatars: Vec::new(),
+                 id: "30".into(),
+                 name: "Annie".into(),
+                 person: Some("2".into()),
+@@ -1980,6 +1992,7 @@ fn a_discord_dms_menu_manages_its_person_and_notifications() {
+                 ..Default::default()
+             }),
+             Arc::new(Conversation {
++                member_avatars: Vec::new(),
+                 id: "31".into(),
+                 name: "Group".into(),
+                 group: true,
+@@ -3677,6 +3690,7 @@ fn discord_dms_list_with_their_pictures_and_read_once_read() {
+         status: Status::Online,
+         conversations: vec![
+             Arc::new(Conversation {
++                member_avatars: Vec::new(),
+                 id: "30".into(),
+                 name: "Ann".into(),
+                 avatar: Some("ann.png".into()),
+@@ -3686,6 +3700,7 @@ fn discord_dms_list_with_their_pictures_and_read_once_read() {
+                 ..Default::default()
+             }),
+             Arc::new(Conversation {
++                member_avatars: Vec::new(),
+                 id: "31".into(),
+                 name: "Weekend".into(),
+                 group: true,
+@@ -3888,6 +3903,7 @@ fn discord_profiles_load_the_rest_from_discord() {
+     app.apply(discord_event(Snapshot {
+         status: Status::Online,
+         conversations: vec![Arc::new(Conversation {
++            member_avatars: Vec::new(),
+             id: "30".into(),
+             name: "Ann".into(),
+             avatar: Some("ann.png".into()),
+@@ -3959,6 +3975,7 @@ fn discord_profiles_show_the_kept_one_until_discord_answers() {
+     app.apply(discord_event(Snapshot {
+         status: Status::Online,
+         conversations: vec![Arc::new(Conversation {
++            member_avatars: Vec::new(),
+             id: "30".into(),
+             name: "Ann".into(),
+             person: Some("7".into()),
+@@ -4037,6 +4054,7 @@ fn discord_friends_are_listed_and_messaged() {
+         conversations: dms
+             .iter()
+             .map(|(id, person)| Conversation {
++                member_avatars: Vec::new(),
+                 id: (*id).into(),
+                 name: "DM".into(),
+                 person: Some((*person).into()),
+@@ -4097,10 +4115,11 @@ fn discord_friends_are_listed_and_messaged() {
+     app.apply(Event::DmStarted(Ok("discord:@me:31".into())));
+     app.apply(discord_event(snapshot(&[("30", "2"), ("31", "3")])));
+     assert_eq!(app.state.selected.as_deref(), Some("discord:@me:31"));
+-    assert!(
+-        app.dispatch(Action::MessagePerson("9".into())).is_empty(),
+-        "only friends"
+-    );
++    // Someone who is no friend has a DM started too (MyTune).
++    assert!(matches!(
++        app.dispatch(Action::MessagePerson("9".into())).as_slice(),
++        [Effect::Backend(Command::StartDm { id, discord: true })] if id == "9"
++    ));
+ 
+     // A DM that couldn't start says why.
+     app.dispatch(Action::OpenDmScreen(DmScreen::Friends));
+@@ -4121,6 +4140,7 @@ fn a_profile_card_messages_its_person_in_their_dm() {
+         conversations: dms
+             .iter()
+             .map(|(id, person)| Conversation {
++                member_avatars: Vec::new(),
+                 id: (*id).into(),
+                 name: "DM".into(),
+                 person: Some((*person).into()),
+@@ -4221,6 +4241,7 @@ fn a_profile_card_messages_its_person_in_their_dm() {
+ fn a_one_to_one_dm_shows_its_persons_profile_beside_it() {
+     use yapfast_discord::service::{Conversation, Snapshot, Status};
+     let dm = |id: &str, person: &str, people| Conversation {
++        member_avatars: Vec::new(),
+         id: id.into(),
+         name: format!("DM {id}"),
+         person: Some(person.into()),
+@@ -4326,6 +4347,7 @@ fn discord_message_requests_are_answered_not_written_to() {
+     let snapshot = |request: bool| Snapshot {
+         status: Status::Online,
+         conversations: vec![Arc::new(Conversation {
++            member_avatars: Vec::new(),
+             id: "40".into(),
+             name: "Erin".into(),
+             people: 2,
+@@ -4380,6 +4402,7 @@ fn discord_dm_calls_start_ring_and_are_answered() {
+         user_id: Some("1".into()),
+         conversations: vec![
+             Arc::new(Conversation {
++                member_avatars: Vec::new(),
+                 id: "30".into(),
+                 name: "Ann".into(),
+                 people: 2,
+@@ -4388,6 +4411,7 @@ fn discord_dm_calls_start_ring_and_are_answered() {
+                 ..Default::default()
+             }),
+             Arc::new(Conversation {
++                member_avatars: Vec::new(),
+                 id: "40".into(),
+                 name: "Erin".into(),
+                 people: 2,
+@@ -4470,6 +4494,7 @@ fn do_not_disturb_shows_a_call_without_notifying() {
+         user_id: Some("1".into()),
+         presence: DO_NOT_DISTURB.into(),
+         conversations: vec![Arc::new(Conversation {
++            member_avatars: Vec::new(),
+             id: "30".into(),
+             name: "Ann".into(),
+             people: 2,
+@@ -5407,6 +5432,7 @@ fn a_matrix_room_divider_follows_its_read_receipt_once_loaded() {
+         rooms: vec![
+             preview_room("dm", "DM", true, 2),
+             ChatRoom {
++                group_avatars: Vec::new(),
+                 unread: 2,
+                 last_read: Some("e:2".into()),
+                 ..preview_room("general", "general", false, 3)
+@@ -5535,6 +5561,7 @@ fn a_matrix_rooms_new_replies_follow_its_receipt_or_its_newest_message() {
+         Event::Rooms(RoomIndex {
+             rooms: vec![
+                 ChatRoom {
++                    group_avatars: Vec::new(),
+                     last_read: Some(last_read.into()),
+                     ..preview_room("dm", "DM", true, 2)
+                 },
+@@ -5650,6 +5677,7 @@ fn discord_dms(extra: Vec<yapfast_discord::service::Conversation>) -> Applicatio
+     };
+     let mut conversations = vec![
+         Conversation {
++            member_avatars: Vec::new(),
+             id: "30".into(),
+             name: "Annie".into(),
+             person: Some("2".into()),
+@@ -5657,6 +5685,7 @@ fn discord_dms(extra: Vec<yapfast_discord::service::Conversation>) -> Applicatio
+             ..Default::default()
+         },
+         Conversation {
++            member_avatars: Vec::new(),
+             id: "31".into(),
+             name: "Hikers".into(),
+             group: true,
+@@ -5907,6 +5936,7 @@ fn friends_added_to_a_dm_make_a_group_that_opens() {
+     app.apply(Event::GroupChanged(Ok("discord:@me:50".into())));
+     assert!(app.state.add_people.is_none());
+     let group = Conversation {
++        member_avatars: Vec::new(),
+         id: "50".into(),
+         name: "Annie, Cara".into(),
+         group: true,
+diff --git a/crates/yapfast-core/src/chat.rs b/crates/yapfast-core/src/chat.rs
+index 2c25223..831a3b2 100644
+--- a/crates/yapfast-core/src/chat.rs
++++ b/crates/yapfast-core/src/chat.rs
+@@ -49,6 +49,8 @@ pub struct ChatRoom {
+     pub voice: bool,
+     pub encrypted: bool,
+     pub members: u64,
++    /// A group DM's first few members' pictures, for its row (see [`DiscordCommand::Pictures`]).
++    pub group_avatars: Vec<String>,
+     pub unread: u64,
+     pub mentions: u64,
+     /// Muted in the network's notification settings: a Discord DM.
+@@ -1467,6 +1469,7 @@ pub enum NoticeKind {
+     /// Its author pinned a message, by item, which it links to.
+     Pinned(Option<String>),
+     Joined,
++    Boosted,
+     ThreadStarted,
+     Call,
+     PollResult,
+diff --git a/crates/yapfast-core/src/discord.rs b/crates/yapfast-core/src/discord.rs
+index aee1289..65bd9fd 100644
+--- a/crates/yapfast-core/src/discord.rs
++++ b/crates/yapfast-core/src/discord.rs
+@@ -631,6 +631,7 @@ fn dm_room(snapshot: &Snapshot, dm: &Conversation, premium: u8, me: &str) -> Cha
+         voice: false,
+         encrypted: false,
+         members: dm.people as u64,
++        group_avatars: dm.member_avatars.clone(),
+         unread: u64::from(dm.unread),
+         mentions: dm.mentions,
+         muted: dm.muted,
+@@ -770,6 +771,7 @@ fn server_rooms(
+             .unwrap_or_default();
+         rooms.push(if voice {
+             ChatRoom {
++                group_avatars: Vec::new(),
+                 id: id.clone(),
+                 network: Network::Discord,
+                 capabilities: Network::Discord.capabilities(),
+@@ -814,6 +816,7 @@ fn server_rooms(
+             }
+         } else {
+             ChatRoom {
++                group_avatars: Vec::new(),
+                 id: id.clone(),
+                 network: Network::Discord,
+                 capabilities: Network::Discord.capabilities(),
+@@ -895,6 +898,7 @@ fn thread_room(
+     premium: u8,
+ ) -> ChatRoom {
+     ChatRoom {
++        group_avatars: Vec::new(),
+         id: room_id(&server.id, &thread.id),
+         network: Network::Discord,
+         capabilities: Network::Discord.capabilities(),
+@@ -1097,7 +1101,9 @@ impl Pictures {
+                         None => return,
+                     },
+                 };
+-                let (width, height) = if url.contains("/banners/") {
++                let (width, height) = if url.starts_with("stream-preview:") {
++                    (960, 540)
++                } else if url.contains("/banners/") {
+                     BANNER_SIZE
+                 } else {
+                     (PICTURE_SIZE, PICTURE_SIZE)
+@@ -1625,6 +1631,7 @@ mod tests {
+     fn dms_that_stay_the_same_stay_shared() {
+         let dm = |id: &str| {
+             Arc::new(Conversation {
++                member_avatars: Vec::new(),
+                 id: id.into(),
+                 name: id.into(),
+                 people: 2,
+@@ -1643,6 +1650,7 @@ mod tests {
+ 
+         // A message comes to one: only its room is new, and it goes first.
+         let unread = Arc::new(Conversation {
++            member_avatars: Vec::new(),
+             unread: true,
+             ..(*first.conversations[1]).clone()
+         });
+diff --git a/crates/yapfast-core/src/discord_text/render.rs b/crates/yapfast-core/src/discord_text/render.rs
+index a17210c..1d85569 100644
+--- a/crates/yapfast-core/src/discord_text/render.rs
++++ b/crates/yapfast-core/src/discord_text/render.rs
+@@ -147,6 +147,7 @@ pub(super) fn chat_notice(message: &Message) -> Option<crate::chat::Notice> {
+     let kind = match message.notice.as_ref()? {
+         Notice::Pinned(id) => NoticeKind::Pinned(id.as_ref().map(|id| format!("d:{id}"))),
+         Notice::Joined => NoticeKind::Joined,
++        Notice::Boosted => NoticeKind::Boosted,
+         Notice::ThreadStarted => NoticeKind::ThreadStarted,
+         Notice::Call => NoticeKind::Call,
+         Notice::PollResult => NoticeKind::PollResult,
+diff --git a/crates/yapfast-core/src/matrix_chat.rs b/crates/yapfast-core/src/matrix_chat.rs
+index 0026fff..6ea579d 100644
+--- a/crates/yapfast-core/src/matrix_chat.rs
++++ b/crates/yapfast-core/src/matrix_chat.rs
+@@ -1163,6 +1163,7 @@ async fn room_index(client: &Client) -> RoomIndex {
+             _ => None,
+         };
+         result.push(ChatRoom {
++            group_avatars: Vec::new(),
+             id: room.room_id().to_string(),
+             network: Network::Matrix,
+             capabilities: Network::Matrix.capabilities(),
 diff --git a/crates/yapfast-discord/src/api.rs b/crates/yapfast-discord/src/api.rs
-index c9d2af7..6ca14ec 100644
+index c9d2af7..2deff44 100644
 --- a/crates/yapfast-discord/src/api.rs
 +++ b/crates/yapfast-discord/src/api.rs
 @@ -615,6 +615,12 @@ impl Api {
@@ -15,6 +548,283 @@ index c9d2af7..6ca14ec 100644
      /// Accepts a message request, which makes it an ordinary DM.
      pub async fn accept_request(&self, channel: &str) -> Result<()> {
          let path = format!("/channels/{channel}/recipients/@me");
+@@ -1950,6 +1956,15 @@ impl Api {
+             .await
+     }
+ 
++    /// The address of the preview picture of someone's live stream, which
++    /// Discord shows without joining it.
++    pub async fn stream_preview_url(&self, stream_key: &str) -> Result<String> {
++        let path = format!("/streams/{stream_key}/preview");
++        let answer = self.json(self.request(Method::GET, &path)).await?;
++        let url = answer["url"].as_str().context("the stream has no preview")?;
++        Ok(url.to_owned())
++    }
++
+     /// Discord's own soundboard sounds, which every account may play.
+     pub async fn default_soundboard_sounds(&self) -> Result<Vec<crate::soundboard::Sound>> {
+         let sounds = self
+diff --git a/crates/yapfast-discord/src/cache.rs b/crates/yapfast-discord/src/cache.rs
+index e249cd6..bf92461 100644
+--- a/crates/yapfast-discord/src/cache.rs
++++ b/crates/yapfast-discord/src/cache.rs
+@@ -899,6 +899,7 @@ mod tests {
+                 },
+             )],
+             conversations: vec![Arc::new(Conversation {
++                member_avatars: Vec::new(),
+                 id: "20".into(),
+                 call: true,
+                 ..Default::default()
+diff --git a/crates/yapfast-discord/src/message.rs b/crates/yapfast-discord/src/message.rs
+index 633b689..6bb82e5 100644
+--- a/crates/yapfast-discord/src/message.rs
++++ b/crates/yapfast-discord/src/message.rs
+@@ -26,6 +26,8 @@ const DEFAULT: u64 = 0;
+ const CALL: u64 = 3;
+ const PINNED: u64 = 6;
+ const MEMBER_JOIN: u64 = 7;
++const BOOST: u64 = 8;
++const BOOST_TIER_3: u64 = 11;
+ const THREAD_CREATED: u64 = 18;
+ const REPLY: u64 = 19;
+ const CHAT_INPUT_COMMAND: u64 = 20;
+@@ -523,13 +525,14 @@ pub enum Notice {
+     /// Its author pinned a message, by id, which the notice links to.
+     Pinned(Option<String>),
+     Joined,
++    Boosted,
+     ThreadStarted,
+     Call,
+     PollResult,
+ }
+ 
+ /// A message object, from the API or the gateway. Kinds Yapfast doesn't show,
+-/// such as boosts, give `None`.
++/// such as a channel follow, give `None`.
+ pub fn parse(value: &Value) -> Option<Message> {
+     let kind = value["type"].as_u64().unwrap_or(DEFAULT);
+     // A thread's first message shows the one it was started from, as
+@@ -557,6 +560,18 @@ pub fn parse(value: &Value) -> Option<Message> {
+             value["content"].as_str().unwrap_or_default()
+         )),
+         MEMBER_JOIN => Some("joined the server.".to_owned()),
++        // A boost; its content is how many at once, and 9 to 11 tell of the
++        // level the server reached with it.
++        BOOST..=BOOST_TIER_3 => {
++            let times = match value["content"].as_str().and_then(|n| n.parse::<u32>().ok()) {
++                Some(times) if times > 1 => format!(" {times} times"),
++                _ => String::new(),
++            };
++            Some(match kind - BOOST {
++                0 => format!("just boosted the server{times}!"),
++                level => format!("just boosted the server{times}! It reached Level {level}!"),
++            })
++        }
+         // Its author is the poll's.
+         POLL_RESULT => Some(poll_result(&value["embeds"][0])),
+         PINNED => Some("pinned a message.".to_owned()),
+@@ -714,6 +729,7 @@ pub fn parse(value: &Value) -> Option<Message> {
+                     .map(str::to_owned),
+             )),
+             MEMBER_JOIN => Some(Notice::Joined),
++            BOOST..=BOOST_TIER_3 => Some(Notice::Boosted),
+             THREAD_CREATED => Some(Notice::ThreadStarted),
+             CALL => Some(Notice::Call),
+             POLL_RESULT => Some(Notice::PollResult),
+@@ -1907,7 +1923,14 @@ mod tests {
+         message.react(":pog:", "pog:5", false, false);
+         assert_eq!(message.reactions.len(), 1);
+ 
+-        assert!(parse(&json!({"id": "1", "type": 8, "author": {"id": "1"}})).is_none());
++        assert!(parse(&json!({"id": "1", "type": 12, "author": {"id": "1"}})).is_none());
++        let boost = parse(&json!({"id": "1", "type": 10, "content": "2", "author": {"id": "1"}}))
++            .unwrap();
++        assert_eq!(boost.notice, Some(Notice::Boosted));
++        assert_eq!(
++            boost.system.as_deref(),
++            Some("just boosted the server 2 times! It reached Level 2!")
++        );
+         let deleted = parse(
+             &json!({"id": "1", "type": 19, "author": {"id": "1"}, "referenced_message": null}),
+         );
+diff --git a/crates/yapfast-discord/src/ready.rs b/crates/yapfast-discord/src/ready.rs
+index 717287b..c109408 100644
+--- a/crates/yapfast-discord/src/ready.rs
++++ b/crates/yapfast-discord/src/ready.rs
+@@ -182,6 +182,9 @@ pub struct Server {
+     pub mfa_level: u8,
+     /// Its custom emoji, by name.
+     pub emojis: Arc<Vec<Emoji>>,
++    /// Its stickers, by name (MyTune edit: for the local-only sticker picker).
++    #[serde(default)]
++    pub stickers: Arc<Vec<Sticker>>,
+     /// When this account joined it, as Discord's ISO 8601 time.
+     pub joined_at: Option<String>,
+     /// Out of reach in a Discord outage: still listed, with what was last
+@@ -202,6 +205,44 @@ pub struct Emoji {
+     pub available: bool,
+ }
+ 
++/// A server's sticker.
++#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
++pub struct Sticker {
++    pub id: String,
++    pub name: String,
++    /// 1 PNG, 2 APNG, 3 Lottie, 4 GIF.
++    pub format: u64,
++}
++
++/// A server's usable stickers, from a guild object or GUILD_STICKERS_UPDATE.
++pub fn stickers(list: &Value) -> Vec<Sticker> {
++    let mut stickers: Vec<Sticker> = list
++        .as_array()
++        .into_iter()
++        .flatten()
++        .filter(|sticker| sticker["available"].as_bool().unwrap_or(true))
++        .filter_map(|sticker| {
++            Some(Sticker {
++                id: sticker["id"].as_str()?.to_owned(),
++                name: sticker["name"].as_str()?.to_owned(),
++                format: sticker["format_type"].as_u64().unwrap_or(1),
++            })
++        })
++        .collect();
++    stickers.sort_by_key(|sticker| sticker.name.to_lowercase());
++    stickers
++}
++
++/// A sticker's picture as a link to post in a message: Discord shows a lone
++/// picture link as the picture, at most 160 wide as a real sticker. The
++/// proxy never enlarges, so a sticker uploaded small (many are 64-128 px,
++/// measured) shows small in Discord's own apps. An APNG sticker shows its
++/// first frame.
++pub fn sticker_link(id: &str, format: u64) -> String {
++    let kind = if format == STICKER_GIF { "gif" } else { "png" };
++    format!("{}/stickers/{id}.{kind}?size=160", media())
++}
++
+ /// A server's emoji list, from a guild object or GUILD_EMOJIS_UPDATE.
+ pub fn emojis(list: &Value) -> Vec<Emoji> {
+     let mut emojis: Vec<Emoji> = list
+@@ -1232,6 +1273,7 @@ pub fn server(guild: &Value) -> Option<Server> {
+             .or_else(|| guild["properties"]["mfa_level"].as_u64())
+             .map_or(0, |level| u8::try_from(level).unwrap_or(1)),
+         emojis: Arc::new(emojis(&guild["emojis"])),
++        stickers: Arc::new(stickers(&guild["stickers"])),
+         joined_at: guild["joined_at"].as_str().map(str::to_owned),
+         default_level: Level::from(&guild["properties"]["default_message_notifications"])
+             .or_else(|| Level::from(&guild["default_message_notifications"]))
+diff --git a/crates/yapfast-discord/src/service.rs b/crates/yapfast-discord/src/service.rs
+index f00ca22..8b7d8a0 100644
+--- a/crates/yapfast-discord/src/service.rs
++++ b/crates/yapfast-discord/src/service.rs
+@@ -103,6 +103,8 @@ pub struct Conversation {
+     pub name: String,
+     /// The other person's avatar in a DM, or a group DM's icon.
+     pub avatar: Option<String>,
++    /// A group DM's first few members' avatars (this account not included).
++    pub member_avatars: Vec<String>,
+     pub group: bool,
+     /// Everyone in it, this account included.
+     pub people: usize,
+@@ -258,6 +260,8 @@ fn index_wait(answer: &Value, waited: &mut Duration) -> Option<Duration> {
+ const DEFAULT_ARCHIVE: u16 = 4320;
+ /// Discord's answer to a search of a DM it hasn't indexed yet.
+ const INDEX_NOT_READY: u64 = 110000;
++/// How many messages Discord's search answers with at most.
++const SEARCH_PAGE: usize = 25;
+ 
+ /// What the account looks like now. [`crate::cache`] keeps all but the live
+ /// parts, the connection and voice, to show on the next start.
+@@ -792,7 +796,21 @@ impl Discord {
+             Span::Around(id) => id.parse::<u64>().ok(),
+             _ => None,
+         };
+-        let values = self.api.messages(channel, span).await?;
++        let mut values = self.api.messages(channel, span).await?;
++        let mut page = PAGE;
++        // Without Read Message History Discord answers with no messages, yet
++        // its search still finds the channel's: page through that instead.
++        // shortcut: asked on every empty page, also in a truly empty channel; check the permission first if search limits bite.
++        if let (true, Some(server), Span::Latest | Span::Before(_)) =
++            (values.is_empty(), server(guild), span)
++        {
++            let before = match span {
++                Span::Before(id) => Some(id),
++                _ => None,
++            };
++            values = self.searched_history(server, channel, before).await;
++            page = SEARCH_PAGE;
++        }
+         // The open channel shows them again once their authors arrive.
+         let (mut messages, _) = self.learn(guild, &values, false);
+         messages.sort_by_key(Message::order);
+@@ -812,7 +830,7 @@ impl Discord {
+                     values.len() - before < PAGE / 2,
+                 )
+             }
+-            None => (values.len() >= PAGE, false),
++            None => (values.len() >= page, false),
+         };
+         Ok(Page {
+             messages,
+@@ -822,6 +840,40 @@ impl Discord {
+         })
+     }
+ 
++    /// The newest messages of a server's `channel` that Discord's search
++    /// finds, those `before` a snowflake with one: up to [`SEARCH_PAGE`], and
++    /// none when the search fails or its index isn't ready in time.
++    async fn searched_history(
++        &self,
++        guild: &str,
++        channel: &str,
++        before: Option<&str>,
++    ) -> Vec<Value> {
++        let mut params = vec![("channel_id", channel.to_owned())];
++        if let Some(before) = before {
++            params.push(("max_id", before.to_owned()));
++        }
++        let mut waited = Duration::ZERO;
++        loop {
++            let Ok(mut answer) = self.api.search(Some(guild), "", &params, 0).await else {
++                return Vec::new();
++            };
++            if let Value::Array(pages) = answer["messages"].take() {
++                return pages
++                    .into_iter()
++                    .filter_map(|mut page| page.get_mut(0).map(Value::take))
++                    .collect();
++            }
++            if answer["code"].as_u64() != Some(INDEX_NOT_READY) {
++                return Vec::new();
++            }
++            let Some(wait) = index_wait(&answer, &mut waited) else {
++                return Vec::new();
++            };
++            tokio::time::sleep(wait).await;
++        }
++    }
++
+     /// Messages from a server's channel, or with [`PRIVATE`] a DM, learning
+     /// their authors. Messages fetched over HTTP carry no server profiles,
+     /// so the nicknames, server avatars and roles of authors not known yet
+@@ -2750,6 +2802,14 @@ impl Discord {
+     async fn fetch(&self, url: &str, limit: usize, queued: bool) -> Result<Vec<u8>> {
+         // An activity names a game's icon by the game until Discord says
+         // which picture it is.
++        // "stream-preview:<stream key>#<anything>" is the preview of a live
++        // stream: Discord says where the picture is, anew each time (the
++        // part after '#' makes each asking its own address).
++        if let Some(asked) = url.strip_prefix("stream-preview:") {
++            let key = asked.split('#').next().unwrap_or(asked);
++            let at = self.api.stream_preview_url(key).await?;
++            return self.api.download_now(&at, limit).await;
++        }
+         let icon;
+         let url = match activity::icon_application(url) {
+             Some(application) => {
 diff --git a/crates/yapfast-discord/src/service/session.rs b/crates/yapfast-discord/src/service/session.rs
 index 0d8a954..4d7680f 100644
 --- a/crates/yapfast-discord/src/service/session.rs
@@ -44,10 +854,27 @@ index 0d8a954..4d7680f 100644
          });
      }
 diff --git a/crates/yapfast-discord/src/service/tracker.rs b/crates/yapfast-discord/src/service/tracker.rs
-index f8cc19c..2a4b6b1 100644
+index f8cc19c..baf8495 100644
 --- a/crates/yapfast-discord/src/service/tracker.rs
 +++ b/crates/yapfast-discord/src/service/tracker.rs
-@@ -1000,9 +1000,9 @@ impl Tracker {
+@@ -480,6 +480,16 @@ impl Tracker {
+                 server.emojis = std::sync::Arc::new(ready::emojis(&data["emojis"]));
+                 true
+             }
++            Event::GuildStickersUpdate => {
++                let Some(server) = data["guild_id"]
++                    .as_str()
++                    .and_then(|guild| self.server_mut(guild))
++                else {
++                    return false;
++                };
++                server.stickers = std::sync::Arc::new(ready::stickers(&data["stickers"]));
++                true
++            }
+             // Carries the server's own fields, without its channels or members.
+             Event::GuildUpdate => {
+                 let (Some(update), Some(known)) = (
+@@ -1000,9 +1010,9 @@ impl Tracker {
          let requests: HashSet<&str> = self
              .private
              .iter()
@@ -58,7 +885,7 @@ index f8cc19c..2a4b6b1 100644
          self.previews.retain(|id, _| requests.contains(id.as_str()));
          let wanted: Vec<String> = requests
              .into_iter()
-@@ -1032,7 +1032,7 @@ impl Tracker {
+@@ -1032,7 +1042,7 @@ impl Tracker {
          if !self
              .private
              .iter()
@@ -67,7 +894,16 @@ index f8cc19c..2a4b6b1 100644
          {
              return false;
          }
-@@ -1552,10 +1552,7 @@ impl Tracker {
+@@ -1485,7 +1495,7 @@ impl Tracker {
+         let mut hasher = DefaultHasher::new();
+         (private, marks).hash(&mut hasher);
+         for user in &private.recipients {
+-            names.user_name(user).hash(&mut hasher);
++            (names.user_name(user), names.avatar_hash(user)).hash(&mut hasher);
+         }
+         if let Some(user) = private.recipients.first() {
+             (
+@@ -1552,14 +1562,16 @@ impl Tracker {
                  elsewhere: false,
              })
              .collect();
@@ -79,3 +915,12 @@ index f8cc19c..2a4b6b1 100644
          Conversation {
              id: private.id.clone(),
              name: title,
+             avatar,
++            member_avatars: if private.group {
++                private.recipients.iter().take(3).map(|user| names.avatar(None, user)).collect()
++            } else {
++                Vec::new()
++            },
+             group: private.group,
+             people: private.recipients.len() + 1,
+             request: private.request,

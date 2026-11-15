@@ -44,13 +44,13 @@ pub fn menu(ctx: &egui::Context, pu: &mut PlusUi, app: &Application, chat: &Chat
     let pos = pos2(composer.left(), composer.top() - h - 8.0);
     let mut close = false;
     let area = egui::Area::new(egui::Id::new("plus_menu")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
-        egui::Frame::new().fill(k_panel()).stroke(Stroke::new(1.0, k_edge())).corner_radius(8.0).inner_margin(egui::Margin::same(6)).shadow(egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(0x66) }).show(ui, |ui| {
+        crate::theme::float(ui, crate::theme::R_MENU, 6, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
             let mut item = |ui: &mut Ui, g: &str, text: &str| {
                 let (r, resp) = ui.allocate_exact_size(vec2(220.0, 38.0), Sense::click());
                 let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
                 if t > 0.0 {
-                    ui.painter().rect_filled(r, 4.0, p().accent.gamma_multiply(0.25 * t));
+                    ui.painter().rect_filled(r, 10.0, p().accent.gamma_multiply(0.25 * t));
                 }
                 glyph(ui.painter(), pos2(r.left() + 18.0, r.center().y), g, 16.0, SECONDARY.lerp_to_gamma(TEXT, t), false);
                 ui.painter().text(pos2(r.left() + 42.0, r.center().y), egui::Align2::LEFT_CENTER, text, egui::FontId::new(14.0, th::semibold()), SECONDARY.lerp_to_gamma(TEXT, t));
@@ -106,7 +106,7 @@ pub fn dialog(ctx: &egui::Context, pu: &mut PlusUi, s: &AppState, acts: &mut Vec
             });
             ui.add_space(4.0);
         }
-        if d.answers.len() < POLL_ANSWERS && ui.add(egui::Button::new(sb("+ Add another answer", 13.0).color(TEXT)).fill(k_raised()).corner_radius(6.0)).clicked() {
+        if d.answers.len() < POLL_ANSWERS && crate::theme::button(ui, "+ Add another answer", false, (14.0, 5.0, 14.0, 6.0)).clicked() {
             acts.push(Action::EditPoll(PollEdit::AddAnswer));
         }
         ui.add_space(10.0);

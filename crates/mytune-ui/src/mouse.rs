@@ -33,7 +33,7 @@ pub struct MousePage {
     peaks: Vec<f64>,
     loads: Vec<f64>,
     accel: bool,
-    status: Option<(String, bool)>,
+    pub(crate) status: Option<(String, bool)>,
 }
 
 impl MousePage {

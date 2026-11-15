@@ -14,7 +14,8 @@ pub fn show(ctx: &egui::Context, s: &AppState, tex: &mut HashMap<String, Texture
         return;
     }
     let Some(query) = &s.switcher else { return };
-    let places: Vec<Place> = s.switcher_places();
+    // the nine drawn: arrows and Enter must not reach a place that is not shown
+    let places: Vec<Place> = s.switcher_places().into_iter().take(9).collect();
     let idx_id = egui::Id::new("switch_index");
     let mut index: usize = ctx.data(|d| d.get_temp(idx_id)).unwrap_or(0).min(places.len().saturating_sub(1));
     let key = |k| ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, k));
@@ -32,7 +33,7 @@ pub fn show(ctx: &egui::Context, s: &AppState, tex: &mut HashMap<String, Texture
         });
     }
     let mut q = query.clone();
-    let modal = egui::Modal::new(egui::Id::new("quick_switcher")).frame(egui::Frame::new().fill(k_panel()).stroke(egui::Stroke::new(1.0, k_edge())).corner_radius(12.0).inner_margin(egui::Margin::same(12))).show(ctx, |ui| {
+    let modal = egui::Modal::new(egui::Id::new("quick_switcher")).frame(egui::Frame::new().fill(crate::theme::Glass::Float.fill()).shadow(crate::theme::Glass::Float.shadow()).corner_radius(crate::theme::R_MENU).inner_margin(egui::Margin::same(12))).show(ctx, |ui| {
         ui.set_width(520.0);
         let te = egui::TextEdit::singleline(&mut q).id(egui::Id::new("switcher_edit")).desired_width(f32::INFINITY).font(egui::FontId::proportional(16.0)).hint_text(rt("Where would you like to go?", 16.0).color(FAINT));
         let r = ui.add(te);
@@ -48,7 +49,7 @@ pub fn show(ctx: &egui::Context, s: &AppState, tex: &mut HashMap<String, Texture
         for (i, p) in places.iter().take(9).enumerate() {
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 42.0), Sense::click());
             if i == index || resp.hovered() {
-                ui.painter().rect_filled(rect, 8.0, k_active());
+                ui.painter().rect_filled(rect, 12.0, k_active());
             }
             let (name, kind, pic, id) = match p {
                 Place::Room(r) => (r.name.clone(), if r.direct { "Direct message".to_owned() } else if r.voice { "Voice channel".to_owned() } else { "Channel".to_owned() }, r.avatar.clone(), r.id.clone()),

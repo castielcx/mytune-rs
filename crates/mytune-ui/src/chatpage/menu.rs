@@ -11,12 +11,12 @@ use mytune_chat::yapfast_core::chat::ChatMessage;
 /// The four quick reactions at the menu's top, as Discord offers frequent ones.
 const QUICK_REACTIONS: [&str; 4] = ["\u{2764}\u{FE0F}", "\u{1F480}", "\u{1F44D}", "\u{1F64F}"];
 
-fn item(ui: &mut Ui, g: &str, text: &str, danger: bool) -> bool {
+pub(super) fn item(ui: &mut Ui, g: &str, text: &str, danger: bool) -> bool {
     let c = if danger { DANGER } else { SECONDARY };
     let (r, resp) = ui.allocate_exact_size(vec2(210.0, 32.0), Sense::click());
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
     if t > 0.0 {
-        ui.painter().rect_filled(r, 4.0, (if danger { DANGER } else { p().accent }).gamma_multiply(0.25 * t));
+        ui.painter().rect_filled(r, 10.0, (if danger { DANGER } else { p().accent }).gamma_multiply(0.25 * t));
     }
     glyph(ui.painter(), pos2(r.left() + 16.0, r.center().y), g, 14.0, c.lerp_to_gamma(TEXT, t), false);
     ui.painter().text(pos2(r.left() + 36.0, r.center().y), egui::Align2::LEFT_CENTER, text, egui::FontId::proportional(14.0), c.lerp_to_gamma(TEXT, t));
@@ -58,7 +58,7 @@ pub fn message_menu(ctx: &egui::Context, s: &AppState, pk: &mut super::picker::P
     let pos = pos2(if at.x + size.x > screen.right() { at.x - size.x } else { at.x }, if at.y + size.y > screen.bottom() { at.y - size.y } else { at.y });
     let mut close = false;
     let shown = egui::Area::new(area_id).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
-      egui::Frame::new().fill(k_panel()).stroke(egui::Stroke::new(1.0, super::voice::k_edge())).corner_radius(8.0).inner_margin(egui::Margin::same(6)).shadow(egui::Shadow { offset: [0, 8], blur: 24, spread: 0, color: Color32::from_black_alpha(0x66) }).show(ui, |ui| {
+      crate::theme::float(ui, crate::theme::R_MENU, 6, |ui| {
         ui.spacing_mut().item_spacing.y = 0.0;
         if m.can_react {
             ui.horizontal(|ui| {
@@ -66,7 +66,7 @@ pub fn message_menu(ctx: &egui::Context, s: &AppState, pk: &mut super::picker::P
                 for e in QUICK_REACTIONS {
                     let (r, er) = ui.allocate_exact_size(vec2(45.0, 40.0), Sense::click());
                     let t = ui.ctx().animate_bool_with_time(er.id, er.hovered(), QUICK);
-                    ui.painter().rect_filled(r, 6.0, k_raised().lerp_to_gamma(k_active(), t));
+                    crate::theme::capsule(ui.painter(), r, Color32::from_white_alpha(0x20 + (0x18 as f32 * t) as u8), 0x26);
                     match crate::emoji::texture(ui.ctx(), e) {
                         Some(t) => egui::Image::new(egui::load::SizedTexture::new(t, vec2(24.0, 24.0))).paint_at(ui, egui::Rect::from_center_size(r.center(), vec2(24.0, 24.0))),
                         None => {
@@ -91,7 +91,7 @@ pub fn message_menu(ctx: &egui::Context, s: &AppState, pk: &mut super::picker::P
         }
         if item(ui, "\u{E97A}", "Reply", false) {
             acts.push(Action::Reply(m.item.clone()));
-            ui.ctx().memory_mut(|mem| mem.request_focus(super::compose::edit_id()));
+            super::compose::focus(ui.ctx());
             close = true;
         }
         if item(ui, "\u{E72D}", "Forward", false) {
@@ -100,7 +100,7 @@ pub fn message_menu(ctx: &egui::Context, s: &AppState, pk: &mut super::picker::P
         }
         if m.can_edit && item(ui, "\u{E70F}", "Edit Message", false) {
             acts.push(Action::Edit(m.item.clone()));
-            ui.ctx().memory_mut(|mem| mem.request_focus(super::compose::edit_id()));
+            super::compose::focus(ui.ctx());
             close = true;
         }
         sep(ui);
@@ -116,6 +116,27 @@ pub fn message_menu(ctx: &egui::Context, s: &AppState, pk: &mut super::picker::P
             acts.push(Action::NewThread { message: Some(m.item.clone()), from: mytune_chat::yapfast_core::application::ThreadFrom::Message });
             close = true;
         }
+        {
+            let user_acts = super::userbtns::list(s, &m.sender);
+            if !user_acts.is_empty() {
+                sep(ui);
+                if item(ui, "\u{E77B}", "Profile", false) {
+                    super::header::remember_profile_at(ui.ctx());
+                    acts.push(Action::ShowProfile { user: m.sender.clone(), large: false });
+                    close = true;
+                }
+                for b in user_acts {
+                    if item(ui, b.glyph, b.label, b.danger) {
+                        acts.extend(b.acts);
+                        if b.label == "Mention" {
+                            super::compose::focus(ui.ctx());
+                        }
+                        close = true;
+                    }
+                }
+            }
+        }
+        sep(ui);
         let snowflake = m.item.strip_prefix("d:");
         if let Some(id) = snowflake {
             if item(ui, "\u{E71B}", "Copy Message Link", false) {
@@ -204,7 +225,7 @@ pub fn reactions(ui: &mut Ui, s: &AppState, m: &ChatMessage, tex: &mut HashMap<S
                 let resp = egui::Frame::new()
                     .fill(if r.mine { p().accent.gamma_multiply(0.18) } else { k_raised() })
                     .stroke(egui::Stroke::new(1.0, if r.mine { p().accent } else { Color32::TRANSPARENT }))
-                    .corner_radius(8.0)
+                    .corner_radius(12.0)
                     .inner_margin(egui::Margin::symmetric(7, 2))
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
@@ -273,7 +294,9 @@ pub fn compose_bar(ui: &mut Ui, s: &AppState, acts: &mut Vec<Action>) {
             }
         });
     });
-    if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+    // Escape in the composer (or with nothing focused), not one that closes some dialog or menu
+    let here = ui.memory(|m| m.focused().is_none_or(|f| f == super::compose::edit_id()));
+    if here && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
         acts.push(Action::CancelCompose);
     }
 }
@@ -283,21 +306,24 @@ pub fn confirm_delete(ctx: &egui::Context, s: &AppState, acts: &mut Vec<Action>)
     if s.confirm_delete.is_none() {
         return;
     }
-    egui::Modal::new(egui::Id::new("confirm_delete")).show(ctx, |ui| {
+    let modal = egui::Modal::new(egui::Id::new("confirm_delete")).show(ctx, |ui| {
         ui.set_width(400.0);
         ui.label(sb("Delete Message", 17.0).color(TEXT));
         ui.add_space(4.0);
         ui.label(rt("Are you sure you want to delete this message? This cannot be undone.", 13.5).color(SECONDARY));
         ui.add_space(14.0);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui.add(egui::Button::new(sb("Delete", 13.0).color(Color32::WHITE)).fill(DANGER).corner_radius(8.0).min_size(vec2(90.0, 34.0))).clicked() {
+            if crate::theme::button_tint(ui, "Delete", false, Some(DANGER), (18.0, 8.0, 18.0, 9.0)).clicked() {
                 acts.push(Action::ConfirmDelete);
             }
-            if ui.add(egui::Button::new(sb("Cancel", 13.0).color(TEXT)).fill(k_raised()).corner_radius(8.0).min_size(vec2(90.0, 34.0))).clicked() {
+            if crate::theme::button(ui, "Cancel", false, (18.0, 8.0, 18.0, 9.0)).clicked() {
                 acts.push(Action::CancelDelete);
             }
         });
     });
+    if modal.should_close() {
+        acts.push(Action::CancelDelete); // Escape or a click beside it
+    }
 }
 
 /// What the forward dialog keeps between frames.
@@ -317,7 +343,7 @@ pub fn forward(ctx: &egui::Context, fw: &mut ForwardUi, s: &AppState, tex: &mut 
     let mut open = true;
     egui::Window::new("Forward To").id(egui::Id::new("forward")).open(&mut open).collapsible(false).resizable(false).default_width(440.0).show(ctx, |ui| {
         ui.set_width(420.0);
-        egui::Frame::new().fill(k_rail()).corner_radius(8.0).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
+        egui::Frame::new().fill(k_rail()).corner_radius(12.0).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
             ui.set_width(400.0);
             if ui.add(egui::TextEdit::singleline(&mut fw.query).frame(egui::Frame::NONE).desired_width(f32::INFINITY).hint_text("Search")).changed() {
                 acts.push(Action::SearchForward(fw.query.clone()));
@@ -329,7 +355,7 @@ pub fn forward(ctx: &egui::Context, fw: &mut ForwardUi, s: &AppState, tex: &mut 
                 let chosen = f.chosen.contains(&r.id);
                 let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 40.0), Sense::click());
                 let t = ctx.animate_bool_with_time(resp.id, resp.hovered(), QUICK);
-                ui.painter().rect_filled(row, 6.0, k_hover().gamma_multiply(t));
+                ui.painter().rect_filled(row, 10.0, k_hover().gamma_multiply(t));
                 let a = egui::Rect::from_min_size(pos2(row.left() + 6.0, row.center().y - 14.0), vec2(28.0, 28.0));
                 let tx = texture(ctx, tex, asked, s, &r.avatar, want);
                 avatar(ui, a, tx, &r.name);

@@ -40,7 +40,7 @@ pub fn nav_rows(ui: &mut Ui, s: &AppState, acts: &mut Vec<Action>) {
         let r = r.translate(vec2(8.0, 0.0));
         let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), voice::QUICK);
         if on || t > 0.0 {
-            ui.painter().rect_filled(r, 8.0, if on { k_active() } else { k_active().gamma_multiply(t) });
+            ui.painter().rect_filled(r, 12.0, if on { k_active() } else { k_active().gamma_multiply(t) });
         }
         glyph(ui.painter(), egui::pos2(r.left() + 24.0, r.center().y), g, 17.0, if on { TEXT } else { SECONDARY }, false);
         ui.painter().text(egui::pos2(r.left() + 48.0, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::new(14.5, th::semibold()), if on { TEXT } else { SECONDARY });
@@ -109,10 +109,10 @@ fn message_requests(ui: &mut Ui, s: &AppState, tex: &mut HashMap<String, Texture
     }
 }
 
-fn icon_btn(ui: &mut Ui, g: &str, tip: &str, danger: bool) -> bool {
+pub(super) fn icon_btn(ui: &mut Ui, g: &str, tip: &str, danger: bool) -> bool {
     let (r, resp) = ui.allocate_exact_size(vec2(34.0, 34.0), Sense::click());
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), voice::QUICK);
-    ui.painter().circle_filled(r.center(), 17.0, k_raised().lerp_to_gamma(k_hover(), t));
+    ui.painter().circle_filled(r.center(), 17.0 + t, k_raised().lerp_to_gamma(k_hover(), t)); // grows a little on hover
     let col = if danger && resp.hovered() { DANGER } else if resp.hovered() { TEXT } else { SECONDARY };
     glyph(ui.painter(), r.center(), g, 15.0, col, false);
     resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
@@ -123,18 +123,21 @@ fn chip(ui: &mut Ui, text: &str, on: bool, accent: bool) -> bool {
     let g = ui.painter().layout_no_wrap(text.to_owned(), egui::FontId::new(13.5, th::semibold()), TEXT);
     let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 26.0, 30.0), Sense::click());
     let fill = if accent { pal.accent } else if on { k_active() } else if resp.hovered() { k_hover() } else { Color32::TRANSPARENT };
-    ui.painter().rect_filled(r, 7.0, fill);
+    ui.painter().rect_filled(r, 14.0, fill);
     let fg = if accent { pal.on_accent } else if on { TEXT } else { SECONDARY };
     ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::new(13.5, th::semibold()), fg);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
 /// One person's row: avatar with status, name, a line under it, and the buttons `buttons` draws on the right.
+/// True when the avatar or the name was clicked (the caller opens the profile).
 #[allow(clippy::too_many_arguments)]
-fn row(ui: &mut Ui, tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSet<String>, want: &mut Vec<String>, s: &AppState, avatar_url: &Option<String>, name: &str, line: &str, presence: Option<Option<Presence>>, buttons: impl FnOnce(&mut Ui)) {
+fn row(ui: &mut Ui, tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSet<String>, want: &mut Vec<String>, s: &AppState, avatar_url: &Option<String>, name: &str, line: &str, presence: Option<Option<Presence>>, buttons: impl FnOnce(&mut Ui)) -> bool {
     let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 60.0), Sense::hover());
-    if resp.hovered() {
-        ui.painter().rect_filled(r, 8.0, k_row_hover());
+    // contains_pointer: the clickable name on top would end `hovered`
+    let over = resp.contains_pointer();
+    if over {
+        ui.painter().rect_filled(r, 12.0, k_row_hover());
     }
     ui.painter().line_segment([egui::pos2(r.left() + 8.0, r.bottom()), egui::pos2(r.right() - 8.0, r.bottom())], egui::Stroke::new(1.0, k_line()));
     let ctx = ui.ctx().clone();
@@ -142,10 +145,15 @@ fn row(ui: &mut Ui, tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSe
     let a = egui::Rect::from_center_size(egui::pos2(r.left() + 30.0, r.center().y), vec2(38.0, 38.0));
     avatar(ui, a, t, name);
     if let Some(p) = presence {
-        status_dot(ui, a, p, if resp.hovered() { k_row_hover() } else { k_chat() });
+        status_dot(ui, a, p, if over { k_row_hover() } else { k_chat() });
     }
     ui.painter().text(egui::pos2(r.left() + 58.0, r.center().y - 9.0), egui::Align2::LEFT_CENTER, name, egui::FontId::new(14.5, th::semibold()), TEXT);
     ui.painter().text(egui::pos2(r.left() + 58.0, r.center().y + 10.0), egui::Align2::LEFT_CENTER, line, egui::FontId::proportional(12.5), MUTED);
+    // the whole row opens the profile; the buttons are added after it, so they sit on top and keep their clicks
+    let clicked = ui.interact(r, resp.id.with("profile"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+    if clicked {
+        super::header::remember_profile_at(ui.ctx()); // the card opens beside the click
+    }
     let bw = 160.0;
     let slot = egui::Rect::from_min_size(egui::pos2(r.right() - bw - 8.0, r.center().y - 17.0), vec2(bw, 34.0));
     ui.scope_builder(egui::UiBuilder::new().max_rect(slot).layout(Layout::right_to_left(Align::Center)), |ui| {
@@ -154,6 +162,7 @@ fn row(ui: &mut Ui, tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSe
     });
     // the button scope moved the cursor up to the middle of the row: put it back under the whole row
     ui.advance_cursor_after_rect(r);
+    clicked
 }
 
 fn status_text(f: &mytune_chat::yapfast_core::chat::Friend) -> String {
@@ -262,7 +271,7 @@ pub fn screen(ui: &mut Ui, s: &AppState, tex: &mut HashMap<String, TextureHandle
 }
 
 fn search(ui: &mut Ui, f: &mut Fr, hint: &str) {
-    egui::Frame::new().fill(k_rail()).corner_radius(8.0).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
+    egui::Frame::new().fill(k_rail()).corner_radius(12.0).inner_margin(egui::Margin::symmetric(12, 8)).show(ui, |ui| {
         ui.horizontal(|ui| {
             glyph(ui.painter(), egui::pos2(ui.cursor().left() + 8.0, ui.cursor().center().y + 2.0), "\u{E721}", 14.0, MUTED, false);
             ui.add_space(22.0);
@@ -294,14 +303,16 @@ fn friends(ui: &mut Ui, s: &AppState, f: &mut Fr, tex: &mut HashMap<String, Text
     for x in list {
         let line = status_text(x);
         let (id, name) = (x.id.clone(), x.name.clone());
-        row(ui, tex, asked, want, s, &x.avatar, &x.name, &line, Some(x.presence), |ui| {
+        if row(ui, tex, asked, want, s, &x.avatar, &x.name, &line, Some(x.presence), |ui| {
             if icon_btn(ui, "\u{E712}", "Remove friend", true) {
                 f_confirm.set(Some((id.clone(), name.clone())));
             }
             if icon_btn(ui, "\u{E8BD}", "Message", false) {
                 acts.push(Action::MessagePerson(id.clone()));
             }
-        });
+        }) {
+            acts.push(Action::ShowProfile { user: x.id.clone(), large: false });
+        }
     }
     if let Some(c) = f_confirm.take() {
         f.confirm = Some(c);
@@ -332,7 +343,7 @@ fn requests(ui: &mut Ui, s: &AppState, tex: &mut HashMap<String, TextureHandle>,
                 1 => "Outgoing Friend Request",
                 _ => "Likely spam",
             };
-            row(ui, tex, asked, want, s, &r.avatar, &r.name, line, None, |ui| {
+            if row(ui, tex, asked, want, s, &r.avatar, &r.name, line, None, |ui| {
                 // right to left: the last one added sits leftmost
                 if icon_btn(ui, "\u{E711}", if kind == 1 { "Cancel request" } else { "Ignore" }, true) {
                     acts.push(Action::RemoveFriendRequest(id.clone()));
@@ -340,7 +351,9 @@ fn requests(ui: &mut Ui, s: &AppState, tex: &mut HashMap<String, TextureHandle>,
                 if kind != 1 && icon_btn(ui, "\u{E73E}", "Accept", false) {
                     acts.push(Action::Befriend(id.clone()));
                 }
-            });
+            }) {
+                acts.push(Action::ShowProfile { user: r.id.clone(), large: false });
+            }
         }
     }
 }
@@ -357,11 +370,13 @@ fn blocked(ui: &mut Ui, s: &AppState, tex: &mut HashMap<String, TextureHandle>, 
     heading(ui, &format!("BLOCKED \u{2014} {}", s.discord_blocked.len()));
     for b in &s.discord_blocked {
         let id = b.id.clone();
-        row(ui, tex, asked, want, s, &b.avatar, &b.name, b.username.as_deref().unwrap_or("Blocked"), None, |ui| {
+        if row(ui, tex, asked, want, s, &b.avatar, &b.name, b.username.as_deref().unwrap_or("Blocked"), None, |ui| {
             if icon_btn(ui, "\u{E8FB}", "Unblock", false) {
                 acts.push(Action::ChangeRelationship { user: id.clone(), change: RelationshipChange::Unblock });
             }
-        });
+        }) {
+            acts.push(Action::ShowProfile { user: b.id.clone(), large: false });
+        }
     }
 }
 
@@ -372,7 +387,7 @@ fn add_friend(ui: &mut Ui, s: &AppState, f: &mut Fr, acts: &mut Vec<Action>) {
     ui.add_space(12.0);
     let sending = s.add_friend.as_ref().is_some_and(|a| a.sending);
     let mut go = false;
-    egui::Frame::new().fill(k_rail()).corner_radius(10.0).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
+    egui::Frame::new().fill(k_rail()).corner_radius(14.0).inner_margin(egui::Margin::symmetric(14, 10)).show(ui, |ui| {
         ui.horizontal(|ui| {
             let w = ui.available_width() - 190.0;
             let te = ui.add(egui::TextEdit::singleline(&mut f.add_name).frame(egui::Frame::NONE).desired_width(w).hint_text(rt("You can add friends with their Discord username.", 14.0).color(FAINT)));
@@ -391,6 +406,7 @@ fn add_friend(ui: &mut Ui, s: &AppState, f: &mut Fr, acts: &mut Vec<Action>) {
     });
     if go && !f.add_name.trim().is_empty() && !sending {
         acts.push(Action::AddFriend(f.add_name.clone()));
+        ui.data_mut(|d| d.insert_temp(egui::Id::new("add_friend_sent"), true));
     }
     ui.add_space(8.0);
     match s.add_friend.as_ref().and_then(|a| a.outcome.as_ref()) {
@@ -399,7 +415,10 @@ fn add_friend(ui: &mut Ui, s: &AppState, f: &mut Fr, acts: &mut Vec<Action>) {
         }
         Some(Ok(name)) => {
             ui.label(rt(format!("Success! Your friend request to {name} was sent."), 13.5).color(LIVE));
-            f.add_name.clear();
+            // once per request: the outcome stays until the next one, and the field must stay usable
+            if ui.data_mut(|d| d.remove_temp::<bool>(egui::Id::new("add_friend_sent"))).is_some() {
+                f.add_name.clear();
+            }
         }
         Some(Err(why)) => {
             ui.label(rt(why, 13.5).color(DANGER));
@@ -412,23 +431,23 @@ fn add_friend(ui: &mut Ui, s: &AppState, f: &mut Fr, acts: &mut Vec<Action>) {
 fn confirm(ctx: &egui::Context, f: &mut Fr, acts: &mut Vec<Action>) {
     let Some((id, name)) = f.confirm.clone() else { return };
     let mut close = false;
-    egui::Modal::new(egui::Id::new("unfriend")).show(ctx, |ui| {
+    let modal = egui::Modal::new(egui::Id::new("unfriend")).show(ctx, |ui| {
         ui.set_width(380.0);
         ui.label(sb(format!("Remove '{name}'"), 17.0).color(TEXT));
         ui.add_space(4.0);
         ui.label(rt(format!("Are you sure you want to permanently remove {name} from your friends?"), 13.5).color(SECONDARY));
         ui.add_space(14.0);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui.add(egui::Button::new(sb("Remove Friend", 13.0).color(Color32::WHITE)).fill(DANGER).corner_radius(8.0).min_size(vec2(120.0, 34.0))).clicked() {
+            if crate::theme::button_tint(ui, "Remove Friend", false, Some(DANGER), (18.0, 8.0, 18.0, 9.0)).clicked() {
                 acts.push(Action::ChangeRelationship { user: id.clone(), change: RelationshipChange::Unfriend });
                 close = true;
             }
-            if ui.add(egui::Button::new(sb("Cancel", 13.0).color(TEXT)).fill(k_raised()).corner_radius(8.0).min_size(vec2(90.0, 34.0))).clicked() {
+            if crate::theme::button(ui, "Cancel", false, (18.0, 8.0, 18.0, 9.0)).clicked() {
                 close = true;
             }
         });
     });
-    if close {
+    if close || modal.should_close() {
         f.confirm = None;
     }
 }

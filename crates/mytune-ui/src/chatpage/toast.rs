@@ -13,23 +13,18 @@ struct Seen {
     ready: bool,
 }
 
-fn xml_escape(s: &str) -> String {
-    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;")
-}
-
 /// Shows a toast with a title and a line, from a thread so the UI never waits on PowerShell.
 fn show(title: String, line: String) {
     std::thread::spawn(move || {
         use std::os::windows::process::CommandExt;
-        let (t, l) = (xml_escape(&title).replace('\'', "''"), xml_escape(&line).replace('\'', "''"));
-        let script = format!(
-            "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; \
+        // The texts are other people's: they go in as environment variables, never as part of the script, so
+        // nothing in a message can run as PowerShell. CreateTextNode does the XML escaping.
+        let script = "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; \
              $x = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); \
-             $n = $x.GetElementsByTagName('text'); $n.Item(0).AppendChild($x.CreateTextNode('{t}')) | Out-Null; $n.Item(1).AppendChild($x.CreateTextNode('{l}')) | Out-Null; \
+             $n = $x.GetElementsByTagName('text'); $n.Item(0).AppendChild($x.CreateTextNode($env:MYTUNE_TOAST_TITLE)) | Out-Null; $n.Item(1).AppendChild($x.CreateTextNode($env:MYTUNE_TOAST_LINE)) | Out-Null; \
              $toast = [Windows.UI.Notifications.ToastNotification]::new($x); \
-             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}}\\WindowsPowerShell\\v1.0\\powershell.exe').Show($toast)"
-        );
-        let _ = std::process::Command::new("powershell").args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script]).creation_flags(0x0800_0000).output();
+             [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe').Show($toast)";
+        let _ = std::process::Command::new("powershell").args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script]).env("MYTUNE_TOAST_TITLE", title.replace('\0', "")).env("MYTUNE_TOAST_LINE", line.replace('\0', "")).creation_flags(0x0800_0000).output();
     });
 }
 
@@ -45,13 +40,6 @@ impl ChatPage {
         // messages and mentions come from the engine's alerts, which already follow mute and notification
         // levels, and carry who wrote where and the text
         for a in chat.take_alerts() {
-            // the DM list shows it under the name
-            if !a.body.trim().is_empty() {
-                let lid = egui::Id::new("last_msgs");
-                let mut last: HashMap<String, (String, u64)> = ctx.data(|d| d.get_temp(lid)).unwrap_or_default();
-                last.insert(a.room.clone(), (a.body.replace('\n', " "), mytune_chat::yapfast_core::clock::now_ms() / 1000));
-                ctx.data_mut(|d| d.insert_temp(lid, last));
-            }
             if seen.ready && enabled && !focused && !dnd {
                 let body: String = super::markdown::plain(&a.body).chars().take(240).collect();
                 show(tidy(&a.title), if body.trim().is_empty() { "sent a message".to_owned() } else { body });

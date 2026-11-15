@@ -12,6 +12,19 @@ pub fn edit_id() -> egui::Id {
     egui::Id::new("composer_edit")
 }
 
+/// Asks for the keyboard focus in the composer. The field takes it itself after it is drawn:
+/// a direct `request_focus` from a menu click is dropped when the field is drawn later in the
+/// same frame, because egui takes the focus from a field on a click outside it.
+pub fn focus(ctx: &egui::Context) {
+    ctx.data_mut(|d| d.insert_temp(edit_id().with("focus"), true));
+    ctx.request_repaint();
+}
+
+/// True once after `focus` was called.
+pub fn take_focus(ctx: &egui::Context) -> bool {
+    ctx.data_mut(|d| d.remove_temp::<bool>(edit_id().with("focus"))).is_some()
+}
+
 #[derive(Clone, Default)]
 struct Mention {
     /// The `@` word last told to the engine.
@@ -102,6 +115,10 @@ pub fn after_edit(ctx: &egui::Context, out: &egui::text_edit::TextEditOutput, dr
 fn accept(ctx: &egui::Context, s: &AppState, draft: &mut String, index: usize, acts: &mut Vec<Action>) {
     let Some(c) = s.mention_suggestions().into_iter().nth(index) else { return };
     let mut st = state(ctx);
+    // the caret is last frame's: the draft may have been sent or replaced since
+    if !draft.is_char_boundary(st.caret) {
+        return;
+    }
     let Some((at, _)) = mention::query(draft, st.caret) else { return };
     let insert = format!("@{} ", c.name);
     draft.replace_range(at..st.caret, &insert);
@@ -116,7 +133,7 @@ fn accept(ctx: &egui::Context, s: &AppState, draft: &mut String, index: usize, a
     store(ctx, st);
     acts.push(Action::MentionQuery(None));
     acts.push(Action::SetDraft(draft.clone()));
-    ctx.memory_mut(|m| m.request_focus(edit_id()));
+    focus(ctx);
 }
 
 /// The suggestion list above the composer: avatar, name and username, the chosen row lit; a click takes one.
@@ -131,14 +148,14 @@ pub fn popup(ctx: &egui::Context, s: &AppState, composer: egui::Rect, draft: &mu
     let h = list.len() as f32 * row_h + 28.0;
     let mut take = None;
     egui::Area::new(egui::Id::new("mention_popup")).order(egui::Order::Foreground).fixed_pos(egui::pos2(composer.left(), composer.top() - h - 8.0)).show(ctx, |ui| {
-        egui::Frame::new().fill(k_raised()).stroke(egui::Stroke::new(1.0, k_edge())).corner_radius(10.0).inner_margin(egui::Margin::same(6)).show(ui, |ui| {
+        crate::theme::float(ui, crate::theme::R_MENU, 6, |ui| {
             ui.set_width(w);
             ui.label(sb("MEMBERS", 11.0).color(MUTED));
             ui.add_space(2.0);
             for (i, c) in list.iter().enumerate() {
                 let (r, resp) = ui.allocate_exact_size(vec2(w, row_h - 4.0), Sense::click());
                 if i == st.index.min(list.len() - 1) || resp.hovered() {
-                    ui.painter().rect_filled(r, 6.0, k_active());
+                    ui.painter().rect_filled(r, 10.0, k_active());
                 }
                 let t = texture(ctx, tex, asked, s, &c.avatar, want);
                 avatar(ui, egui::Rect::from_center_size(egui::pos2(r.left() + 20.0, r.center().y), vec2(26.0, 26.0)), t, &c.name);

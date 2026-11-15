@@ -31,7 +31,7 @@ pub struct ToolsPage {
     tweaks: Vec<DataTweak>,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
-    status: Option<(String, bool)>,
+    pub(crate) status: Option<(String, bool)>,
     started: bool,
 
     targets: Arc<Vec<CleanTarget>>,

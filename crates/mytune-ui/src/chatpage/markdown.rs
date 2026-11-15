@@ -219,7 +219,7 @@ pub fn body(ui: &mut Ui, s: &AppState, m: &ChatMessage, size: f32, tex: &mut Has
         for b in blocks(&m.body) {
             match b {
                 Block::Code(code) => {
-                    egui::Frame::new().fill(k_rail()).stroke(egui::Stroke::new(1.0, k_edge())).corner_radius(6.0).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
+                    egui::Frame::new().fill(k_rail()).stroke(egui::Stroke::new(1.0, k_edge())).corner_radius(10.0).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
                         ui.add(egui::Label::new(rt(&code, size - 1.0).monospace().color(color)).selectable(true));
                     });
                 }
@@ -276,7 +276,7 @@ fn line(ui: &mut Ui, ctx: &egui::Context, s: &AppState, m: &ChatMessage, text: &
             while !rest.is_empty() {
                 // the next mention or server emoji in this run
                 let hit_m = m.mentions.iter().filter(|x| !x.text.is_empty()).filter_map(|x| rest.find(x.text.as_str()).map(|at| (at, x.text.len(), Some(x), None))).min_by_key(|h| h.0);
-                let hit_e = m.emoji.iter().filter_map(|c| rest.find(c.text.as_str()).map(|at| (at, c.text.len(), None, Some(c)))).min_by_key(|h| h.0);
+                let hit_e = m.emoji.iter().filter(|c| !c.text.is_empty()).filter_map(|c| rest.find(c.text.as_str()).map(|at| (at, c.text.len(), None, Some(c)))).min_by_key(|h| h.0);
                 let hit = match (hit_m, hit_e) {
                     (Some(a), Some(b)) => Some(if a.0 <= b.0 { a } else { b }),
                     (a, b) => a.or(b),

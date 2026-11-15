@@ -2,6 +2,7 @@
 //! Compatible with the C# MyTune 2 `state.json` format.
 
 pub mod alltweaks;
+pub mod audio;
 pub mod backup;
 pub mod booster;
 pub mod catalog;

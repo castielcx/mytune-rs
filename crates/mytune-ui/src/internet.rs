@@ -37,7 +37,7 @@ pub struct InternetPage {
     applied: Vec<bool>,
     applied_rx: Rx<Vec<bool>>,
     tweak_rx: Rx<(String, bool)>,
-    status: Option<(String, bool)>,
+    pub(crate) status: Option<(String, bool)>,
 
     speed_rx: Rx<SpeedMsg>,
     speed_cancel: Arc<AtomicBool>,

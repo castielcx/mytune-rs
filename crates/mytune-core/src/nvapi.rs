@@ -141,6 +141,24 @@ pub fn available() -> bool {
     })
 }
 
+/// Every setting id this driver knows, with its name; for finding ids (`examples/nvapi_readonly`).
+pub fn known_settings() -> Result<Vec<(u32, String)>> {
+    type FnIds = unsafe extern "C" fn(*mut u32, *mut u32) -> i32;
+    type FnName = unsafe extern "C" fn(u32, *mut UStr) -> i32;
+    let mut ids = vec![0u32; 4096];
+    let mut n = ids.len() as u32;
+    chk("DRS_EnumAvailableSettingIds", unsafe { func::<FnIds>(0xF020614A, "DRS_EnumAvailableSettingIds")?(ids.as_mut_ptr(), &mut n) })?;
+    let name = func::<FnName>(0xD61CBE6E, "DRS_GetSettingNameFromId")?;
+    Ok(ids[..n as usize]
+        .iter()
+        .map(|&id| {
+            let mut s: Box<UStr> = Box::new([0; USTR]);
+            unsafe { name(id, &mut *s) };
+            (id, ustr_to_string(&s[..]))
+        })
+        .collect())
+}
+
 // ---------------------------------------------------------------- session
 
 static GATE: Mutex<()> = Mutex::new(());
@@ -268,6 +286,17 @@ impl Session {
             SETTING_NOT_FOUND => Ok(None),
             st => Err(Error::Nvapi { func: "DRS_GetSetting", status: st }),
         }
+    }
+
+    /// Every setting stored in the profile as (id, value); for finding ids (`examples/nvapi_readonly`).
+    pub fn settings(&self, p: Profile) -> Result<Vec<(u32, u32)>> {
+        type FnEnum = unsafe extern "C" fn(H, H, u32, *mut u32, *mut NvSetting) -> i32;
+        let f = func::<FnEnum>(0xAE3039DA, "DRS_EnumSettings")?;
+        let mut all: Vec<NvSetting> = (0..512).map(|_| unsafe { std::mem::zeroed() }).collect();
+        all.iter_mut().for_each(|s| s.version = SETTING_VER);
+        let mut n = all.len() as u32;
+        chk("DRS_EnumSettings", unsafe { f(self.h, p.0, 0, &mut n, all.as_mut_ptr()) })?;
+        Ok(all[..n as usize].iter().map(|s| (s.id, u32::from_le_bytes(s.current[..4].try_into().unwrap()))).collect())
     }
 
     pub fn set(&self, p: Profile, id: u32, value: u32) -> Result<()> {

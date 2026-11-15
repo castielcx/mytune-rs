@@ -10,7 +10,8 @@ $iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "${env:ProgramFile
 if (-not $iscc) { throw 'Inno Setup 6 not found. Install it with: winget install JRSoftware.InnoSetup' }
 
 $ErrorActionPreference = 'Continue' # cargo prints warnings on stderr
-& "$root\build.ps1" build --release -p mytune-ui
+# local-stickers: the Stickers tab of the chat picker, in the public build by the owner's choice (2026-11-15).
+& "$root\build.ps1" build --release -p mytune-ui --features local-stickers
 if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 $ErrorActionPreference = 'Stop'
 

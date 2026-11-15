@@ -71,11 +71,95 @@ pub fn server_profile(ctx: &egui::Context, d: &mut DialogsUi, s: &AppState, acts
 }
 
 fn danger_button(ui: &mut Ui, text: &str) -> bool {
-    ui.add(egui::Button::new(sb(text, 13.0).color(Color32::WHITE)).fill(DANGER).corner_radius(8.0).min_size(vec2(100.0, 34.0))).clicked()
+    th::button_tint(ui, text, false, Some(DANGER), (14.0, 5.0, 14.0, 6.0)).clicked()
 }
 
 fn plain_button(ui: &mut Ui, text: &str) -> bool {
-    ui.add(egui::Button::new(sb(text, 13.0).color(TEXT)).fill(voice::k_raised()).corner_radius(8.0).min_size(vec2(90.0, 34.0))).clicked()
+    th::button(ui, text, false, (14.0, 5.0, 14.0, 6.0)).clicked()
+}
+
+/// Discord's two-factor prompt: it holds some requests back (deleting a server, bans, role changes) until the
+/// account confirms with a code. The engine keeps the prompt (`AppState::mfa`); without this dialog such a
+/// request waited for ever.
+pub fn mfa(ctx: &egui::Context, s: &AppState, acts: &mut Vec<Action>) {
+    use mytune_chat::yapfast_core::chat::MfaMethod as M;
+    let Some(p) = s.mfa.first() else { return };
+    let name = |m: M| match m {
+        M::App => "Authenticator app",
+        M::Sms => "Text message",
+        M::Password => "Password",
+        M::Backup => "Backup code",
+        M::Passkey => "Passkey",
+    };
+    let modal = egui::Modal::new(egui::Id::new(("mfa", p.id))).show(ctx, |ui| {
+        ui.set_width(400.0);
+        ui.label(sb("Two-factor authentication", 17.0).color(TEXT));
+        ui.add_space(4.0);
+        match p.method {
+            None => {
+                ui.label(rt("Choose how to confirm it is you.", 13.5).color(SECONDARY));
+                ui.add_space(8.0);
+                let mut any = false;
+                for m in p.usable() {
+                    any = true;
+                    if pill(ui, name(m), false).clicked() {
+                        acts.push(Action::ChooseMfa(Some(m)));
+                    }
+                    ui.add_space(4.0);
+                }
+                if !any {
+                    ui.label(rt("This account confirms only with a passkey, which needs Discord's own app.", 13.0).color(MUTED));
+                }
+            }
+            Some(_) if p.warning() => {
+                ui.label(rt("Slow down! A backup code works only once. Use one only when you cannot reach your other ways to confirm.", 13.5).color(SECONDARY));
+            }
+            Some(m) => {
+                let (about, hint) = match (m, &p.phone) {
+                    (M::Sms, Some(phone)) => (format!("Discord texted a code to {phone}."), "6-digit code"),
+                    (M::Sms, None) => ("Discord is texting you a code.".to_owned(), "6-digit code"),
+                    (M::App, _) => ("Enter the code from your authenticator app.".to_owned(), "6-digit code"),
+                    (M::Password, _) => ("Enter your Discord password.".to_owned(), "Password"),
+                    _ => ("Enter one of your backup codes.".to_owned(), "8-character backup code"),
+                };
+                ui.label(rt(about, 13.5).color(SECONDARY));
+                ui.add_space(8.0);
+                let mut code = p.code.clone();
+                let te = ui.add(egui::TextEdit::singleline(&mut code).password(m == M::Password).desired_width(f32::INFINITY).hint_text(rt(hint, 13.5).color(FAINT)));
+                if te.changed() {
+                    acts.push(Action::WriteMfa(code));
+                }
+                if te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    acts.push(Action::ConfirmMfa);
+                }
+            }
+        }
+        if let Some(e) = &p.error {
+            ui.add_space(6.0);
+            ui.add(egui::Label::new(rt(e, 12.5).color(DANGER)).wrap());
+        }
+        ui.add_space(12.0);
+        ui.horizontal_wrapped(|ui| {
+            if p.method.is_some() {
+                let label = if p.busy { "Checking\u{2026}" } else if p.warning() { "Use a backup code" } else { "Confirm" };
+                if pill(ui, label, true).clicked() {
+                    acts.push(Action::ConfirmMfa);
+                }
+                if p.method == Some(M::Sms) && pill(ui, "Send again", false).clicked() {
+                    acts.push(Action::ResendMfa);
+                }
+                if p.usable().count() > 1 && pill(ui, "Another way", false).clicked() {
+                    acts.push(Action::ChooseMfa(None));
+                }
+            }
+            if pill(ui, "Cancel", false).clicked() {
+                acts.push(Action::CancelMfa);
+            }
+        });
+    });
+    if modal.should_close() {
+        acts.push(Action::CancelMfa);
+    }
 }
 
 fn age_text(s: u32) -> String {
@@ -98,7 +182,7 @@ fn choices<T: Copy + PartialEq>(ui: &mut Ui, label: &str, now: T, all: &[T], tex
     ui.horizontal_wrapped(|ui| {
         for &v in all {
             let on = v == now;
-            let b = egui::Button::new(rt(text(v), 12.5).color(if on { Color32::WHITE } else { SECONDARY })).fill(if on { p().accent } else { voice::k_raised() }).corner_radius(6.0);
+            let b = crate::theme::Choice::new(text(v), on);
             if ui.add(b).clicked() && !on {
                 picked = Some(v);
             }
@@ -117,7 +201,7 @@ pub fn invite(ctx: &egui::Context, s: &AppState, acts: &mut Vec<Action>) {
         ui.add_space(8.0);
         match &d.link {
             Some(link) => {
-                egui::Frame::new().fill(k_field()).corner_radius(8.0).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
+                egui::Frame::new().fill(k_field()).corner_radius(12.0).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(rt(link, 13.5).color(TEXT));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -214,7 +298,7 @@ pub fn channel(ctx: &egui::Context, du: &mut DialogsUi, s: &AppState, acts: &mut
                 ui.horizontal(|ui| {
                     for (v, t) in [(false, "Text"), (true, "Voice")] {
                         let on = du.voice == v;
-                        if ui.add(egui::Button::new(rt(t, 13.0).color(if on { Color32::WHITE } else { SECONDARY })).fill(if on { p().accent } else { voice::k_raised() }).corner_radius(6.0)).clicked() {
+                        if ui.add(crate::theme::Choice::new(t, on)).clicked() {
                             du.voice = v;
                         }
                     }
@@ -263,7 +347,7 @@ pub fn join(ctx: &egui::Context, du: &mut DialogsUi, s: &AppState, acts: &mut Ve
         }
         if let Some(pv) = &d.preview {
             ui.add_space(8.0);
-            egui::Frame::new().fill(k_field()).corner_radius(8.0).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+            egui::Frame::new().fill(k_field()).corner_radius(12.0).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
                 ui.label(sb(&pv.name, 15.0).color(TEXT));
                 let mut line = String::new();
                 if let Some(o) = pv.online {

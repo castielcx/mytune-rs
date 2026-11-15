@@ -36,8 +36,7 @@ fn small(ui: &mut Ui, text: &str) {
 }
 
 fn button(ui: &mut Ui, text: &str, danger: bool) -> bool {
-    let b = egui::Button::new(sb(text, 12.5).color(if danger { Color32::WHITE } else { TEXT })).fill(if danger { DANGER } else { k_raised() }).corner_radius(6.0).min_size(vec2(0.0, 28.0));
-    ui.add(b).clicked()
+    crate::theme::button_tint(ui, text, false, danger.then_some(DANGER), (12.0, 3.0, 12.0, 4.0)).clicked()
 }
 
 fn input(acts: &mut Vec<Action>, i: ChannelInput) {
@@ -64,7 +63,7 @@ pub fn screen(ui: &mut Ui, cu: &mut ChannelUi, app: &Application, cs: &ChannelSe
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
             let t = ctx.animate_bool_with_time(resp.id, resp.hovered(), QUICK);
             if on || t > 0.0 {
-                ui.painter().rect_filled(r, 6.0, if on { super::k_active() } else { super::k_hover().gamma_multiply(t) });
+                ui.painter().rect_filled(r, 10.0, if on { super::k_active() } else { super::k_hover().gamma_multiply(t) });
             }
             ui.painter().text(egui::pos2(r.left() + 12.0, r.center().y), egui::Align2::LEFT_CENTER, name, egui::FontId::proportional(14.0), if on { TEXT } else { SECONDARY });
             if resp.clicked() {
@@ -146,7 +145,7 @@ fn overview(ui: &mut Ui, cs: &ChannelSettingsScreen, acts: &mut Vec<Action>) {
             for &sec in SLOWMODES.iter() {
                 let on = sec == draft.slowmode;
                 let text = slow(sec);
-                let b = egui::Button::new(sb(&text, 12.5).color(if on { super::p().on_accent } else { TEXT })).fill(if on { super::p().accent } else { k_raised() }).corner_radius(6.0).min_size(vec2(0.0, 28.0));
+                let b = crate::theme::Choice::new(&text, on).min_size(vec2(0.0, 28.0));
                 if ui.add(b).clicked() {
                     input(acts, ChannelInput::Slowmode(sec));
                 }
@@ -201,7 +200,7 @@ fn permissions(ui: &mut Ui, cu: &mut ChannelUi, app: &Application, cs: &ChannelS
                 let name = app.overwrite_name(room, ow);
                 let (r, resp) = ui.allocate_exact_size(vec2(210.0, 30.0), Sense::click());
                 if on || resp.hovered() {
-                    ui.painter().rect_filled(r, 6.0, if on { super::k_active() } else { super::k_hover() });
+                    ui.painter().rect_filled(r, 10.0, if on { super::k_active() } else { super::k_hover() });
                 }
                 super::voice::glyph(ui.painter(), egui::pos2(r.left() + 16.0, r.center().y), if ow.member { "\u{E77B}" } else { "\u{E716}" }, 13.0, SECONDARY, false);
                 let shown = super::ellipsize(ui, &tidy(&name), &egui::FontId::proportional(13.5), 160.0);
@@ -272,7 +271,7 @@ fn permissions(ui: &mut Ui, cu: &mut ChannelUi, app: &Application, cs: &ChannelS
                         ui.add_enabled_ui(!locked, |ui| {
                             for (st, glyph, col) in [(OverwriteState::Deny, "\u{2715}", DANGER), (OverwriteState::Neutral, "/", SECONDARY), (OverwriteState::Allow, "\u{2713}", LIVE)] {
                                 let on = cur == st;
-                                let b = egui::Button::new(sb(glyph, 14.0).color(if on { Color32::WHITE } else { col })).fill(if on { col.gamma_multiply(0.8) } else { k_raised() }).corner_radius(6.0).min_size(vec2(34.0, 28.0));
+                                let b = egui::Button::new(sb(glyph, 14.0).color(if on { Color32::WHITE } else { col })).fill(if on { col.gamma_multiply(0.8) } else { k_raised() }).corner_radius(10.0).min_size(vec2(34.0, 28.0));
                                 if ui.add(b).clicked() {
                                     input(acts, ChannelInput::Set(bit, st));
                                 }

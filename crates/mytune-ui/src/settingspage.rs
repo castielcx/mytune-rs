@@ -44,7 +44,7 @@ pub struct SettingsPage {
     net: Arc<Vec<NetTweak>>,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
-    status: Option<(String, bool)>,
+    pub(crate) status: Option<(String, bool)>,
     started: bool,
     autostart: Option<bool>,
     autostart_busy: bool,

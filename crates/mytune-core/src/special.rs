@@ -314,6 +314,7 @@ pub fn msi_tweak(cmd: &dyn Cmd, hooks: Arc<dyn Hooks>) -> Result<DataTweak> {
                 name: "MSISupported".into(),
                 value: RegValue::Dword(1),
                 only_if_key_exists: false,
+                default: None, // the driver's INF may set it: unknown
             })
             .collect(),
         after: After::None,

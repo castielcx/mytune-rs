@@ -104,7 +104,7 @@ pub fn view(ui: &mut Ui, fu: &mut ForumUi, app: &Application, tex: &mut HashMap<
     // search or create a post
     ui.horizontal(|ui| {
         let w = ui.available_width();
-        egui::Frame::new().fill(k_field()).corner_radius(8.0).stroke(Stroke::new(1.0, k_line())).inner_margin(egui::Margin::symmetric(12, 9)).show(ui, |ui| {
+        egui::Frame::new().fill(k_field()).corner_radius(12.0).stroke(Stroke::new(1.0, k_line())).inner_margin(egui::Margin::symmetric(12, 9)).show(ui, |ui| {
             ui.set_width(w - if app.can_post() { 130.0 } else { 26.0 });
             ui.horizontal(|ui| {
                 let (ir, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
@@ -244,7 +244,7 @@ fn card(ui: &mut Ui, s: &AppState, post: &ForumPost, now: u64, tex: &mut HashMap
                     let bright = post.new || post.thread.unread;
                     ui.add(egui::Label::new(sb(&post.thread.name, 16.0).color(if bright { TEXT } else { SECONDARY })).truncate());
                     if post.new {
-                        egui::Frame::new().fill(p().accent).corner_radius(8.0).inner_margin(egui::Margin::symmetric(6, 1)).show(ui, |ui| {
+                        egui::Frame::new().fill(p().accent).corner_radius(12.0).inner_margin(egui::Margin::symmetric(6, 1)).show(ui, |ui| {
                             ui.label(sb("NEW", 10.0).color(p().on_accent));
                         });
                     }
@@ -268,7 +268,7 @@ fn card(ui: &mut Ui, s: &AppState, post: &ForumPost, now: u64, tex: &mut HashMap
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 6.0;
                     if let Some((e, n)) = starter.and_then(|x| x.reaction.as_ref()) {
-                        egui::Frame::new().fill(k_raised()).stroke(Stroke::new(1.0, k_line())).corner_radius(6.0).inner_margin(egui::Margin::symmetric(6, 2)).show(ui, |ui| {
+                        egui::Frame::new().fill(k_raised()).stroke(Stroke::new(1.0, k_line())).corner_radius(10.0).inner_margin(egui::Margin::symmetric(6, 2)).show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 4.0;
                                 emoji(ui, s, e, 14.0, tex, asked, want);
@@ -290,14 +290,14 @@ fn card(ui: &mut Ui, s: &AppState, post: &ForumPost, now: u64, tex: &mut HashMap
                         let size = tex.values().find(|h| h.id() == t).map_or(vec2(1.0, 1.0), |h| h.size_vec2());
                         let (ra, ta) = (1.0, size.x / size.y.max(1.0));
                         let uv = if ta > ra { let w = ra / ta; Rect::from_min_max(pos2((1.0 - w) / 2.0, 0.0), pos2((1.0 + w) / 2.0, 1.0)) } else { let h = ta / ra; Rect::from_min_max(pos2(0.0, (1.0 - h) / 2.0), pos2(1.0, (1.0 + h) / 2.0)) };
-                        egui::Image::new(egui::load::SizedTexture::new(t, pr.size())).uv(uv).corner_radius(8.0).paint_at(ui, pr);
+                        egui::Image::new(egui::load::SizedTexture::new(t, pr.size())).uv(uv).corner_radius(12.0).paint_at(ui, pr);
                     }
                     None => {
-                        ui.painter().rect_filled(pr, 8.0, k_raised());
+                        ui.painter().rect_filled(pr, 12.0, k_raised());
                     }
                 }
                 if starter.is_some_and(|x| x.spoiler) {
-                    ui.painter().rect_filled(pr, 8.0, Color32::from_black_alpha(200));
+                    ui.painter().rect_filled(pr, 12.0, Color32::from_black_alpha(200));
                     ui.painter().text(pr.center(), egui::Align2::CENTER_CENTER, "SPOILER", egui::FontId::new(10.0, th::semibold()), TEXT);
                 }
             }
@@ -328,7 +328,7 @@ pub fn aside(ui: &mut Ui, fu: &mut ForumUi, look: Look, s: &AppState, tex: &mut 
                 let mut b = |ui: &mut Ui, g: &str, tip: &str| {
                     let (r, resp) = ui.allocate_exact_size(vec2(28.0, 28.0), Sense::click());
                     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
-                    ui.painter().rect_filled(r, 6.0, k_hover().gamma_multiply(t));
+                    ui.painter().rect_filled(r, 10.0, k_hover().gamma_multiply(t));
                     glyph(ui.painter(), r.center(), g, 14.0, SECONDARY.lerp_to_gamma(TEXT, t), false);
                     resp.on_hover_text(tip).clicked()
                 };
@@ -347,7 +347,7 @@ pub fn aside(ui: &mut Ui, fu: &mut ForumUi, look: Look, s: &AppState, tex: &mut 
             ui.label(rt("You cannot reply here.", 13.0).color(MUTED));
             return;
         }
-        egui::Frame::new().fill(k_field()).corner_radius(10.0).inner_margin(egui::Margin::symmetric(12, 9)).show(ui, |ui| {
+        egui::Frame::new().fill(k_field()).corner_radius(14.0).inner_margin(egui::Margin::symmetric(12, 9)).show(ui, |ui| {
             let te = ui.add(egui::TextEdit::singleline(&mut fu.aside_draft).frame(egui::Frame::NONE).desired_width(f32::INFINITY).hint_text(rt(format!("Message {name}"), 13.5).color(FAINT)));
             if te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !fu.aside_draft.trim().is_empty() && s.can_send_in(&a.room) {
                 acts.push(Action::SetAsideDraft(std::mem::take(&mut fu.aside_draft)));
@@ -358,8 +358,7 @@ pub fn aside(ui: &mut Ui, fu: &mut ForumUi, look: Look, s: &AppState, tex: &mut 
     });
     egui::CentralPanel::default().frame(egui::Frame::new().fill(k_sidebar())).show_inside(ui, |ui| {
         if !a.ready {
-            ui.add_space(20.0);
-            ui.vertical_centered(|ui| ui.label(rt("Loading\u{2026}", 13.0).color(MUTED)));
+            skeleton(ui);
             return;
         }
         egui::ScrollArea::vertical().auto_shrink(false).stick_to_bottom(true).show(ui, |ui| {
@@ -374,8 +373,14 @@ pub fn aside(ui: &mut Ui, fu: &mut ForumUi, look: Look, s: &AppState, tex: &mut 
                 });
             }
             let mut seen = Vec::new();
-            message_list(ui, s, &a.messages, tex, asked, want, acts, look, None, &mut None, &mut seen);
-            acts.push(Action::VisibleMessages { room: a.room.clone(), items: seen, at_end: true });
+            message_list(ui, s, &a.messages, tex, asked, want, acts, look, None, &mut None, &mut seen, usize::MAX);
+            // only when it changed: a dispatch each frame kept the page repainting
+            let vid = egui::Id::new("aside_visible");
+            let now = (a.room.clone(), seen);
+            if ui.data(|d| d.get_temp::<(String, Vec<String>)>(vid)).as_ref() != Some(&now) {
+                acts.push(Action::VisibleMessages { room: now.0.clone(), items: now.1.clone(), at_end: true });
+                ui.data_mut(|d| d.insert_temp(vid, now));
+            }
         });
     });
 }
@@ -436,7 +441,7 @@ pub fn new_post(ctx: &egui::Context, fu: &mut ForumUi, app: &Application, tex: &
         acts.push(Action::CloseNewPost);
     }
     if np.leaving {
-        egui::Modal::new(egui::Id::new("leave_post")).show(ctx, |ui| {
+        let modal = egui::Modal::new(egui::Id::new("leave_post")).show(ctx, |ui| {
             ui.set_width(380.0);
             ui.label(sb("Discard this post?", 16.0).color(TEXT));
             ui.label(rt("What you wrote will be lost.", 13.0).color(SECONDARY));
@@ -450,6 +455,9 @@ pub fn new_post(ctx: &egui::Context, fu: &mut ForumUi, app: &Application, tex: &
                 }
             });
         });
+        if modal.should_close() {
+            acts.push(Action::StayInNewPost);
+        }
     }
 }
 

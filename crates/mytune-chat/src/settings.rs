@@ -59,6 +59,10 @@ pub struct Settings {
     pub sound_volume: u8,
     pub adjust_each_sound: bool,
     pub each_sound: BTreeMap<Sound, u8>,
+    /// How loud the message and mention sounds are, on top of the master volume (0-200).
+    pub notification_volume: u8,
+    /// Says aloud who joins and leaves the call this account is in.
+    pub narrate_calls: bool,
     // Game activity: (name, executable)
     pub game_executables: Vec<(String, String)>,
     // Advanced
@@ -67,6 +71,9 @@ pub struct Settings {
     pub pinned_dms: Vec<String>,
     /// How the chat was laid out when last left: restored at start.
     pub layout: ChatLayout,
+    /// How loud each person is in calls for this account, by user id: (voice gain, muted, soundboard
+    /// muted). Only people changed from the default are listed.
+    pub person_sound: BTreeMap<String, (f32, bool, bool)>,
 }
 
 /// The chat page's layout, kept between runs: the member list and profile panel shown or not, the server
@@ -79,11 +86,14 @@ pub struct ChatLayout {
     pub profile_panel: Option<bool>,
     pub lists_hidden: bool,
     pub widths: BTreeMap<String, f32>,
+    /// The servers on the rail in the order they were dragged to, by id (this device only: the engine
+    /// cannot write Discord's own order). Servers not listed come first.
+    pub server_order: Vec<String>,
 }
 
 impl Default for ChatLayout {
     fn default() -> Self {
-        Self { members_open: true, profile_panel: None, lists_hidden: false, widths: BTreeMap::new() }
+        Self { members_open: true, profile_panel: None, lists_hidden: false, widths: BTreeMap::new(), server_order: vec![] }
     }
 }
 
@@ -117,10 +127,13 @@ impl Default for Settings {
             sound_volume: 100,
             adjust_each_sound: false,
             each_sound: BTreeMap::new(),
+            notification_volume: 100,
+            narrate_calls: false,
             game_executables: vec![],
             gpu_encoding: true,
             pinned_dms: vec![],
             layout: ChatLayout::default(),
+            person_sound: BTreeMap::new(),
         }
     }
 }
@@ -155,6 +168,11 @@ impl Settings {
         use yapfast_core::{leveling, noise, push_to_talk, stream_worker, volume};
         volume::set_microphone(volume::from_slider(f32::from(self.microphone_volume)));
         volume::set_speakers(volume::from_slider(f32::from(self.speaker_volume)));
+        for (person, &(gain, muted, quiet)) in &self.person_sound {
+            volume::set(volume::Kind::Voice, person, gain);
+            volume::mute(person, muted);
+            volume::mute_soundboard(person, quiet);
+        }
         leveling::set_enabled(self.level_voice);
         noise::set(self.noise_suppression);
         noise::set_strength(self.noise_strength);
@@ -169,7 +187,8 @@ impl Settings {
     /// How loud one of Yapfast's sounds plays: the master volume, then its own when adjusted one by one.
     pub fn sound_gain(&self, sound: Sound) -> f32 {
         let own = if self.adjust_each_sound { self.each_sound.get(&sound).copied().unwrap_or(100) } else { 100 };
-        yapfast_core::sounds::gain(self.sound_volume) * yapfast_core::sounds::gain(own)
+        let note = if matches!(sound, Sound::Message | Sound::Mention) { self.notification_volume } else { 100 };
+        yapfast_core::sounds::gain(self.sound_volume) * yapfast_core::sounds::gain(own) * yapfast_core::sounds::gain(note)
     }
 }
 

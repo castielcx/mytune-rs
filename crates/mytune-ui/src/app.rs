@@ -18,21 +18,24 @@ struct Anim {
     cur: f32,
     from: f32,
     to: f32,
-    t0: Instant,
+    /// Progress 0..1, advanced by frame time: a slow frame pauses the motion instead of skipping it.
+    t: f32,
 }
 
 impl Anim {
     fn new(v: f32) -> Anim {
-        Anim { cur: v, from: v, to: v, t0: Instant::now() }
+        Anim { cur: v, from: v, to: v, t: 1.0 }
     }
 
     fn update(&mut self, ctx: &egui::Context, target: f32, dur: f32) -> f32 {
         if (target - self.to).abs() > f32::EPSILON {
             self.from = self.cur;
             self.to = target;
-            self.t0 = Instant::now();
+            self.t = 0.0;
+        } else if self.t < 1.0 {
+            self.t = (self.t + ctx.input(|i| i.stable_dt).min(1.0 / 30.0) / dur).min(1.0);
         }
-        let t = (self.t0.elapsed().as_secs_f32() / dur).min(1.0);
+        let t = self.t;
         self.cur = self.from + (self.to - self.from) * (1.0 - (1.0 - t).powi(3));
         if t < 1.0 {
             ctx.request_repaint();
@@ -48,6 +51,7 @@ pub struct App {
     tools: crate::toolspage::ToolsPage,
     settings: crate::settingspage::SettingsPage,
     mouse: crate::mouse::MousePage,
+    sound: crate::soundpage::SoundPage,
     diagnostics: crate::diagnosticspage::DiagnosticsPage,
     display: crate::displaypage::DisplayPage,
     chat: crate::chatpage::ChatPage,
@@ -59,9 +63,13 @@ pub struct App {
     states_loaded: bool,
     states_rx: Option<mpsc::Receiver<(HashMap<String, bool>, Vec<String>)>>,
     /// An apply/revert thread is running; clicks are ignored meanwhile.
-    work_rx: Option<mpsc::Receiver<(String, bool)>>,
+    work_rx: Option<mpsc::Receiver<((String, bool), Vec<(String, bool)>)>>,
     search: String,
     status: Option<(String, bool)>,
+    /// The page shown last frame: a status line goes when its page is left.
+    shown_page: Page,
+    /// The page `run_work` was started on; its result shows only there.
+    work_page: Page,
     confirm_optimize: bool,
     ids_in_store: Vec<String>,
     checks: Option<Vec<Check>>,
@@ -78,8 +86,6 @@ pub struct App {
     last_sample: Option<Instant>,
     side_w: f32,
     anim_base: Anim,
-    /// The page on screen and when it came, for its fade-in.
-    page_shown: (Page, Instant),
     anim_side: Anim,
     anim_pill: Anim,
     /// When the pointer came to rest on the closed sidebar rail (it opens after `HOVER_OPEN`).
@@ -136,6 +142,7 @@ impl App {
             tools: crate::toolspage::ToolsPage::new(engine.clone()),
             settings: crate::settingspage::SettingsPage::new(engine.clone()),
             mouse: crate::mouse::MousePage::new(),
+            sound: crate::soundpage::SoundPage::new(),
             diagnostics: crate::diagnosticspage::DiagnosticsPage::new(engine.clone()),
             display: crate::displaypage::DisplayPage::new(engine.clone()),
             chat: Default::default(),
@@ -148,6 +155,8 @@ impl App {
             work_rx: None,
             search: String::new(),
             status: None,
+            shown_page: Page::Chat,
+            work_page: Page::Chat,
             confirm_optimize: false,
             ids_in_store: vec![],
             checks: None,
@@ -163,7 +172,6 @@ impl App {
             last_sample: None,
             side_w: 248.0,
             anim_base: Anim::new(248.0),
-            page_shown: (Page::Dashboard, Instant::now()),
             anim_side: Anim::new(248.0),
             anim_pill: Anim::new(0.0),
             hover_since: None,
@@ -213,8 +221,10 @@ impl App {
             self.states_loaded = true;
             self.states_rx = None;
         }
-        if let Some(st) = self.work_rx.as_ref().and_then(|r| r.try_recv().ok()) {
-            self.status = Some(st);
+        if let Some((st, touched)) = self.work_rx.as_ref().and_then(|r| r.try_recv().ok()) {
+            self.status = (self.page == self.work_page).then_some(st);
+            // the changed tweaks' real state now; the full re-read below takes seconds (many shell out)
+            self.applied.extend(touched);
             self.work_rx = None;
             self.refresh();
         }
@@ -230,12 +240,27 @@ impl App {
         }
         let (tx, rx) = mpsc::channel();
         let (tweaks, engine) = (self.tweaks.clone(), self.engine.clone());
+        // a re-read started before this change would bring the old state back
+        self.states_rx = None;
         self.status = Some(("Working\u{2026}".into(), true));
+        self.work_page = self.page;
+        // the switch moves at once; the thread's reading corrects it if the change failed
+        for &i in &idxs {
+            self.applied.insert(self.tweaks[i].id.clone(), on);
+        }
         std::thread::spawn(move || {
             let (mut ok, mut bad, mut last) = (0, 0, String::new());
             for &i in &idxs {
                 let t = &tweaks[i];
-                let r = if on { engine.apply(t) } else { engine.revert(t).map(|_| ()) };
+                let r = if on {
+                    engine.apply(t).map_err(|e| e.to_string())
+                } else {
+                    match engine.revert(t) {
+                        Ok(mytune_core::engine::RevertOutcome::Reverted) => Ok(()),
+                        Ok(mytune_core::engine::RevertOutcome::NoBackup) => Err("set outside MyTune and its Windows default is unknown, nothing changed".to_string()),
+                        Err(e) => Err(e.to_string()),
+                    }
+                };
                 match r {
                     Ok(()) => ok += 1,
                     Err(e) => {
@@ -250,7 +275,8 @@ impl App {
                 let tail = if bad > 0 { format!(", {bad} failed (see log)") } else { String::new() };
                 (format!("{} {ok} tweaks{tail}", if on { "Applied" } else { "Reverted" }), bad == 0)
             };
-            let _ = tx.send(msg);
+            let touched = idxs.iter().map(|&i| (tweaks[i].id.clone(), tweaks[i].is_applied().unwrap_or(false))).collect();
+            let _ = tx.send((msg, touched));
         });
         self.work_rx = Some(rx);
     }
@@ -307,6 +333,8 @@ impl App {
     pub fn ui(&mut self, root: &mut Ui) {
         let ctx = root.ctx().clone();
         let ctx = &ctx;
+        frame_cap();
+        perf_log(ctx);
         self.poll(ctx);
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
             ctx.memory_mut(|m| m.request_focus(Id::new("search")));
@@ -344,6 +372,9 @@ impl App {
         if self.page != Page::Mouse {
             self.mouse.cancel(); // stop listening when the page is left
         }
+        if self.page != Page::Sound {
+            self.sound.stop(); // no audio polling while the page is hidden
+        }
         if self.page != Page::Diagnostics {
             self.diagnostics.stop(); // no sampling while the page is hidden
         }
@@ -354,30 +385,39 @@ impl App {
             self.chat.call_notice(ctx);
         }
         // Restore lives in Settings (its Restore tab), not the sidebar: Settings and Restore are the two tabs
+        // the sidebar runs first, so a click on it shows the new page in this same frame (44 = title bar)
+        self.sidebar(ctx, ctx.content_rect().top() + 44.0);
         let home = self.page == Page::Dashboard;
         th::backdrop(ctx, &ctx.layer_painter(egui::LayerId::background()), ctx.content_rect());
         let base_w = self.anim_base.update(ctx, if home { 248.0 } else { 64.0 }, 0.22).round();
         self.title_bar(root, base_w);
-        let top = root.available_rect_before_wrap().top();
-        egui::Panel::left("gap").exact_size(base_w).frame(egui::Frame::new()).show_separator_line(false).show(root, |_| {});
-        if self.page_shown.0 != self.page {
-            self.page_shown = (self.page, Instant::now());
-        }
-        // a new page fades in over 150 ms (cubic ease-out), the colour strip above it stays
-        let fade = (self.page_shown.1.elapsed().as_secs_f32() / 0.15).min(1.0);
-        if fade < 1.0 {
-            ctx.request_repaint();
+        // Leaving Home, the page takes its final width at once and the folding sidebar uncovers it:
+        // laying the page out again for every width in between cost frames.
+        let gap = if home { base_w } else { 64.0 };
+        egui::Panel::left("gap").exact_size(gap).resizable(false).frame(egui::Frame::new()).show_separator_line(false).show(root, |_| {});
+        if self.page != self.shown_page {
+            self.shown_page = self.page;
+            self.status = None;
+            self.internet.status = None;
+            self.tools.status = None;
+            self.settings.status = None;
+            self.mouse.status = None;
+            self.display.status = None;
         }
         // the chat draws its own opaque layers, so it keeps a solid base; every other page shows the backdrop
                 egui::CentralPanel::default().frame(egui::Frame::new()).show(root, |ui| {
-            ui.multiply_opacity(1.0 - (1.0 - fade).powi(3));
+            // nothing shows through the glass sidebar while it still covers the page
+            let mut clip = ui.clip_rect();
+            clip.min.x = clip.min.x.max(self.side_w);
+            ui.set_clip_rect(clip);
             if self.page == Page::Chat {
                 // the chat sits in a rounded card inside the window: its square corners are covered with the base colour
                 let card = ui.max_rect().shrink2(vec2(10.0, 8.0));
+                ui.painter().add(th::glass(card, th::R_PANEL, Color32::TRANSPARENT));
                 ui.scope_builder(UiBuilder::new().max_rect(card), |ui| self.chat.ui(ui));
                 let full = ctx.content_rect();
-                th::round_corners(ui.painter(), card, 18.0, &|q| th::backdrop_at(full, q));
-                ui.painter().rect_stroke(card, 18.0, Stroke::new(1.0, Color32::from_white_alpha(0x22)), StrokeKind::Inside);
+                th::round_corners(ui.painter(), card, th::R_PANEL, &|q| th::backdrop_at(full, q));
+                th::sheen(ui.painter(), card, th::R_PANEL, th::Glass::Base);
                 return;
             }
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
@@ -411,6 +451,7 @@ impl App {
                         Page::Tools => self.tools.ui(ui),
                         Page::Settings => self.settings.ui(ui),
                         Page::Mouse => self.mouse.ui(ui),
+                        Page::Sound => self.sound.ui(ui),
                         Page::Diagnostics => self.diagnostics.ui(ui),
                         Page::Display => self.display.ui(ui),
                         _ => th::card(ui, (10, 16, 16, 16), |ui| {
@@ -420,7 +461,6 @@ impl App {
                 });
             });
         });
-        self.sidebar(ctx, base_w, top);
         if self.confirm_optimize {
             self.optimize_modal(ctx);
         }
@@ -431,7 +471,7 @@ impl App {
 
     fn title_bar(&mut self, root: &mut Ui, base_w: f32) {
         let ctx = root.ctx().clone();
-        egui::Panel::top("title").exact_size(44.0).frame(egui::Frame::new()).show_separator_line(false).show(root, |ui| {
+        egui::Panel::top("title").exact_size(44.0).resizable(false).frame(egui::Frame::new()).show_separator_line(false).show(root, |ui| {
             let bar = ui.max_rect();
             let pal = p();
             let drag = ui.interact(bar, Id::new("drag"), Sense::click_and_drag());
@@ -443,10 +483,11 @@ impl App {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(!maximized));
             }
             // logo 18x18 at left 16, centred: accent to darker gradient, white M
-            // centred over the nav icons: x 32 in the rail, 30 in the open sidebar
-            let cx = 32.0 - 2.0 * ((base_w - 64.0) / 184.0).clamp(0.0, 1.0);
+            // centred over the nav icons
+            let cx = 32.0; // same column as the nav icons, open or folded
             let logo = Rect::from_center_size(pos2(bar.left() + cx, bar.center().y), vec2(18.0, 18.0));
             ui.painter().rect_filled(logo, 6.0, pal.accent);
+            ui.painter().rect_stroke(logo, 6.0, Stroke::new(1.0, Color32::from_white_alpha(0x50)), StrokeKind::Inside);
             let m = |x: f32, y: f32| logo.min + vec2(x, y) * (18.0 / 256.0);
             let pts: Vec<_> = [(65., 187.), (65., 69.), (90., 69.), (128., 123.), (166., 69.), (191., 69.), (191., 187.), (167., 187.), (167., 119.), (133., 157.), (123., 157.), (89., 119.), (89., 187.)]
                 .iter()
@@ -459,8 +500,8 @@ impl App {
             ui.painter().line_segment([m(179., 187.), m(179., 69.)], w);
             ui.painter().line_segment([m(77., 75.), m(128., 140.)], w);
             ui.painter().line_segment([m(179., 75.), m(128., 140.)], w);
-            if base_w > 150.0 {
-                ui.painter().text(pos2(logo.right() + 12.0, bar.center().y), egui::Align2::LEFT_CENTER, "MyTune", FontId::proportional(12.0), pal.side_text);
+            if base_w > 120.0 {
+                ui.painter().text(pos2(logo.right() + 12.0, bar.center().y), egui::Align2::LEFT_CENTER, "MyTune", FontId::proportional(12.0), pal.side_text.gamma_multiply(((base_w - 120.0) / 128.0).clamp(0.0, 1.0)));
             }
             // caption buttons 46x32, glyphs 10 px
             let right = bar.right();
@@ -473,7 +514,7 @@ impl App {
                 let r = Rect::from_min_size(pos2(right - 46.0 * (i as f32 + 1.0), bar.top()), vec2(46.0, 32.0));
                 let resp = ui.interact(r, Id::new(("cap", i)), Sense::click());
                 if resp.hovered() {
-                    ui.painter().rect_filled(r.shrink2(vec2(4.0, 1.0)), 8.0, if close { pal.block[1] } else { Color32::from_white_alpha(0x22) });
+                    th::capsule(ui.painter(), r.shrink2(vec2(5.0, 3.0)), if close { pal.block[1] } else { Color32::from_white_alpha(0x22) }, 0x26);
                 }
                 ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, glyph, FontId::new(10.0, th::icons()), if close && resp.hovered() { Color32::WHITE } else { pal.side_text });
                 if resp.clicked() {
@@ -483,7 +524,7 @@ impl App {
         });
     }
 
-    fn sidebar(&mut self, ctx: &egui::Context, base_w: f32, top: f32) {
+    fn sidebar(&mut self, ctx: &egui::Context, top: f32) {
         let pal = p();
         let screen = ctx.content_rect();
         let home = self.page == Page::Dashboard;
@@ -508,7 +549,7 @@ impl App {
         if resting && !hovered {
             ctx.request_repaint_after(HOVER_OPEN - waited);
         }
-        let w = self.anim_side.update(ctx, if home || hovered { 248.0 } else { 64.0 }, 0.22).round();
+        let w = self.anim_side.update(ctx, if home || hovered { 248.0 } else { 64.0 }, 0.22); // not rounded: 1 px steps stutter
         self.side_w = w;
         let rect = Rect::from_min_size(pos2(0.0, top), vec2(w, screen.height() - top));
         let fade = ((w - 64.0) / 184.0).clamp(0.0, 1.0);
@@ -532,12 +573,12 @@ impl App {
                     let focused = ui.memory(|m| m.has_focus(Id::new("search")));
                     // same row as every nav item: ink fill, light edge, hover tint, icon in the same column
                     if focused {
-                        ui.painter().rect_stroke(r, 14.0, Stroke::new(1.0, pal.accent), StrokeKind::Inside);
+                        ui.painter().rect_stroke(r, 18.0, Stroke::new(1.0, pal.accent), StrokeKind::Inside);
                     }
                     if ui.rect_contains_pointer(r) {
-                        ui.painter().rect_filled(r, 14.0, Color32::from_white_alpha(26));
+                        ui.painter().rect_filled(r, 18.0, Color32::from_white_alpha(26));
                     }
-                    let gx = (r.center().x + (r.left() + 22.0 - r.center().x) * fade).round(); // glides, no jump at a threshold
+                    let gx = r.left() + 24.0; // fixed column: the icon never moves while the sidebar opens or folds
                     ui.painter().text(pos2(gx, r.center().y.round()), egui::Align2::CENTER_CENTER, "\u{E721}", FontId::new(16.0, th::icons()), pal.side_muted);
                     if w <= 150.0 {
                         let resp = ui.interact(r, Id::new("search-icon"), Sense::click());
@@ -546,8 +587,10 @@ impl App {
                             ui.memory_mut(|m| m.request_focus(Id::new("search")));
                         }
                     } else {
-                        ui.put(
-                            Rect::from_min_max(r.min + vec2(44.0, 1.0), r.max - vec2(8.0, 1.0)), // text column of the nav labels
+                        // a child ui, not `ui.put`: put moved the cursor up to the text box's bottom, so every
+                        // row below sat a few px higher while the sidebar was open and dropped when it folded
+                        let field = Rect::from_min_max(r.min + vec2(46.0, 1.0), r.max - vec2(8.0, 1.0)); // text column of the nav labels
+                        ui.new_child(UiBuilder::new().max_rect(field).layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight))).add(
                             egui::TextEdit::singleline(&mut self.search)
                                 .id(Id::new("search"))
                                 .frame(egui::Frame::NONE)
@@ -595,21 +638,31 @@ impl App {
         ui.add_space(2.0);
         let sel = self.page == item.page || (item.page == Page::Settings && self.page == Page::Restore); // Restore is a Settings tab
         let paint = ui.painter();
+        // Glass motion, same timings as `th::button`: the plate under the pointer fades in, sinks 4% while
+        // pressed and the selected plate grows in from 90%. Only the plate moves, icon and name stay put.
+        let ctx = ui.ctx();
+        let ease = egui::emath::easing::cubic_out;
+        let hov = ctx.animate_bool_with_time_and_easing(resp.id.with("hover"), resp.hovered(), 0.14, ease);
+        let down = ctx.animate_bool_with_time_and_easing(resp.id.with("down"), resp.is_pointer_button_down_on(), 0.12, ease);
+        let on = ctx.animate_bool_with_time_and_easing(resp.id.with("sel"), sel, 0.22, ease);
+        let plate = |k: f32| Rect::from_center_size(rect.center(), rect.size() * k);
+        if on > 0.0 {
+            // raised glass on the sidebar's base glass
+            th::capsule(paint, plate(0.9 + 0.1 * on - 0.04 * down), pal.side_selected.gamma_multiply(on), (38.0 * on) as u8);
+        }
         if sel {
-            paint.rect_filled(rect, 14.0, pal.side_selected);
             self.pill_y = rect.center().y;
         }
-        if resp.hovered() {
-            paint.rect_filled(rect, 14.0, Color32::from_white_alpha(26));
+        if hov > 0.0 || down > 0.0 {
+            paint.rect_filled(plate(1.0 - 0.04 * down), 18.0, Color32::from_white_alpha((26.0 * hov + 22.0 * down) as u8));
         }
         let glyph_col = if sel { Color32::WHITE } else { pal.side_muted };
         let text_col = if sel { Color32::WHITE } else { pal.side_text };
-        let t = ((w - 64.0) / 184.0).clamp(0.0, 1.0);
-        let gx = (rect.center().x + (rect.left() + 22.0 - rect.center().x) * t).round(); // glides with the width, no jump
+        let gx = rect.left() + 24.0; // fixed column: icon and name stay put, the sidebar edge uncovers the name
         paint.text(pos2(gx, rect.center().y.round()), egui::Align2::CENTER_CENTER, item.glyph, FontId::new(16.0, th::icons()), glyph_col);
         if w > 120.0 {
             let font = if sel { FontId::new(14.0, th::semibold()) } else { FontId::proportional(14.0) };
-            paint.text(pos2((rect.left() + 14.0 + 16.0 + 14.0).round(), rect.center().y.round()), egui::Align2::LEFT_CENTER, item.label, font, text_col.gamma_multiply(((w - 120.0) / 128.0).clamp(0.0, 1.0)));
+            paint.with_clip_rect(rect).text(pos2(rect.left() + 46.0, rect.center().y.round()), egui::Align2::LEFT_CENTER, item.label, font, text_col.gamma_multiply(((w - 120.0) / 128.0).clamp(0.0, 1.0)));
         }
         if resp.on_hover_text(item.tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             self.page = item.page;
@@ -625,7 +678,7 @@ impl App {
         let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 150.0), Sense::hover());
         let paint = ui.painter();
         paint.add(th::glass(rect, 24.0, pal.card_bg));
-        th::blob(&paint.with_clip_rect(rect), rect.right_center() - vec2(60.0, 0.0), rect.height() * 1.6, pal.accent, 0.35);
+        th::blob(paint, rect.right_center() - vec2(rect.height() * 0.62, 0.0), rect.height() * 0.5 - 2.0, pal.accent, 0.5);
         let g1 = paint.layout_no_wrap("HOME".into(), FontId::new(11.0, th::display_bold()), pal.side_muted);
         let g2 = paint.layout_no_wrap("Your PC, tuned.".into(), FontId::new(34.0, th::display_bold()), Color32::WHITE);
         let g3 = paint.layout_no_wrap("See how it is doing and set it up for gaming with one click.".into(), FontId::proportional(13.0), pal.side_text);
@@ -648,7 +701,7 @@ impl App {
         th::card(ui, (16, 20, 22, 20), |ui| {
             ui.horizontal(|ui| {
                 let (tile, _) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
-                ui.painter().rect_filled(tile, 14.0, if all_set { th::success_soft() } else { pal.accent_soft });
+                ui.painter().rect_filled(tile, th::nested(th::R_PANEL, 8.0), if all_set { th::success_soft() } else { pal.accent_soft });
                 ui.painter().text(tile.center(), egui::Align2::CENTER_CENTER, if all_set { "\u{E73E}" } else { "\u{E945}" }, FontId::new(22.0, th::icons()), if all_set { th::SUCCESS } else { pal.accent });
                 ui.add_space(10.0);
                 let avail = ui.available_width();
@@ -1023,6 +1076,57 @@ fn grid3(ui: &mut Ui, mut f: impl FnMut(&mut Ui, usize)) {
     if (tallest - stored).abs() > 0.5 {
         ui.data_mut(|d| d.insert_temp(id, tallest));
         ui.ctx().request_repaint();
+    }
+}
+
+/// Holds the frame rate at the display's refresh rate. With V-Sync forced off in the graphics driver (common
+/// on a gaming PC) every mouse move and every animation frame drew at once: 500 to 800 frames a second and
+/// half a CPU core, measured 2026-11-15. With V-Sync working this never waits.
+fn frame_cap() {
+    use std::{sync::Mutex, time::{Duration, Instant}};
+    // (start of the last frame, frame time, when the refresh rate was last read)
+    static LAST: Mutex<Option<(Instant, Duration, Instant)>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap();
+    let now = Instant::now();
+    let (prev, mut period, mut read) = last.unwrap_or((now - Duration::from_secs(1), Duration::ZERO, now - Duration::from_secs(60)));
+    if now - read > Duration::from_secs(10) {
+        period = Duration::from_secs_f64(1.0 / refresh_hz() as f64);
+        read = now;
+    }
+    if let Some(wait) = period.checked_sub(now - prev) {
+        std::thread::sleep(wait);
+    }
+    *last = Some((Instant::now(), period, read));
+}
+
+/// The primary display's refresh rate, 60 when Windows does not say.
+// shortcut: the primary display's rate, also when the window is on another one; read the window's monitor if rates differ
+fn refresh_hz() -> u32 {
+    use windows_sys::Win32::Graphics::Gdi::{EnumDisplaySettingsW, DEVMODEW, ENUM_CURRENT_SETTINGS};
+    let mut dm: DEVMODEW = unsafe { std::mem::zeroed() };
+    dm.dmSize = std::mem::size_of::<DEVMODEW>() as u16;
+    let ok = unsafe { EnumDisplaySettingsW(std::ptr::null(), ENUM_CURRENT_SETTINGS, &mut dm) } != 0;
+    if ok && (30..=1000).contains(&dm.dmDisplayFrequency) { dm.dmDisplayFrequency } else { 60 }
+}
+
+/// With env `MYTUNE_PERF=<file>`: every 2 s, appends how many frames were drawn and what asked for them
+/// (the code line of each repaint request), to find a page that never rests. Costs nothing when unset.
+fn perf_log(ctx: &egui::Context) {
+    use std::{collections::BTreeMap, io::Write, sync::{Mutex, OnceLock}};
+    static FILE: OnceLock<Option<String>> = OnceLock::new();
+    static SEEN: Mutex<(f64, u32, BTreeMap<String, u32>)> = Mutex::new((0.0, 0, BTreeMap::new()));
+    let Some(path) = FILE.get_or_init(|| std::env::var("MYTUNE_PERF").ok()) else { return };
+    let mut s = SEEN.lock().unwrap();
+    s.1 += 1;
+    for c in ctx.repaint_causes() {
+        *s.2.entry(c.to_string()).or_default() += 1;
+    }
+    let now = ctx.input(|i| i.time);
+    if now - s.0 >= 2.0 {
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(f, "{:.0}s frames={} {:?}", now, s.1, s.2);
+        }
+        *s = (now, 0, BTreeMap::new());
     }
 }
 

@@ -37,11 +37,18 @@ pub const THREADED_OPTIMIZATION: u32 = 549528094;
 /// "Frame Rate Limiter": plain fps, 0 = off.
 pub const FRAME_RATE_LIMITER: u32 = 0x10835002;
 const VSYNC_FORCE_OFF: u32 = 0x08416747;
+/// 0 = the application decides, 1 = `ANISO_LEVEL` is used.
+pub const ANISO_MODE_SELECTOR: u32 = 0x10D2BB16;
+/// 1 = off, else 2/4/8/16x.
+pub const ANISO_LEVEL: u32 = 0x101E61A9;
+pub const AA_TRANSPARENCY_MULTISAMPLE: u32 = 0x10FC2D9C;
+pub const AA_TRANSPARENCY_SUPERSAMPLE: u32 = 0x10D48A85;
+pub const OGL_GDI_COMPATIBILITY: u32 = 0x2072C5A3;
 
 pub type Setting = (u32, u32, &'static str);
 
 /// Global low-latency settings (Base Profile).
-pub const GLOBAL_SETTINGS: [Setting; 12] = [
+pub const GLOBAL_SETTINGS: [Setting; 17] = [
     (POWER_MANAGEMENT_MODE, 1, "Power management: prefer maximum performance"),
     (MAX_PRE_RENDERED_FRAMES, 1, "Low latency mode: on (1 pre-rendered frame)"),
     (VERTICAL_SYNC, VSYNC_FORCE_OFF, "Vertical sync: off"),
@@ -54,6 +61,15 @@ pub const GLOBAL_SETTINGS: [Setting; 12] = [
     (SHADER_CACHE_SIZE, 0xFFFF_FFFF, "Shader cache size: unlimited"),
     (FXAA, 0, "FXAA: off"),
     (ANSEL, 0, "Ansel: off (older drivers only)"),
+    // Rust only (not in the C# app). Ids and values read back from a Base Profile set by hand in the NVIDIA app.
+    // Low latency "Ultra" is not here. The NVIDIA app stores it in the Base Profile as 0x0005F543 = 2 and
+    // 0x10835000 = 1 (seen in nvdrsdb*.bin; "On" is 1 and 0), but driver 621.24 hides both ids from NVAPI:
+    // DRS_GetSetting and DRS_SetSetting answer SETTING_NOT_FOUND and DRS_EnumSettings skips them.
+    (ANISO_MODE_SELECTOR, 1, "Anisotropic filtering: set by the driver"),
+    (ANISO_LEVEL, 1, "Anisotropic filtering: off"),
+    (AA_TRANSPARENCY_MULTISAMPLE, 0, "Antialiasing transparency: off"),
+    (AA_TRANSPARENCY_SUPERSAMPLE, 0, "Antialiasing transparency supersampling: off"),
+    (OGL_GDI_COMPATIBILITY, 0, "OpenGL GDI compatibility: prefer performance"),
 ];
 
 /// Per-game settings: the global ones plus threaded optimization.
@@ -374,12 +390,12 @@ mod tests {
 
     #[test]
     fn tables_match_csharp() {
-        assert_eq!(GLOBAL_SETTINGS.len(), 12);
-        assert_eq!(game_settings().len(), 13);
+        assert_eq!(game_settings().len(), GLOBAL_SETTINGS.len() + 1);
         assert_eq!(GLOBAL_SETTINGS[2], (11041231, 0x08416747, "Vertical sync: off"));
         assert_eq!(GLOBAL_SETTINGS[9].1, u32::MAX);
         assert_eq!(GSYNC_IDS, [0x1194F158, 0x1094F157, 0x1094F1F7]);
         let ids: HashSet<_> = GLOBAL_SETTINGS.iter().map(|s| s.0).collect();
-        assert_eq!(ids.len(), 12, "unique setting ids");
+        assert_eq!(ids.len(), GLOBAL_SETTINGS.len(), "unique setting ids");
+        assert_eq!(GLOBAL_SETTINGS[13], (0x101E61A9, 1, "Anisotropic filtering: off"));
     }
 }

@@ -24,8 +24,12 @@ fn pickers() {
     std::thread::sleep(std::time::Duration::from_secs(10));
     h.run_steps(20);
     let out = std::env::var("SHOT_DIR").unwrap_or_else(|_| ".".into());
-    for (x, name) in [(452.0, "plus"), (890.0, "emoji"), (848.0, "gifs")] {
-        let at = pos2(x, 852.0);
+    // "stickers" clicks the third tab of the open emoji picker; it exists only with feature `local-stickers`
+    for (x, y, name) in [(440.0, 843.0, "plus"), (1121.0, 843.0, "emoji"), (907.0, 378.0, "stickers"), (1078.0, 843.0, "gifs")] {
+        if name == "stickers" && !cfg!(feature = "local-stickers") {
+            continue;
+        }
+        let at = pos2(x, y);
         for e in [
             egui::Event::PointerMoved(at),
             egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },

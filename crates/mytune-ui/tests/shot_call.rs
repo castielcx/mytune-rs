@@ -21,6 +21,20 @@ fn call_stage() {
         app.ui(ui);
     });
     h.run_steps(30);
+    // env RCLICK=x,y: right-clicks there (a participant's tile opens their call menu)
+    if let Ok(v) = std::env::var("RCLICK") {
+        use eframe::egui::{self, pos2};
+        let (x, y) = v.split_once(',').expect("RCLICK=x,y");
+        let at = pos2(x.parse().unwrap(), y.parse().unwrap());
+        for e in [
+            egui::Event::PointerMoved(at),
+            egui::Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed: true, modifiers: Default::default() },
+            egui::Event::PointerButton { pos: at, button: egui::PointerButton::Secondary, pressed: false, modifiers: Default::default() },
+        ] {
+            h.event(e);
+        }
+        h.run_steps(8);
+    }
     let out = std::env::var("SHOT_DIR").unwrap_or_else(|_| ".".into());
     h.render().expect("render").save(format!("{out}/call.png")).unwrap();
 }

@@ -39,8 +39,6 @@ pub struct CallUi {
     live: bool,
     /// A watched stream fills the window.
     full: bool,
-    /// This account's own shared screen fills the window.
-    full_own: bool,
 }
 
 impl CallUi {
@@ -63,14 +61,14 @@ impl CallUi {
         feed.show_at(Some(((rect.width() * ppp) as u32 & !1, (rect.height() * ppp) as u32 & !1)));
         self.feeds_now.push(feed.clone());
         self.live = true;
-        let img = feed.take(|fb| mytune_chat::frame_pixels(fb).map(|((w, h), px)| egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], px))).flatten();
+        let img = feed.take(|fb| mytune_chat::frame_pixels(fb).and_then(|((w, h), px)| video_image(w, h, px))).flatten();
         self.put(ctx, key, img)
     }
 
     /// The newest frame of a stream (Go Live preview or a watched stream) as a texture.
     fn frames_texture(&mut self, ctx: &egui::Context, key: &str, frames: &mytune_chat::yapfast_core::frames::Frames) -> Option<(egui::TextureId, egui::Vec2)> {
         self.live = true;
-        let img = frames.take(|w, h, px| egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px[..w as usize * h as usize * 4]));
+        let img = frames.take(video_image).flatten();
         self.put(ctx, key, img)
     }
 
@@ -85,6 +83,14 @@ impl CallUi {
         }
         self.video.get(key).map(|t| (t.id(), t.size_vec2()))
     }
+}
+
+/// A video frame as an image; none when the buffer is shorter than its size says. Video has no transparency, so
+/// the pixels are taken as they are: un-multiplying each one on the UI thread, every frame, cost the page its
+/// smoothness while a camera or stream showed.
+fn video_image(w: u32, h: u32, px: &[u8]) -> Option<egui::ColorImage> {
+    let px = px.get(..w as usize * h as usize * 4)?;
+    Some(egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], px))
 }
 
 /// Tile places for `n` 16:9 tiles in `area`: the column count that makes them largest, rows centred.
@@ -147,9 +153,9 @@ fn round_button(ui: &mut Ui, size: f32, g: &str, slash: bool, look: Look, tip: &
         Look::Alert => (DANGER.gamma_multiply(0.18), DANGER),
         Look::On => (LIVE.gamma_multiply(0.22), LIVE),
     };
-    let fill = fill.lerp_to_gamma(Color32::from_rgb(0x3a, 0x3b, 0x44), t * 0.6);
+    let fill = fill.lerp_to_gamma(Color32::from_white_alpha(0x34), t * 0.6);
     let icon = if look == Look::Plain { icon.lerp_to_gamma(TEXT, t) } else { icon };
-    ui.painter().rect_filled(rect, size / 2.0, fill);
+    crate::theme::capsule(ui.painter(), rect, fill, 0x30);
     glyph(ui.painter(), rect.center(), g, size * 0.42, icon, slash);
     resp.on_hover_text(tip)
 }
@@ -159,7 +165,7 @@ fn leave_button(ui: &mut Ui, w: f32, h: f32, leaving: bool) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
     let fill = DANGER.lerp_to_gamma(DANGER_HOVER, t).gamma_multiply(if leaving { 0.5 } else { 1.0 });
-    ui.painter().rect_filled(rect, h / 2.0, fill);
+    crate::theme::capsule(ui.painter(), rect, fill, 0x50);
     glyph(ui.painter(), rect.center(), I_HANGUP, h * 0.42, Color32::WHITE, false);
     resp.on_hover_text("Leave call")
 }
@@ -167,11 +173,12 @@ fn leave_button(ui: &mut Ui, w: f32, h: f32, leaving: bool) -> egui::Response {
 /// Yapfast's CallButton: a 64x48 pill with a label under it (Accept / Decline / Join).
 fn call_button(ui: &mut Ui, g: &str, label: &str, fill: Color32) -> bool {
     let mut clicked = false;
-    ui.vertical(|ui| {
+    // fixed size so a centred parent layout centres the button too (plain `vertical` hugs the left)
+    ui.allocate_ui_with_layout(vec2(64.0, 68.0), Layout::top_down(Align::Min), |ui| {
         ui.spacing_mut().item_spacing.y = 4.0;
         let (rect, resp) = ui.allocate_exact_size(vec2(64.0, 48.0), Sense::click());
         let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
-        ui.painter().rect_filled(rect, 24.0, fill.lerp_to_gamma(Color32::BLACK, t * 0.15));
+        crate::theme::capsule(ui.painter(), rect, fill.lerp_to_gamma(Color32::BLACK, t * 0.15), 0x50);
         glyph(ui.painter(), rect.center(), g, 22.0, Color32::WHITE, false);
         let (lr, _) = ui.allocate_exact_size(vec2(64.0, 16.0), Sense::hover());
         ui.painter().text(lr.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(13.0), SECONDARY);
@@ -186,9 +193,19 @@ fn tile_pill(ui: &mut Ui, at: egui::Pos2, text: &str, fill: Color32, id: egui::I
     let rect = Rect::from_min_size(pos2(at.x - g.size().x - 20.0, at.y), vec2(g.size().x + 20.0, 26.0));
     let resp = ui.interact(rect, id, Sense::click());
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
-    ui.painter().rect_filled(rect, 13.0, fill.lerp_to_gamma(Color32::WHITE, t * 0.12));
+    crate::theme::capsule(ui.painter(), rect, fill.lerp_to_gamma(Color32::WHITE, t * 0.12), 0x40);
     ui.painter().galley(rect.center() - g.size() / 2.0, g, Color32::WHITE);
     resp.clicked()
+}
+
+/// A round 28 px icon button on a tile, its right edge at `at`; what it does is in its tooltip.
+fn tile_icon(ui: &mut Ui, at: egui::Pos2, g: &str, tip: &str, id: egui::Id) -> bool {
+    let rect = Rect::from_min_size(pos2(at.x - 28.0, at.y), vec2(28.0, 28.0));
+    let resp = ui.interact(rect, id, Sense::click());
+    let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
+    ui.painter().circle_filled(rect.center(), 14.0 + t, k_raised().lerp_to_gamma(Color32::WHITE, t * 0.12));
+    glyph(ui.painter(), rect.center(), g, 12.0, Color32::WHITE, false);
+    resp.on_hover_text(tip).clicked()
 }
 
 /// A picture filling `rect` (cropped to fit, as a video tile does), with rounded corners.
@@ -217,7 +234,7 @@ fn name_chip(ui: &Ui, rect: Rect, name: &str, muted: bool, deafened: bool, serve
     let icon = muted || deafened;
     let w = (g.size().x + 16.0 + if icon { 20.0 } else { 0.0 }).min(rect.width() - 16.0);
     let chip = Rect::from_min_size(pos2(rect.left() + 8.0, rect.bottom() - 34.0), vec2(w, 26.0));
-    ui.painter().rect_filled(chip, 6.0, Color32::from_black_alpha(166));
+    ui.painter().rect_filled(chip, 10.0, Color32::from_black_alpha(166));
     let mut x = chip.left() + 8.0;
     if icon {
         let c = if server { DANGER } else { SECONDARY };
@@ -236,7 +253,7 @@ fn participant_tile(ui: &mut Ui, cu: &mut CallUi, s: &AppState, tex: &mut HashMa
     let rect = glide(&ctx, id, rect);
     ui.painter().rect_filled(rect, 12.0, k_raised());
     let v = &s.voice;
-    let share = if pe.local && !cu.full_own { v.sharing.as_ref().and_then(|sh| cu.frames_texture(&ctx, "share", &sh.frames)) } else { None };
+    let share = if pe.local { v.sharing.as_ref().and_then(|sh| cu.frames_texture(&ctx, "share", &sh.frames)) } else { None };
     let video = match (&pe.video, share) {
         (_, Some(t)) => Some((t, true)),
         (Some(feed), None) => cu.feed_texture(&ctx, &format!("v:{}", pe.id), feed, rect).map(|t| (t, false)),
@@ -267,18 +284,48 @@ fn participant_tile(ui: &mut Ui, cu: &mut CallUi, s: &AppState, tex: &mut HashMa
     if spk > 0.0 {
         ui.painter().rect_stroke(rect, 12.0, Stroke::new(3.0, LIVE.gamma_multiply(spk)), egui::StrokeKind::Inside);
     }
-    let name = if pe.local { format!("{} (you)", pe.user) } else { pe.user.clone() };
+    // right click: their menu (callmenu), as Discord's
+    if ui.rect_contains_pointer(rect) && ui.input(|i| i.pointer.secondary_clicked()) {
+        super::callmenu::open(&ctx, &pe.id);
+    }
+    let name = pe.user.clone();
     name_chip(ui, rect, &name, pe.muted, pe.deafened, pe.server_muted || pe.server_deafened);
     let at = pos2(rect.right() - 8.0, rect.top() + 8.0);
     if pe.local && v.sharing.is_some() {
-        // a click on one's own shared screen opens it over the whole window
-        if ui.interact(rect, id.with("open"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Click for fullscreen").clicked() {
-            cu.full_own = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
-        }
+        // no fullscreen for one's own share: a shared screen showing its own capture feeds back into a smear
         tile_pill(ui, at, "LIVE", DANGER, id.with("live"));
     } else if pe.streaming && !pe.local && v.watching.as_ref().is_none_or(|w| w.user != pe.id) && tile_pill(ui, at, "Watch stream", DANGER, id.with("watch")) {
         acts.push(Action::Voice(Vc::Watch(pe.id.clone())));
+    }
+}
+
+/// One person as a round picture on the bare stage: a green ring while they speak, dimmed with a pulsing ring
+/// while the call still rings them, a red badge when muted or deafened; the name on hover, their menu on right click.
+#[allow(clippy::too_many_arguments)]
+fn avatar_only(ui: &mut Ui, cu: &mut CallUi, s: &AppState, tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSet<String>, want: &mut Vec<String>, _acts: &mut Vec<Action>, pe: &voice::Participant, c: egui::Pos2, d: f32) {
+    let ctx = ui.ctx().clone();
+    let id = egui::Id::new(("tile", &pe.id));
+    let r = Rect::from_center_size(c, vec2(d, d));
+    let t = texture(&ctx, tex, asked, s, &pe.avatar, want);
+    avatar(ui, r, t, &pe.user);
+    if !pe.connected && !pe.local {
+        cu.live = true;
+        ui.painter().circle_filled(c, d / 2.0, k_stage().gamma_multiply(0.62));
+        let a = 0.45 + 0.4 * (ctx.input(|i| i.time) as f32 * std::f32::consts::TAU).sin();
+        ui.painter().circle_stroke(c, d / 2.0 + 4.0, Stroke::new(3.0, LIVE.gamma_multiply(a.clamp(0.0, 1.0))));
+    }
+    let spk = ctx.animate_bool_with_time(id.with("spk"), pe.speaking, QUICK);
+    if spk > 0.0 {
+        ui.painter().circle_stroke(c, d / 2.0 + 3.0, Stroke::new(3.0, LIVE.gamma_multiply(spk)));
+    }
+    if pe.muted || pe.deafened || pe.server_muted || pe.server_deafened {
+        let b = pos2(c.x + d * 0.36, c.y + d * 0.36);
+        ui.painter().circle_filled(b, 10.0, DANGER);
+        glyph(ui.painter(), b, "\u{E74F}", 12.0, Color32::WHITE, false);
+    }
+    let resp = ui.interact(r, id.with("avatar"), Sense::click()).on_hover_text(&pe.user);
+    if resp.secondary_clicked() {
+        super::callmenu::open(&ctx, &pe.id);
     }
 }
 
@@ -288,7 +335,7 @@ fn participant_tile(ui: &mut Ui, cu: &mut CallUi, s: &AppState, tex: &mut HashMa
 pub fn stage(ui: &mut Ui, rect: Rect, cu: &mut CallUi, s: &AppState, tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSet<String>, want: &mut Vec<String>, acts: &mut Vec<Action>) {
     let ctx = ui.ctx().clone();
     let v = &s.voice;
-    ui.painter().rect_filled(rect, 0.0, k_chat());
+    ui.painter().rect_filled(rect, 12.0, k_stage());
     let controls = Rect::from_min_max(pos2(rect.left(), rect.bottom() - 76.0), rect.max);
     let area = Rect::from_min_max(rect.min + vec2(16.0, 16.0), pos2(rect.right() - 16.0, controls.top()));
     let people: Vec<&voice::Participant> = v.participants.iter().collect();
@@ -310,16 +357,26 @@ pub fn stage(ui: &mut Ui, rect: Rect, cu: &mut CallUi, s: &AppState, tex: &mut H
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }
         name_chip(ui, big, &format!("{}'s screen", w.name), false, false, false);
-        if tile_pill(ui, pos2(big.right() - 8.0 - 118.0, big.top() + 8.0), "Fullscreen", k_raised(), egui::Id::new("watch_full")) {
+        if tile_icon(ui, pos2(big.right() - 8.0 - 34.0, big.top() + 8.0), "\u{E740}", "Fullscreen", egui::Id::new("watch_full")) {
             cu.full = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }
-        if tile_pill(ui, pos2(big.right() - 8.0, big.top() + 8.0), "Stop watching", k_raised(), egui::Id::new("stop_watch")) {
+        if tile_icon(ui, pos2(big.right() - 8.0, big.top() + 8.0), "\u{E711}", "Stop watching", egui::Id::new("stop_watch")) {
             acts.push(Action::Voice(Vc::StopWatching));
         }
         let strip = Rect::from_min_max(pos2(area.left(), area.bottom() - strip_h), area.max);
         for (pe, r) in people.iter().zip(grid(people.len(), strip, 8.0)) {
             participant_tile(ui, cu, s, tex, asked, want, acts, pe, r);
+        }
+    } else if v.sharing.is_none() && !people.iter().any(|p| p.video.is_some() || p.streaming) {
+        // nobody shows a camera or a screen: just the round pictures in a row, as Discord does
+        let n = people.len().max(1) as f32;
+        let gap = 20.0;
+        let d = 80.0_f32.min((area.width() - gap * (n - 1.0)) / n).max(40.0);
+        let x0 = area.center().x - (n * d + (n - 1.0) * gap) / 2.0;
+        for (i, pe) in people.iter().enumerate() {
+            let c = pos2(x0 + d / 2.0 + i as f32 * (d + gap), area.center().y);
+            avatar_only(ui, cu, s, tex, asked, want, acts, pe, c, d);
         }
     } else {
         for (pe, r) in people.iter().zip(grid(people.len(), area, 12.0)) {
@@ -365,12 +422,14 @@ fn controls_row(ui: &mut Ui, cu: &mut CallUi, v: &voice::State, acts: &mut Vec<A
 }
 
 /// Yapfast's VoiceDock under the room list: signal and status, the call's name (click opens it), a leave button,
-/// then the dock buttons (mic, headphones, camera, screen, settings).
+/// then the dock buttons (mic, headphones, camera, screen, leave).
 pub fn dock(ui: &mut Ui, cu: &mut CallUi, s: &AppState, acts: &mut Vec<Action>) {
     let v = &s.voice;
     if !v.active() {
         return;
     }
+    // the call's own room is open, so its stage with the full controls is on screen
+    let staged = v.room.is_some() && v.room == s.selected;
     let (status, color) = match v.phase {
         Phase::Joining => ("Connecting", th::WARNING),
         Phase::Reconnecting => ("Reconnecting", th::WARNING),
@@ -391,14 +450,12 @@ pub fn dock(ui: &mut Ui, cu: &mut CallUi, s: &AppState, acts: &mut Vec<Action>) 
                     acts.push(Action::Open(room.clone()));
                 }
             }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if round_button(ui, 32.0, I_HANGUP, false, Look::Alert, "Leave call").clicked() {
-                    acts.push(Action::Voice(Vc::Leave));
-                }
-            });
         });
         if let Some(e) = v.error.as_ref().or(v.warning.as_ref()) {
             ui.add(egui::Label::new(rt(e, 11.0).color(DANGER)).wrap());
+        }
+        if staged {
+            return;
         }
         ui.add_space(6.0);
         let w = (ui.available_width() - 4.0 * 6.0) / 5.0;
@@ -423,11 +480,8 @@ pub fn dock(ui: &mut Ui, cu: &mut CallUi, s: &AppState, acts: &mut Vec<Action>) 
                     cu.share.open(ui.ctx(), v.quality);
                 }
             }
-            if b(ui, I_SETTINGS, false, cu.audio_open, false, "Voice and video devices").clicked() {
-                cu.audio_open = !cu.audio_open;
-                if cu.audio_open {
-                    acts.push(Action::Voice(Vc::Devices));
-                }
+            if dock_leave(ui, w).clicked() {
+                acts.push(Action::Voice(Vc::Leave));
             }
         });
     });
@@ -438,10 +492,19 @@ fn dock_button(ui: &mut Ui, w: f32, g: &str, slash: bool, on: bool, alert: bool,
     let (rect, resp) = ui.allocate_exact_size(vec2(w, 32.0), Sense::click());
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
     let fill = if on { LIVE.gamma_multiply(0.22 + 0.10 * t) } else { k_raised().lerp_to_gamma(k_hover(), t) };
-    ui.painter().rect_filled(rect, 8.0, fill);
+    crate::theme::capsule(ui.painter(), rect, fill, 0x2C);
     let icon = if alert { DANGER } else if on { LIVE } else { SECONDARY.lerp_to_gamma(TEXT, t) };
     glyph(ui.painter(), rect.center(), g, 17.0, icon, slash);
     resp.on_hover_text(tip)
+}
+
+/// The dock's leave button: same 32 px square as its neighbours, red with a white hang-up glyph.
+fn dock_leave(ui: &mut Ui, w: f32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(w, 32.0), Sense::click());
+    let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
+    crate::theme::capsule(ui.painter(), rect, DANGER.lerp_to_gamma(Color32::WHITE, 0.12 * t), 0x50);
+    glyph(ui.painter(), rect.center(), I_HANGUP, 17.0, Color32::WHITE, false);
+    resp.on_hover_text("Leave call")
 }
 
 /// The rooms whose DM call rings this account and which it is not in.
@@ -475,7 +538,7 @@ pub fn incoming_card(ctx: &egui::Context, cu: &mut CallUi, s: &AppState, tex: &m
     cu.live = true;
     egui::Area::new(egui::Id::new("incoming_call")).anchor(egui::Align2::RIGHT_TOP, vec2(-24.0, 64.0)).order(egui::Order::Foreground).show(ctx, |ui| {
         egui::Frame::new()
-            .fill(k_raised())
+            .fill(crate::theme::Glass::Float.fill())
             .stroke(Stroke::new(1.0, k_edge()))
             .corner_radius(12.0)
             .shadow(egui::Shadow { offset: [0, 12], blur: 32, spread: 0, color: Color32::from_black_alpha(0x66) })
@@ -513,9 +576,9 @@ fn answer_buttons(ui: &mut Ui, room: &str, acts: &mut Vec<Action>) {
 #[allow(clippy::too_many_arguments)]
 pub fn invite(ui: &mut Ui, rect: Rect, s: &AppState, room: &mytune_chat::yapfast_core::chat::ChatRoom, tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSet<String>, want: &mut Vec<String>, acts: &mut Vec<Action>, cu: &mut CallUi) {
     let ctx = ui.ctx().clone();
-    ui.painter().rect_filled(rect, 0.0, k_chat());
+    ui.painter().rect_filled(rect, 12.0, k_stage());
     ui.scope_builder(egui::UiBuilder::new().max_rect(rect.shrink(16.0)).layout(Layout::top_down(Align::Center)), |ui| {
-        ui.add_space((rect.height() - 220.0).max(0.0) / 2.0);
+        ui.add_space((rect.height() - 32.0 - 170.0).max(0.0) / 2.0);
         if room.incoming {
             cu.live = true;
             let t = texture(&ctx, tex, asked, s, &room.avatar, want);
@@ -525,15 +588,18 @@ pub fn invite(ui: &mut Ui, rect: Rect, s: &AppState, room: &mytune_chat::yapfast
             answer_buttons(ui, &room.id, acts);
         } else {
             let n = room.people.len().min(5);
-            let (row, _) = ui.allocate_exact_size(vec2(n as f32 * 64.0, 64.0), Sense::hover());
+            // as Discord: the pictures in the middle, the join button alone at the bottom, no words
+            let b = Rect::from_center_size(pos2(rect.center().x, rect.bottom() - 16.0 - 24.0), vec2(64.0, 48.0));
+            let row = Rect::from_center_size(pos2(rect.center().x, (rect.top() + b.top()) / 2.0), vec2(n as f32 * 64.0, 64.0));
             for (i, pe) in room.people.iter().take(5).enumerate() {
                 let t = texture(&ctx, tex, asked, s, &pe.avatar, want);
                 avatar(ui, Rect::from_min_size(row.min + vec2(i as f32 * 64.0 + 4.0, 4.0), vec2(56.0, 56.0)), t, &pe.name);
             }
-            ui.add_space(6.0);
-            ui.label(rt(format!("{} in the call", who_is_here(&room.people)), 14.0).color(SECONDARY));
-            ui.add_space(10.0);
-            if call_button(ui, I_PHONE, "Join", LIVE) {
+            let resp = ui.interact(b, ui.id().with("join_call"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Join");
+            let t = ctx.animate_bool_with_time(resp.id, resp.hovered(), QUICK);
+            crate::theme::capsule(ui.painter(), b, LIVE.lerp_to_gamma(Color32::BLACK, t * 0.15), 0x50);
+            glyph(ui.painter(), b.center(), I_PHONE, 22.0, Color32::WHITE, false);
+            if resp.clicked() {
                 acts.push(Action::RequestJoinVoice(room.id.clone()));
             }
         }
@@ -573,6 +639,8 @@ struct Listed {
     windows: Vec<Shareable>,
     cameras: Vec<Shareable>,
     pictures: HashMap<u64, egui::ColorImage>,
+    /// Window id -> the application's icon.
+    icons: HashMap<u64, egui::ColorImage>,
 }
 
 /// Yapfast's ShareMenu: what to share, then resolution, frame rate and "Higher quality", then Go Live.
@@ -581,8 +649,17 @@ struct ShareMenu {
     open: bool,
     listed: Arc<Mutex<Listed>>,
     thumbs: HashMap<u64, TextureHandle>,
+    icons: HashMap<u64, TextureHandle>,
     picked: Option<Source>,
     quality: StreamQuality,
+    /// The last screen was already put back for this opening (so deselecting is not undone).
+    restored: bool,
+}
+
+/// Where the screen last shared is kept: the picker opens with it selected.
+fn last_screen_path() -> std::path::PathBuf {
+    let base = std::env::var_os("ProgramData").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    base.join("MyTune").join("last-share-screen.txt")
 }
 
 impl ShareMenu {
@@ -590,7 +667,9 @@ impl ShareMenu {
         self.open = true;
         self.quality = quality;
         self.picked = None;
+        self.restored = false;
         self.thumbs.clear();
+        self.icons.clear();
         let listed = Arc::new(Mutex::new(Listed::default()));
         self.listed = listed.clone();
         let ctx = ctx.clone();
@@ -602,6 +681,17 @@ impl ShareMenu {
                     Source::Display(_) => l.screens.push(x),
                     Source::Camera(_) => l.cameras.push(x),
                     _ => l.windows.push(x),
+                }
+            }
+            // windows are listed by application (name and icon), not by title
+            for x in &mut l.windows {
+                if let Source::Window(id) = x.source {
+                    if let Some(app) = crate::appinfo::of_window(id) {
+                        x.title = app.name;
+                        if let Some(i) = app.icon {
+                            l.icons.insert(id, i);
+                        }
+                    }
                 }
             }
             let ids: Vec<u64> = l.screens.iter().filter_map(|x| if let Source::Display(id) = x.source { Some(id) } else { None }).collect();
@@ -635,7 +725,7 @@ impl ShareMenu {
         let (mut close, mut go) = (false, false);
         let pal = p();
         let modal = egui::Modal::new(egui::Id::new("share_picker"))
-            .frame(egui::Frame::new().fill(k_panel()).stroke(Stroke::new(1.0, k_edge())).corner_radius(14.0).inner_margin(egui::Margin::same(22)))
+            .frame(egui::Frame::new().fill(crate::theme::Glass::Float.fill()).shadow(crate::theme::Glass::Float.shadow()).corner_radius(crate::theme::R_MENU).inner_margin(egui::Margin::same(22)))
             .show(ctx, |ui| {
                 ui.set_width(W);
                 ui.spacing_mut().item_spacing = vec2(8.0, 8.0);
@@ -645,7 +735,7 @@ impl ShareMenu {
                 let xr = Rect::from_center_size(pos2(head.right() - 14.0, head.center().y), vec2(28.0, 28.0));
                 let xe = ui.interact(xr, egui::Id::new("share_close"), Sense::click());
                 if xe.hovered() {
-                    ui.painter().rect_filled(xr, 8.0, k_raised());
+                    ui.painter().rect_filled(xr, 12.0, k_raised());
                 }
                 glyph(ui.painter(), xr.center(), "\u{E711}", 13.0, if xe.hovered() { TEXT } else { SECONDARY }, false);
                 if xe.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -661,6 +751,16 @@ impl ShareMenu {
                     });
                     ui.add_space(24.0);
                     return;
+                }
+                if !self.restored {
+                    self.restored = true;
+                    let last = std::fs::read_to_string(last_screen_path()).ok().and_then(|t| t.trim().parse::<u64>().ok());
+                    if let Some(id) = last.filter(|id| l.screens.iter().any(|x| x.source == Source::Display(*id))) {
+                        self.picked = Some(Source::Display(id));
+                    }
+                }
+                for (id, img) in l.icons.drain() {
+                    self.icons.insert(id, ctx.load_texture(format!("app:{id}"), img, th::SMOOTH));
                 }
                 for (id, img) in l.pictures.drain() {
                     self.thumbs.insert(id, ctx.load_texture(format!("screen:{id}"), img, egui::TextureOptions::LINEAR));
@@ -689,9 +789,9 @@ impl ShareMenu {
                                 }
                                 let pic = Rect::from_min_size(rect.min + vec2(8.0, 8.0), vec2(cw - 16.0, ph));
                                 match self.thumbs.get(&id) {
-                                    Some(tx) => egui::Image::new(egui::load::SizedTexture::new(tx.id(), pic.size())).corner_radius(6.0).paint_at(ui, pic),
+                                    Some(tx) => egui::Image::new(egui::load::SizedTexture::new(tx.id(), pic.size())).corner_radius(10.0).paint_at(ui, pic),
                                     None => {
-                                        ui.painter().rect_filled(pic, 6.0, Color32::BLACK);
+                                        ui.painter().rect_filled(pic, 10.0, Color32::BLACK);
                                     }
                                 }
                                 if on {
@@ -719,17 +819,28 @@ impl ShareMenu {
                             let on = self.picked.as_ref() == Some(&x.source);
                             let (rect, resp) = ui.allocate_exact_size(vec2(W, 36.0), Sense::click());
                             let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
-                            ui.painter().rect_filled(rect, 8.0, if on { pal.accent_soft } else { k_raised().lerp_to_gamma(k_hover(), t) });
+                            ui.painter().rect_filled(rect, 12.0, if on { pal.accent_soft } else { k_raised().lerp_to_gamma(k_hover(), t) });
                             if on {
                                 ui.painter().rect_stroke(rect, 8.0, Stroke::new(1.5, pal.accent), egui::StrokeKind::Inside);
                             }
-                            let dot = pos2(rect.left() + 20.0, rect.center().y);
-                            ui.painter().circle_stroke(dot, 7.0, Stroke::new(1.5, if on { pal.accent } else { FAINT }));
-                            if on {
-                                ui.painter().circle_filled(dot, 3.5, pal.accent);
-                            }
-                            let clip = ui.painter().with_clip_rect(Rect::from_min_max(pos2(rect.left() + 38.0, rect.top()), pos2(rect.right() - 12.0, rect.bottom())));
-                            clip.text(pos2(rect.left() + 38.0, rect.center().y), egui::Align2::LEFT_CENTER, &x.title, egui::FontId::proportional(13.5), if on { TEXT } else { SECONDARY });
+                            let tex = match x.source {
+                                Source::Window(id) => self.icons.get(&id),
+                                _ => None,
+                            };
+                            let tx0 = if let Some(tx) = tex {
+                                let r = Rect::from_center_size(pos2(rect.left() + 24.0, rect.center().y), vec2(22.0, 22.0));
+                                egui::Image::new(egui::load::SizedTexture::new(tx.id(), r.size())).paint_at(ui, r);
+                                46.0
+                            } else {
+                                let dot = pos2(rect.left() + 20.0, rect.center().y);
+                                ui.painter().circle_stroke(dot, 7.0, Stroke::new(1.5, if on { pal.accent } else { FAINT }));
+                                if on {
+                                    ui.painter().circle_filled(dot, 3.5, pal.accent);
+                                }
+                                38.0
+                            };
+                            let clip = ui.painter().with_clip_rect(Rect::from_min_max(pos2(rect.left() + tx0, rect.top()), pos2(rect.right() - 12.0, rect.bottom())));
+                            clip.text(pos2(rect.left() + tx0, rect.center().y), egui::Align2::LEFT_CENTER, &x.title, egui::FontId::proportional(13.5), if on { TEXT } else { SECONDARY });
                             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                                 self.picked = Some(x.source.clone());
                             }
@@ -744,9 +855,9 @@ impl ShareMenu {
                 let y = ui.cursor().top();
                 ui.painter().hline(ui.max_rect().x_range(), y, Stroke::new(1.0, k_edge()));
                 ui.add_space(12.0);
-                let res = [Resolution::P720, Resolution::P1080, Resolution::Source];
-                let at = res.iter().position(|r| *r == self.quality.resolution).unwrap_or(1);
-                if let Some(i) = setting_row(ui, "Resolution", &["720p", "1080p", "Source"], at, pal) {
+                let res = [Resolution::Source, Resolution::P720, Resolution::P1080];
+                let at = res.iter().position(|r| *r == self.quality.resolution).unwrap_or(2);
+                if let Some(i) = setting_row(ui, "Resolution", &["Source", "720p", "1080p"], at, pal) {
                     self.quality.resolution = res[i];
                 }
                 let fps = [15, 30, 60];
@@ -784,6 +895,9 @@ impl ShareMenu {
         }
         if go {
             if let Some(src) = self.picked.take() {
+                if let Source::Display(id) = src {
+                    let _ = std::fs::write(last_screen_path(), id.to_string());
+                }
                 sw::pick(src);
                 acts.push(Action::Voice(Vc::GoLive(self.quality)));
             }
@@ -801,7 +915,8 @@ fn setting_row(ui: &mut Ui, label: &str, items: &[&str], selected: usize, pal: t
     let (row, _) = ui.allocate_exact_size(vec2(560.0, 38.0), Sense::hover());
     ui.painter().text(row.left_center(), egui::Align2::LEFT_CENTER, label, egui::FontId::new(13.5, th::semibold()), TEXT);
     let bar = Rect::from_min_size(pos2(row.left() + 150.0, row.top()), vec2(row.width() - 150.0, 38.0));
-    ui.painter().rect_filled(bar, 9.0, k_raised());
+    ui.painter().rect_filled(bar, 19.0, Color32::from_black_alpha(0x38));
+    ui.painter().rect_stroke(bar, 19.0, Stroke::new(1.0, Color32::from_white_alpha(0x16)), egui::StrokeKind::Inside);
     let w = bar.width() / items.len() as f32;
     let mut hit = None;
     for (i, name) in items.iter().enumerate() {
@@ -809,11 +924,11 @@ fn setting_row(ui: &mut Ui, label: &str, items: &[&str], selected: usize, pal: t
         let resp = ui.interact(seg, ui.id().with(("seg", label, i)), Sense::click());
         let on = i == selected;
         if on {
-            ui.painter().rect_filled(seg, 7.0, pal.accent);
+            crate::theme::capsule(ui.painter(), seg, Color32::from_white_alpha(0x34), 0x36);
         } else if resp.hovered() {
-            ui.painter().rect_filled(seg, 7.0, k_hover());
+            ui.painter().rect_filled(seg, 16.0, k_hover());
         }
-        ui.painter().text(seg.center(), egui::Align2::CENTER_CENTER, *name, egui::FontId::new(13.0, th::semibold()), if on { pal.on_accent } else { SECONDARY });
+        ui.painter().text(seg.center(), egui::Align2::CENTER_CENTER, *name, egui::FontId::new(13.0, th::semibold()), if on { TEXT } else { SECONDARY });
         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             hit = Some(i);
         }
@@ -829,41 +944,32 @@ fn footer_button(ui: &mut Ui, text: &str, primary: bool, enabled: bool, pal: th:
         (true, false) => (pal.accent.gamma_multiply(0.3), pal.on_accent.gamma_multiply(0.6)),
         _ => (if resp.hovered() { k_hover() } else { k_raised() }, TEXT),
     };
-    ui.painter().rect_filled(rect, 9.0, fill);
+    crate::theme::capsule(ui.painter(), rect, fill, if primary { 0x50 } else { 0x30 });
     ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::new(13.5, th::semibold()), fg);
     enabled && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
-/// A stream (someone's, or this account's own shared screen) over the whole window, the window itself fullscreen.
+/// A watched stream over the whole window, the window itself fullscreen.
 /// The small button at the bottom right leaves it; Esc and a double click do too.
 pub fn fullscreen(ctx: &egui::Context, cu: &mut CallUi, s: &AppState, acts: &mut Vec<Action>) {
-    if !cu.full && !cu.full_own {
+    if !cu.full {
         return;
     }
     let leave = |cu: &mut CallUi| {
         cu.full = false;
-        cu.full_own = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
     };
-    let v = &s.voice;
-    // what fills the window: this account's own share, or the stream being watched; none left ends it
-    let (frames, title, opening) = if cu.full_own {
-        match &v.sharing {
-            Some(sh) => (Some((&sh.frames, "share")), "Your screen".to_owned(), false),
-            None => return leave(cu),
-        }
-    } else {
-        match &v.watching {
-            Some(w) => (w.frames.as_ref().map(|f| (f, "watch")), format!("{}'s screen", w.name), w.opening),
-            None => return leave(cu),
-        }
+    // the stream being watched fills the window; none left ends it
+    let (frames, title, opening) = match &s.voice.watching {
+        Some(w) => (w.frames.as_ref().map(|f| (f, "watch")), format!("{}'s screen", w.name), w.opening),
+        None => return leave(cu),
     };
     if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         return leave(cu);
     }
     let rect = ctx.content_rect();
     let tex = frames.and_then(|(f, key)| cu.frames_texture(ctx, key, f));
-    let (mut exit, own) = (false, cu.full_own);
+    let mut exit = false;
     egui::Area::new(egui::Id::new("watch_fullscreen")).order(egui::Order::Foreground).fixed_pos(rect.min).show(ctx, |ui| {
         ui.set_clip_rect(rect);
         let (r, resp) = ui.allocate_exact_size(rect.size(), Sense::click());
@@ -876,7 +982,7 @@ pub fn fullscreen(ctx: &egui::Context, cu: &mut CallUi, s: &AppState, acts: &mut
             }
         }
         name_chip(ui, r.shrink(8.0), &title, false, false, false);
-        if !own && tile_pill(ui, pos2(r.right() - 16.0, r.top() + 16.0), "Stop watching", DANGER, egui::Id::new("fs_stop")) {
+        if tile_pill(ui, pos2(r.right() - 16.0, r.top() + 16.0), "Stop watching", DANGER, egui::Id::new("fs_stop")) {
             acts.push(Action::Voice(Vc::StopWatching));
             exit = true;
         }
@@ -961,6 +1067,6 @@ mod tests {
     }
 }
 
-pub(super) fn k_raised() -> Color32 { th::tone(0.18) }
-pub(super) fn k_panel() -> Color32 { th::tone(0.085) }
-pub(super) fn k_edge() -> Color32 { th::tone(0.05) }
+pub(super) fn k_raised() -> Color32 { Color32::from_white_alpha(0x1A) }
+pub(super) fn k_panel() -> Color32 { Color32::from_black_alpha(0x50) }
+pub(super) fn k_edge() -> Color32 { Color32::from_black_alpha(0x60) }

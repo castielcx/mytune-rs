@@ -52,6 +52,9 @@ impl Tweak for TweakItem {
     fn revert(&self, b: &TweakBackup) -> Result<()> {
         self.inner.revert(b)
     }
+    fn revert_default(&self) -> Result<bool> {
+        self.inner.revert_default()
+    }
     fn on_applied(&self, store: &mut Store) -> Result<()> {
         self.inner.on_applied(store)
     }
@@ -80,6 +83,9 @@ impl Tweak for TimerResolution {
     }
     fn revert(&self, b: &TweakBackup) -> Result<()> {
         self.0.revert(b)
+    }
+    fn revert_default(&self) -> Result<bool> {
+        self.0.revert_default()
     }
     fn on_applied(&self, store: &mut Store) -> Result<()> {
         store.set_settings_flag("GameTimer", true)

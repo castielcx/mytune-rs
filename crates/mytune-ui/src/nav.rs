@@ -1,6 +1,6 @@
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
-    Chat, Dashboard, Optimize, Games, Vpn, Mouse, Display,
+    Chat, Dashboard, Optimize, Games, Vpn, Mouse, Display, Sound,
     Debloat, Customize, Tools, Diagnostics, Restore, Settings,
 }
 
@@ -32,6 +32,7 @@ pub const GROUPS: &[Group] = &[
     Group { title: Some("DEVICES"), items: &[
         it!(Mouse, "Mouse", "Mouse acceleration and polling rate test", "\u{E962}"),
         it!(Display, "Display", "Refresh rate, colours and resolution", "\u{E7F4}"),
+        it!(Sound, "Sound", "Volume for each app, and which speakers or headset plays it", "\u{E767}"),
     ] },
     Group { title: Some("WINDOWS"), items: &[
         it!(Debloat, "Debloat", "Remove apps and background extras you do not need", "\u{E74D}"),

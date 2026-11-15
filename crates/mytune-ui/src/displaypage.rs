@@ -32,7 +32,7 @@ pub struct DisplayPage {
     vib: Option<VibranceRange>,
     vib_pct: f64,
     loaded: bool,
-    status: Option<(String, bool)>,
+    pub(crate) status: Option<(String, bool)>,
     trial: Option<Trial>,
 }
 

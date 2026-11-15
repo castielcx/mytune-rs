@@ -22,8 +22,7 @@ fn small(ui: &mut Ui, text: &str) {
 }
 
 fn button(ui: &mut Ui, text: &str, danger: bool) -> bool {
-    let b = egui::Button::new(sb(text, 12.5).color(if danger { Color32::WHITE } else { TEXT })).fill(if danger { DANGER } else { k_raised() }).corner_radius(6.0).min_size(vec2(0.0, 28.0));
-    ui.add(b).clicked()
+    crate::theme::button_tint(ui, text, false, danger.then_some(DANGER), (12.0, 3.0, 12.0, 4.0)).clicked()
 }
 
 fn secs(s: u32) -> String {
@@ -179,7 +178,7 @@ pub fn emoji(ui: &mut Ui, ctx: &egui::Context, chat: &Chat, s: &AppState, p: &Em
                 ui.label(rt("unavailable", 12.0).color(th::WARNING));
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if button(ui, "Delete", true) {
+                if super::sure(ui, ("emoji", &e.id), "Delete", |ui, l| button(ui, l, true)) {
                     acts.push(Action::Emoji(EmojiInput::Delete(e.id.clone())));
                 }
             });
@@ -228,7 +227,7 @@ pub fn stickers(ui: &mut Ui, ctx: &egui::Context, chat: &Chat, s: &AppState, p: 
                 ui.label(rt(format!("{}  \u{2022}  {}", st.form.tags, st.form.description), 12.0).color(MUTED));
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if button(ui, "Delete", true) {
+                if super::sure(ui, ("sticker", &st.id), "Delete", |ui, l| button(ui, l, true)) {
                     acts.push(Action::Stickers(StickerInput::Delete(st.id.clone())));
                 }
                 if button(ui, "Edit", false) {

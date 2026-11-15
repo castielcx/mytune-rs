@@ -20,6 +20,8 @@ pub enum For {
 pub struct PickerUi {
     pub open: Option<For>,
     gifs: bool,
+    /// The Stickers tab shows (feature `local-stickers` only).
+    stickers: bool,
     query: String,
     gif_query: String,
     at: Option<egui::Pos2>,
@@ -58,6 +60,7 @@ impl PickerUi {
         }
         self.open = None;
         self.gifs = false;
+        self.stickers = false;
         self.gif_tex.clear();
     }
 }
@@ -100,23 +103,23 @@ pub fn show(ctx: &egui::Context, pk: &mut PickerUi, app: &Application, draft: &m
     };
     let mut close = false;
     let area = egui::Area::new(egui::Id::new("emoji_picker")).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
-        egui::Frame::new()
-            .fill(k_panel())
-            .stroke(Stroke::new(1.0, k_edge()))
-            .corner_radius(10.0)
-            .shadow(egui::Shadow { offset: [0, 10], blur: 28, spread: 0, color: Color32::from_black_alpha(0x66) })
-            .inner_margin(egui::Margin::same(10))
-            .show(ui, |ui| {
+        crate::theme::float(ui, crate::theme::R_MENU, 10, |ui| {
                 ui.set_width(w - 20.0);
                 ui.set_height(h - 20.0);
                 // tabs: GIFs only where one can be sent
                 ui.horizontal(|ui| {
                     if what == For::Composer {
-                        for (gifs, name) in [(true, "GIFs"), (false, "Emoji")] {
-                            let on = pk.gifs == gifs;
-                            if ui.add(egui::Button::new(sb(name, 13.0).color(if on { p().on_accent } else { SECONDARY })).fill(if on { p().accent } else { k_raised() }).corner_radius(6.0).min_size(vec2(70.0, 28.0))).clicked() && !on {
+                        let tabs: &[&str] = if cfg!(feature = "local-stickers") { &["GIFs", "Emoji", "Stickers"] } else { &["GIFs", "Emoji"] };
+                        let now = if pk.gifs { 0 } else if pk.stickers { 2 } else { 1 };
+                        for (tab, name) in tabs.iter().enumerate() {
+                            let on = now == tab;
+                            if ui.add(crate::theme::Choice::new(*name, on).min_size(vec2(70.0, 28.0))).clicked() && !on {
                                 let at = pk.at;
-                                pk.toggle(For::Composer, gifs, at, acts);
+                                if pk.gifs != (tab == 0) {
+                                    pk.toggle(For::Composer, tab == 0, at, acts);
+                                }
+                                pk.stickers = tab == 2;
+                                pk.query.clear();
                             }
                         }
                     } else {
@@ -124,7 +127,12 @@ pub fn show(ctx: &egui::Context, pk: &mut PickerUi, app: &Application, draft: &m
                     }
                 });
                 ui.add_space(8.0);
-                if pk.gifs {
+                #[cfg(feature = "local-stickers")]
+                let stickers_tab = pk.stickers && stickers(ui, pk, app, tex, asked, want, acts, &mut close);
+                #[cfg(not(feature = "local-stickers"))]
+                let stickers_tab = false;
+                if stickers_tab {
+                } else if pk.gifs {
                     gifs(ui, pk, s, acts, &mut close);
                 } else {
                     emoji(ui, pk, app, &what, draft, tex, asked, want, acts, &mut close);
@@ -132,7 +140,11 @@ pub fn show(ctx: &egui::Context, pk: &mut PickerUi, app: &Application, draft: &m
             });
     });
     let fresh = std::mem::take(&mut pk.fresh);
-    if close || (!fresh && area.response.clicked_elsewhere()) || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+    // A wheel turn outside the picker scrolls the chat under it: the picker would float over other messages.
+    let scrolled_away = ctx.input(|i| {
+        i.raw.events.iter().any(|e| matches!(e, egui::Event::MouseWheel { .. })) && !i.pointer.latest_pos().is_some_and(|p| area.response.rect.contains(p))
+    });
+    if close || scrolled_away || (!fresh && area.response.clicked_elsewhere()) || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         pk.close(acts);
     }
 }
@@ -141,7 +153,7 @@ pub fn show(ctx: &egui::Context, pk: &mut PickerUi, app: &Application, draft: &m
 fn emoji(ui: &mut Ui, pk: &mut PickerUi, app: &Application, what: &For, draft: &mut String, tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSet<String>, want: &mut Vec<String>, acts: &mut Vec<Action>, close: &mut bool) {
     let s = &app.state;
     let ctx = ui.ctx().clone();
-    egui::Frame::new().fill(k_rail()).corner_radius(6.0).inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
+    egui::Frame::new().fill(k_rail()).corner_radius(10.0).inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
         ui.add(egui::TextEdit::singleline(&mut pk.query).frame(egui::Frame::NONE).desired_width(f32::INFINITY).hint_text("Find the perfect emoji"));
     });
     ui.add_space(6.0);
@@ -152,7 +164,7 @@ fn emoji(ui: &mut Ui, pk: &mut PickerUi, app: &Application, what: &For, draft: &
         let tile = |ui: &mut Ui| {
             let (r, resp) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::click());
             let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
-            ui.painter().rect_filled(r, 6.0, k_hover().gamma_multiply(t));
+            ui.painter().rect_filled(r, 10.0, k_hover().gamma_multiply(t));
             (r, resp)
         };
         // shortcut: usable_emoji() is built while the picker shows (a few hundred entries); cache it if slow.
@@ -171,7 +183,7 @@ fn emoji(ui: &mut Ui, pk: &mut PickerUi, app: &Application, what: &For, draft: &
                             egui::Image::new(egui::load::SizedTexture::new(t, vec2(30.0, 30.0))).paint_at(ui, Rect::from_center_size(r.center(), vec2(30.0, 30.0)));
                         }
                         None => {
-                            ui.painter().rect_filled(Rect::from_center_size(r.center(), vec2(26.0, 26.0)), 4.0, k_raised());
+                            ui.painter().rect_filled(Rect::from_center_size(r.center(), vec2(26.0, 26.0)), 10.0, k_raised());
                         }
                     }
                     if resp.on_hover_text(&e.text).clicked() {
@@ -207,6 +219,7 @@ fn emoji(ui: &mut Ui, pk: &mut PickerUi, app: &Application, what: &For, draft: &
                 }
                 draft.push_str(&text);
                 draft.push(' ');
+                acts.push(Action::SetDraft(draft.clone())); // the engine keeps the draft per room
             }
             For::Reaction(item) => {
                 acts.push(Action::React { item: item.clone(), key });
@@ -214,6 +227,51 @@ fn emoji(ui: &mut Ui, pk: &mut PickerUi, app: &Application, what: &For, draft: &
             }
         }
     }
+}
+
+/// The Stickers tab: every server's stickers, whatever Nitro allows. A click posts the sticker's picture link as
+/// its own message, which Discord shows as the picture (an animated APNG sticker as a still). Returns true: it drew.
+#[cfg(feature = "local-stickers")]
+#[allow(clippy::too_many_arguments)]
+fn stickers(ui: &mut Ui, pk: &mut PickerUi, app: &Application, tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSet<String>, want: &mut Vec<String>, acts: &mut Vec<Action>, close: &mut bool) -> bool {
+    let s = &app.state;
+    let ctx = ui.ctx().clone();
+    egui::Frame::new().fill(k_rail()).corner_radius(10.0).inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
+        ui.add(egui::TextEdit::singleline(&mut pk.query).frame(egui::Frame::NONE).desired_width(f32::INFINITY).hint_text("Find the perfect sticker"));
+    });
+    ui.add_space(6.0);
+    let q = pk.query.trim().to_lowercase();
+    egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        for (server, list) in app.all_stickers() {
+            let list: Vec<_> = list.iter().filter(|x| q.is_empty() || x[0].to_lowercase().contains(&q)).collect();
+            if list.is_empty() {
+                continue;
+            }
+            ui.label(rt(server.to_uppercase(), 11.0).color(MUTED));
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+                for [name, picture, link] in list {
+                    let (r, resp) = ui.allocate_exact_size(vec2(96.0, 96.0), Sense::click());
+                    let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
+                    ui.painter().rect_filled(r, 10.0, k_hover().gamma_multiply(t));
+                    let inner = Rect::from_center_size(r.center(), vec2(84.0, 84.0));
+                    // pictures are asked for only once their tile is in view: a server can have 60 stickers
+                    match ui.is_rect_visible(r).then(|| texture(&ctx, tex, asked, s, &Some(picture.clone()), want)).flatten() {
+                        Some(t) => egui::Image::new(egui::load::SizedTexture::new(t, inner.size())).paint_at(ui, inner),
+                        None => {
+                            ui.painter().rect_filled(inner, 10.0, k_raised());
+                        }
+                    }
+                    if resp.on_hover_text(name).clicked() {
+                        acts.push(Action::SendText(link.clone()));
+                        *close = true;
+                    }
+                }
+            });
+            ui.add_space(6.0);
+        }
+    });
+    true
 }
 
 fn gifs(ui: &mut Ui, pk: &mut PickerUi, s: &AppState, acts: &mut Vec<Action>, close: &mut bool) {
@@ -224,7 +282,7 @@ fn gifs(ui: &mut Ui, pk: &mut PickerUi, s: &AppState, acts: &mut Vec<Action>, cl
             pk.gif_query.clear();
             acts.push(Action::ShowGifs(GifView::Home));
         }
-        egui::Frame::new().fill(k_rail()).corner_radius(6.0).inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
+        egui::Frame::new().fill(k_rail()).corner_radius(10.0).inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
             let te = ui.add(egui::TextEdit::singleline(&mut pk.gif_query).frame(egui::Frame::NONE).desired_width(f32::INFINITY).hint_text("Search Tenor"));
             if te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !pk.gif_query.trim().is_empty() {
                 acts.push(Action::SearchGifs(pk.gif_query.trim().to_owned()));
@@ -250,16 +308,16 @@ fn gifs(ui: &mut Ui, pk: &mut PickerUi, s: &AppState, acts: &mut Vec<Action>, cl
             match pic {
                 Some(p) => {
                     let t = pk.gif_tex.entry(src.to_owned()).or_insert_with(|| ctx.load_texture(format!("gif:{src}"), egui::ColorImage::from_rgba_unmultiplied([p.width as usize, p.height as usize], &p.rgba), crate::theme::SMOOTH));
-                    // animated GIFs play while their tile is in view
-                    let id = if ui.is_rect_visible(r) { super::media::animated(&ctx,&format!("gif:{src}"), &p).unwrap_or(t.id()) } else { t.id() };
-                    egui::Image::new(egui::load::SizedTexture::new(id, r.size())).corner_radius(6.0).paint_at(ui, r);
+                    // a GIF plays only under the pointer
+                    let id = if resp.hovered() { super::media::animated(&ctx,&format!("gif:{src}"), &p).unwrap_or(t.id()) } else { t.id() };
+                    egui::Image::new(egui::load::SizedTexture::new(id, r.size())).corner_radius(10.0).paint_at(ui, r);
                 }
                 None => {
-                    ui.painter().rect_filled(r, 6.0, k_raised());
+                    ui.painter().rect_filled(r, 10.0, k_raised());
                 }
             }
             if let Some(l) = label {
-                ui.painter().rect_filled(r, 6.0, Color32::from_black_alpha(110));
+                ui.painter().rect_filled(r, 10.0, Color32::from_black_alpha(110));
                 ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, l, egui::FontId::new(14.0, th::semibold()), Color32::WHITE);
             }
             let t = ctx.animate_bool_with_time(resp.id, resp.hovered(), QUICK);

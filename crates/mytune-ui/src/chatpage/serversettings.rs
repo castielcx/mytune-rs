@@ -54,8 +54,7 @@ fn small(ui: &mut Ui, text: &str) {
 }
 
 fn button(ui: &mut Ui, text: &str, danger: bool) -> bool {
-    let b = egui::Button::new(sb(text, 12.5).color(if danger { Color32::WHITE } else { TEXT })).fill(if danger { DANGER } else { k_raised() }).corner_radius(6.0).min_size(vec2(0.0, 28.0));
-    ui.add(b).clicked()
+    crate::theme::button_tint(ui, text, false, danger.then_some(DANGER), (12.0, 3.0, 12.0, 4.0)).clicked()
 }
 
 fn person_row_icon(ui: &mut Ui, ctx: &egui::Context, url: &str, name: &str, s: &AppState, tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSet<String>, want: &mut Vec<String>) {
@@ -81,7 +80,7 @@ pub fn screen(ui: &mut Ui, su: &mut SettingsUi, chat: &Chat, app: &Application, 
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 32.0), Sense::click());
             let t = ctx.animate_bool_with_time(resp.id, resp.hovered(), QUICK);
             if on || t > 0.0 {
-                ui.painter().rect_filled(r, 6.0, if on { super::k_active() } else { super::k_hover().gamma_multiply(t) });
+                ui.painter().rect_filled(r, 10.0, if on { super::k_active() } else { super::k_hover().gamma_multiply(t) });
             }
             ui.painter().text(egui::pos2(r.left() + 12.0, r.center().y), egui::Align2::LEFT_CENTER, name_of(*sec).unwrap_or(""), egui::FontId::proportional(14.0), if on { TEXT } else { SECONDARY });
             if resp.clicked() {
@@ -254,7 +253,7 @@ pub fn screen(ui: &mut Ui, su: &mut SettingsUi, chat: &Chat, app: &Application, 
                             let Some(role) = r.original.roles.iter().find(|x| &x.id == id) else { continue };
                             let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
                             let t = ctx.animate_bool_with_time(resp.id, resp.hovered(), QUICK);
-                            ui.painter().rect_filled(row, 6.0, super::k_hover().gamma_multiply(t));
+                            ui.painter().rect_filled(row, 10.0, super::k_hover().gamma_multiply(t));
                             let col = if role.color == 0 { MUTED } else { Color32::from_rgb((role.color >> 16) as u8, (role.color >> 8) as u8, role.color as u8) };
                             ui.painter().circle_filled(egui::pos2(row.left() + 16.0, row.center().y), 6.0, col);
                             ui.painter().text(egui::pos2(row.left() + 32.0, row.center().y), egui::Align2::LEFT_CENTER, &role.name, egui::FontId::proportional(14.0), TEXT);
@@ -272,7 +271,7 @@ pub fn screen(ui: &mut Ui, su: &mut SettingsUi, chat: &Chat, app: &Application, 
                         ui.horizontal(|ui| {
                             for (tab, t) in [(RoleTab::Display, "Display"), (RoleTab::Permissions, "Permissions"), (RoleTab::Members, "Members")] {
                                 let on = d.tab == tab;
-                                if ui.add(egui::Button::new(sb(t, 13.0).color(if on { Color32::WHITE } else { SECONDARY })).fill(if on { p().accent } else { k_raised() }).corner_radius(6.0)).clicked() {
+                                if ui.add(crate::theme::Choice::new(t, on)).clicked() {
                                     acts.push(Action::Roles(RoleInput::Tab(tab)));
                                 }
                             }
@@ -387,7 +386,7 @@ pub fn screen(ui: &mut Ui, su: &mut SettingsUi, chat: &Chat, app: &Application, 
                             ui.label(rt(format!("{} \u{2022} by {by} \u{2022} {uses} \u{2022} {exp}", i.channel), 12.0).color(MUTED));
                         });
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if button(ui, "Revoke", true) {
+                            if super::sure(ui, ("invite", &i.code), "Revoke", |ui, l| button(ui, l, true)) {
                                 acts.push(Action::Invites(InviteInput::Revoke(i.code.clone())));
                             }
                             if button(ui, "Copy", false) {
@@ -407,7 +406,7 @@ pub fn screen(ui: &mut Ui, su: &mut SettingsUi, chat: &Chat, app: &Application, 
                     let open = a.open == Some(i);
                     let who = row.actor.and_then(|k| a.actors.get(k as usize)).map(|(_, u)| format!("{u:?}"));
                     let _ = who;
-                    let resp = egui::Frame::new().fill(if open { super::k_hover() } else { Color32::TRANSPARENT }).corner_radius(6.0).inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
+                    let resp = egui::Frame::new().fill(if open { super::k_hover() } else { Color32::TRANSPARENT }).corner_radius(10.0).inner_margin(egui::Margin::symmetric(8, 5)).show(ui, |ui| {
                         ui.set_width(ui.available_width());
                         ui.horizontal_wrapped(|ui| {
                             for sp in row.title.spans() {

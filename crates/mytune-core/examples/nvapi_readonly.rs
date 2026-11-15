@@ -29,6 +29,23 @@ fn main() {
         println!("{name:28} {id:>10}: {:?}", s.get(base, id));
     }
     println!("limiter 0x10835002: {:?}", s.get(base, 0x10835002));
+    for (id, name) in [
+        (0x0005F543u32, "low latency cpl state"),
+        (0x10835000, "ultra low latency enabled"),
+        (0x10D2BB16, "aniso mode selector"),
+        (0x101E61A9, "aniso level"),
+        (0x10FC2D9C, "aa transparency multisample"),
+        (0x10D48A85, "aa transparency supersample"),
+        (0x2072C5A3, "opengl gdi compatibility"),
+    ] {
+        println!("{name:28} {id:#010X}: {:?}", s.get(base, id));
+    }
+    for (id, v) in s.settings(base).expect("enum settings") {
+        println!("stored {id:#010X} = {v:#X}");
+    }
+    for (id, name) in mytune_core::nvapi::known_settings().expect("known settings") {
+        println!("known {id:#010X} {name}");
+    }
     println!("find app notepad.exe: {:?}", s.find_application("notepad.exe").map(|o| o.is_some()));
     println!("find profile 'MyTuneTest-nope': {:?}", s.find_profile("MyTuneTest-nope").map(|o| o.is_some()));
 }

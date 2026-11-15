@@ -24,7 +24,7 @@ Rust port of MyTune 2: a Windows gaming-tuning app with a glass-style egui UI an
    ```
 3. `.cargo/config.toml` points `LK_CUSTOM_WEBRTC` at a local copy of libwebrtc (`vendor-src/webrtc`). Delete that
    line to let the build download it instead.
-4. `.\build.ps1 build --release -p mytune-ui`, then run `target\release\mytune-ui.exe` from an elevated terminal.
+4. `.\build.ps1 build --release -p mytune-ui`, then run `target\release\MyTune.exe` from an elevated terminal.
 
 ## Toolchain
 Rustup stable (`x86_64-pc-windows-msvc`) + Visual Studio Build Tools (C++ workload). In a new shell:

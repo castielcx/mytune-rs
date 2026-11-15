@@ -1,4 +1,5 @@
 pub mod app;
+pub mod appinfo;
 pub mod chatpage;
 pub mod emoji;
 pub mod fade;
@@ -9,6 +10,7 @@ pub mod internet;
 pub mod mouse;
 pub mod nav;
 pub mod settingspage;
+pub mod soundpage;
 pub mod theme;
 pub mod toolspage;
 pub mod widgets;

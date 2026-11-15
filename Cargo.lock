@@ -4221,6 +4221,7 @@ dependencies = [
  "qrcode",
  "serde",
  "serde_json",
+ "tokio",
  "windows-sys 0.61.2",
  "yapfast-core",
 ]
@@ -4252,11 +4253,13 @@ dependencies = [
  "eframe",
  "egui_kittest",
  "image",
+ "memmap2",
  "mytune-chat",
  "mytune-core",
  "mytune-sensors",
  "rfd",
  "tray-icon",
+ "windows-sys 0.61.2",
  "winresource",
 ]
 

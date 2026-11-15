@@ -173,8 +173,8 @@ impl SettingsPage {
         }
         self.poll(&ctx);
         self.modals(&ctx);
-        if let Some((m, ok)) = &self.status {
-            ui.label(rt(m, 12.0).color(if *ok { th::SUCCESS } else { th::DANGER }));
+        if let Some((m, ok)) = self.status.take() {
+            crate::notice::post(&ctx, m, ok);
         }
 
         heading(ui, "App", 24.0);
@@ -460,8 +460,11 @@ impl SettingsPage {
 }
 
 fn heading(ui: &mut Ui, text: &str, top: f32) {
+    if th::at_page_top(ui) {
+        return;
+    }
     ui.add_space(top);
-    ui.label(th::dsb(text, 13.0).color(th::TEXT));
+    ui.add_visible(false, egui::Label::new(th::dsb(text, 13.0))); // headings hidden, space kept (user's choice)
     ui.add_space(8.0);
 }
 

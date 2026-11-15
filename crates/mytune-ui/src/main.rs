@@ -2,6 +2,9 @@
 use eframe::egui;
 use tray_icon::{menu::{Menu, MenuEvent, MenuItem}, Icon, MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
+const SOUND_TRAY: &str = "mytune-sound";
+const SOUND_TIP: &str = "MyTune volume";
+
 /// The accent saved by the C# app or this one (`Settings.AccentColor`).
 fn accent() -> String {
     mytune_core::store::Store::load_default().settings_str("AccentColor").unwrap_or_else(|| "#FF5A0A".into())
@@ -113,10 +116,26 @@ fn main() -> eframe::Result {
         open_hotkey(cc.egui_ctx.clone());
         let ctx = cc.egui_ctx.clone();
         TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
-            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = e {
-                show(&ctx);
+            if let TrayIconEvent::Click { id, rect, button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = e {
+                if id == tray_icon::TrayIconId::new(SOUND_TRAY) {
+                    mytune_ui::soundpage::ask_flyout(rect.position.x as f32 + rect.size.width as f32 / 2.0, rect.position.y as f32);
+                    ctx.request_repaint();
+                } else {
+                    show(&ctx);
+                }
             }
         }));
+        // Second icon, a speaker: left click opens the volume flyout. Windows hides new icons behind the
+        // overflow arrow, so once it is registered the program's "show" switch is set (only while the user never
+        // chose; Windows has one switch for both icons).
+        let sound = TrayIconBuilder::new().with_id(SOUND_TRAY).with_tooltip(SOUND_TIP).with_icon(Icon::from_rgba(mytune_ui::soundpage::speaker(32), 32, 32).expect("icon")).build();
+        std::mem::forget(sound);
+        std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            if mytune_core::audio::show_tray_icons() {
+                mytune_core::log::info("tray icons set to show beside the overflow arrow");
+            }
+        });
         let tray = TrayIconBuilder::new().with_tooltip("MyTune").with_icon(icon()).with_menu(Box::new(menu)).with_menu_on_left_click(false).build();
         let mut app = mytune_ui::app::App::new();
         mytune_ui::theme::install_fonts(&cc.egui_ctx);

@@ -14,15 +14,21 @@ mytune-core = { version = "0.1.0", path = "../mytune-core" }
 mytune-chat = { version = "0.1.0", path = "../mytune-chat" }
 mytune-sensors = { version = "0.1.0", path = "../mytune-sensors" }
 rfd = "0.15"
+wry = "0.52" # WebView2 for the SoundCloud sign-in window
+raw-window-handle = "0.6"
 image = { version = "0.25", default-features = false, features = ["png"] }
 tray-icon = "0.26.1"
 memmap2 = "0.9" # already in the tree through the engine: fonts are mapped, not read into memory
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62", features = ["Foundation_Collections", "Media", "Media_Control", "Media_Core", "Media_Playback", "Media_Streaming_Adaptive", "Storage_Streams", "Win32_System_WinRT"] } # already in the tree: Windows' media session for the now-playing strip
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell", "Win32_System_Com", "Win32_UI_WindowsAndMessaging"] }
 
 [features]
 # Sticker picker that posts any server's sticker as its picture link. For the owner's own build only:
 # never pass it to the installer build (installer\build.ps1), it would put other people's accounts at risk.
 local-stickers = []
+# Taskbar look (Customize > Taskbar). It loads a DLL into explorer.exe, which antivirus may flag on an
+# unsigned setup, so it is in the owner's own build only until the owner says to ship it (2026-11-15).
+taskbar-look = ["mytune-core/taskbar-look"]
 
 [dev-dependencies]
 egui_kittest = { version = "0.37.0", features = ["wgpu", "snapshot"] }

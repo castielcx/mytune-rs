@@ -252,9 +252,7 @@ impl DiagnosticsPage {
             self.scan_drivers(&ctx);
         }
 
-        ui.label(rt("See which drivers cause stalls.", 12.0).color(text2()));
         if let Some((msg, ok)) = &self.note {
-            ui.add_space(6.0);
             ui.label(rt(msg, 12.0).color(if *ok { th::SUCCESS } else { th::DANGER }));
         }
         th::section(ui, "Driver latency (DPC and interrupts)");

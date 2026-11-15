@@ -1,6 +1,6 @@
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
-    Chat, Dashboard, Optimize, Games, Vpn, Mouse, Display, Sound,
+    Chat, Dashboard, Music, Optimize, Games, Vpn, Mouse, Display, Sound,
     Debloat, Customize, Tools, Diagnostics, Restore, Settings,
 }
 
@@ -10,6 +10,12 @@ pub struct Item {
     pub tip: &'static str,
     /// Segoe Fluent Icons code point.
     pub glyph: &'static str,
+}
+
+/// Sidebar icon of a page (Restore shares Settings').
+pub fn glyph_of(page: Page) -> &'static str {
+    let page = if page == Page::Restore { Page::Settings } else { page };
+    GROUPS.iter().flat_map(|g| g.items).chain(std::iter::once(&SETTINGS)).find(|i| i.page == page).map_or("", |i| i.glyph)
 }
 
 pub struct Group {
@@ -23,6 +29,7 @@ pub const GROUPS: &[Group] = &[
     Group { title: None, items: &[
         it!(Chat, "Discord", "Your Discord chats (Yapfast)", "\u{E8BD}"),
         it!(Dashboard, "Home", "Status of your PC and the one-click setup", "\u{E80F}"),
+        it!(Music, "Music", "What is playing on this PC, with play, pause and skip", "\u{E8D6}"),
     ] },
     Group { title: Some("GAMING"), items: &[
         it!(Optimize, "Optimize", "Windows settings that make games run smoother", "\u{E945}"),

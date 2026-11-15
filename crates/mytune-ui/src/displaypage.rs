@@ -172,10 +172,8 @@ impl DisplayPage {
         }
         let ctx = ui.ctx().clone();
         self.trial_modal(&ctx);
-        caption(ui, "Resolution, refresh rate and colors for each monitor. Color changes apply live.");
-        if let Some((msg, ok)) = &self.status {
-            ui.add_space(6.0);
-            ui.label(rt(msg, 12.0).color(if *ok { th::SUCCESS } else { th::DANGER }));
+        if let Some((msg, ok)) = self.status.take() {
+            crate::notice::post(&ctx, msg, ok);
         }
         if self.monitors.is_empty() {
             ui.add_space(18.0);
@@ -195,16 +193,14 @@ impl DisplayPage {
     /// One pill track (ControlBg, padding 3); the chosen monitor is an AccentButton, the others SubtleButtons.
     fn monitor_track(&mut self, ui: &mut Ui) {
         let mut pick = None;
-        egui::Frame::new().fill(th::control_bg()).inner_margin(3).show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                for (i, m) in self.monitors.iter().enumerate() {
-                    let clicked = if i == self.sel { th::button(ui, &m.label, true, th::BTN).clicked() } else { w::subtle_button(ui, &m.label, 14.0, th::BTN).clicked() };
-                    if clicked {
-                        pick = Some(i);
-                    }
+        // same tab row as Settings (track + sliding glass thumb)
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (i, m) in self.monitors.iter().enumerate() {
+                if th::tab(ui, &m.label, i == self.sel).clicked() {
+                    pick = Some(i);
                 }
-            });
+            }
         });
         if let Some(i) = pick {
             self.sel = i;
@@ -213,9 +209,7 @@ impl DisplayPage {
     }
 
     fn mode_card(&mut self, ui: &mut Ui) {
-        ui.add_space(24.0);
-        ui.label(th::dsb("Resolution and refresh rate", 13.0).color(th::TEXT));
-        ui.add_space(8.0);
+        th::section(ui, "Resolution and refresh rate");
         let mut apply = false;
         let mut pick_res = None;
         let mut pick_hz = None;
@@ -285,7 +279,6 @@ impl DisplayPage {
             // Reset has margin 0,0,-12,0 in the XAML: its text lines up with the card edge. Drawn in a child
             // that reaches 12 px past the row, so the page layout itself is not widened.
             let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::hover());
-            ui.painter().text(row.left_center(), egui::Align2::LEFT_CENTER, "Color calibration", egui::FontId::new(13.0, th::display_semibold()), th::TEXT);
             let wide = egui::Rect::from_min_max(row.min, egui::pos2(row.max.x + 12.0, row.max.y));
             let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(wide).layout(Layout::right_to_left(Align::Center)));
             let ui = &mut ui;
@@ -324,9 +317,7 @@ impl DisplayPage {
             }
         });
 
-        ui.add_space(24.0);
-        ui.label(th::dsb("NVIDIA", 13.0).color(th::TEXT));
-        ui.add_space(8.0);
+        th::section(ui, "NVIDIA");
         th::card(ui, (12, 18, 18, 4), |ui| {
             let on = self.vib.is_some();
             let o = w::slider_row(ui, "Digital vibrance", &mut self.vib_pct, 0.0, 100.0, &fmt_pct, on);

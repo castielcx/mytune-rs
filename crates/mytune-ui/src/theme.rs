@@ -719,9 +719,34 @@ pub fn card_fill<R>(ui: &mut Ui, pad: (i8, i8, i8, i8), fill: Color32, add: impl
 
 /// Section heading: 13 semibold in the accent colour, margin 0,24,0,8.
 pub fn section(ui: &mut Ui, text: &str) {
+    section_gap(ui, text);
+}
+
+/// Same space as `section`, without the visible heading. Right under the page title (see `page_gap`)
+/// it adds nothing, so every page has the same title-to-content distance.
+pub fn section_gap(ui: &mut Ui, text: &str) {
+    if at_page_top(ui) {
+        return;
+    }
     ui.add_space(24.0);
-    ui.label(dsb(text, 13.0).color(TEXT));
+    ui.add_visible(false, egui::Label::new(dsb(text, 13.0)));
     ui.add_space(8.0);
+}
+
+/// The space under every page title (what a hidden section heading takes), remembered so the page's
+/// first `section_gap` does not add it twice.
+pub fn page_gap(ui: &mut Ui) {
+    ui.add_space(24.0);
+    ui.add_visible(false, egui::Label::new(dsb(" ", 13.0)));
+    ui.add_space(8.0);
+    let y = ui.cursor().top();
+    ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("page-top"), y));
+}
+
+/// True while nothing was drawn since `page_gap` this frame.
+pub fn at_page_top(ui: &Ui) -> bool {
+    let y = ui.cursor().top();
+    ui.ctx().data(|d| d.get_temp::<f32>(egui::Id::new("page-top"))).is_some_and(|t| (t - y).abs() < 0.5)
 }
 
 /// XAML button: default (ControlBg + 1px border) or accent (filled, bold OnAccent text).

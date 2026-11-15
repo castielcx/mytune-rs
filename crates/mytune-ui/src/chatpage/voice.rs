@@ -39,6 +39,8 @@ pub struct CallUi {
     live: bool,
     /// A watched stream fills the window.
     full: bool,
+    /// The watched stream plays in its own window (`popout.rs`), not in the call stage.
+    pub pop: bool,
 }
 
 impl CallUi {
@@ -344,20 +346,26 @@ pub fn stage(ui: &mut Ui, rect: Rect, cu: &mut CallUi, s: &AppState, tex: &mut H
         let big = Rect::from_min_max(area.min, pos2(area.right(), area.bottom() - strip_h - if strip_h > 0.0 { 8.0 } else { 0.0 }));
         let big = grid(1, big, 0.0).first().copied().unwrap_or(big);
         ui.painter().rect_filled(big, 12.0, Color32::BLACK);
-        match w.frames.as_ref().filter(|_| !cu.full).and_then(|f| cu.frames_texture(&ctx, "watch", f)) {
+        match w.frames.as_ref().filter(|_| !cu.full && !cu.pop).and_then(|f| cu.frames_texture(&ctx, "watch", f)) {
             Some(t) if !w.opening => cover(ui, big, t, 12.0, true),
+            _ if cu.pop => {
+                ui.painter().text(big.center(), egui::Align2::CENTER_CENTER, "Playing in its own window", egui::FontId::proportional(14.0), SECONDARY);
+            }
             _ => {
                 cu.live = true;
                 let a = 0.6 + 0.4 * (ctx.input(|i| i.time) as f32 * std::f32::consts::TAU).sin();
                 ui.painter().text(big.center(), egui::Align2::CENTER_CENTER, "Opening stream\u{2026}", egui::FontId::proportional(14.0), SECONDARY.gamma_multiply(a));
             }
         }
-        if ui.interact(big, egui::Id::new("watch_open"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        if !cu.pop && ui.interact(big, egui::Id::new("watch_open"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             cu.full = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }
         name_chip(ui, big, &format!("{}'s screen", w.name), false, false, false);
-        if tile_icon(ui, pos2(big.right() - 8.0 - 34.0, big.top() + 8.0), "\u{E740}", "Fullscreen", egui::Id::new("watch_full")) {
+        if tile_icon(ui, pos2(big.right() - 8.0 - 68.0, big.top() + 8.0), "\u{E8A7}", if cu.pop { "Back into MyTune" } else { "Own window, always on top" }, egui::Id::new("watch_pop")) {
+            cu.pop = !cu.pop;
+        }
+        if !cu.pop && tile_icon(ui, pos2(big.right() - 8.0 - 34.0, big.top() + 8.0), "\u{E740}", "Fullscreen", egui::Id::new("watch_full")) {
             cu.full = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
         }
@@ -1001,6 +1009,28 @@ pub fn fullscreen(ctx: &egui::Context, cu: &mut CallUi, s: &AppState, acts: &mut
     });
     if exit {
         leave(cu);
+    }
+}
+
+/// The watched stream in its own window (`popout.rs`): the picture; under the pointer, whose screen it is and
+/// a button to stop watching.
+pub fn pop_stream(ui: &mut Ui, rect: Rect, cu: &mut CallUi, s: &AppState, acts: &mut Vec<Action>) {
+    let Some(w) = &s.voice.watching else { return };
+    let ctx = ui.ctx().clone();
+    ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
+    match w.frames.as_ref().and_then(|f| cu.frames_texture(&ctx, "watch", f)) {
+        Some(t) if !w.opening => cover(ui, rect, t, 0.0, true),
+        _ => {
+            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "Opening stream\u{2026}", egui::FontId::proportional(14.0), SECONDARY);
+        }
+    }
+    // this window's own clock: the main window may be hidden in the tray and not repaint
+    ctx.request_repaint_after(Duration::from_millis(33));
+    if ui.rect_contains_pointer(rect) {
+        name_chip(ui, rect, &format!("{}'s screen", w.name), false, false, false);
+        if tile_icon(ui, pos2(rect.right() - 32.0, rect.top() + 1.0), "\u{E71A}", "Stop watching", egui::Id::new("pop_stop")) {
+            acts.push(Action::Voice(Vc::StopWatching));
+        }
     }
 }
 

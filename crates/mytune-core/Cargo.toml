@@ -3,6 +3,10 @@ name = "mytune-core"
 version.workspace = true
 edition.workspace = true
 
+[features]
+# Builds and embeds the DLL that goes into explorer.exe (src/taskbar.rs). Off in the public setup.
+taskbar-look = []
+
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -14,8 +18,11 @@ version = "0.61"
 features = [
   "Win32_Foundation",
   "Win32_Security",
+  "Win32_Security_Credentials",
   "Win32_Globalization",
   "Win32_Graphics_Gdi",
+  "Win32_Graphics_Dwm",
+  "Win32_System_Memory",
   "Win32_UI_ColorSystem",
   "Win32_UI_Shell",
   "Win32_UI_Input",
@@ -48,6 +55,9 @@ features = [
   "Win32_System_SystemInformation",
   "Win32_UI_WindowsAndMessaging",
 ]
+
+[build-dependencies]
+cc = "1" # finds MSVC for the taskbar DLL
 
 [dev-dependencies]
 tempfile = "3"

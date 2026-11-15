@@ -17,7 +17,7 @@ use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::CloseHandle;
 use windows::Win32::Media::Audio::Endpoints::{IAudioEndpointVolume, IAudioMeterInformation};
 use windows::Win32::Media::Audio::{
-    eMultimedia, eRender, AudioSessionStateExpired, IAudioSessionControl2, IAudioSessionManager2, IMMDevice,
+    eMultimedia, eRender, AudioSessionStateActive, AudioSessionStateExpired, IAudioSessionControl2, IAudioSessionManager2, IMMDevice,
     IMMDeviceEnumerator, ISimpleAudioVolume, MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
 };
 use windows::Win32::System::Com::StructuredStorage::{PropVariantClear, PropVariantToBSTR};
@@ -98,6 +98,8 @@ pub fn merge(raw: &[Raw]) -> Vec<AppRow> {
 struct Sess {
     pid: u32,
     path: String,
+    /// Sound is going through it right now.
+    active: bool,
     vol: ISimpleAudioVolume,
     meter: Option<IAudioMeterInformation>,
 }
@@ -191,6 +193,7 @@ unsafe fn open(d: &IMMDevice, default: &Option<String>) -> windows::core::Result
         let mut pv = d.OpenPropertyStore(STGM_READ)?.GetValue(&PKEY_Device_FriendlyName)?;
         let name = PropVariantToBSTR(&pv).map(|b| b.to_string()).unwrap_or_default();
         let _ = PropVariantClear(&mut pv);
+        let is_default = default.as_deref() == Some(id.as_str());
         let mut sessions = Vec::new();
         let list = d.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None)?.GetSessionEnumerator()?;
         for i in 0..list.GetCount()? {
@@ -201,10 +204,16 @@ unsafe fn open(d: &IMMDevice, default: &Option<String>) -> windows::core::Result
             let (Ok(c2), Ok(vol)) = (c.cast::<IAudioSessionControl2>(), c.cast::<ISimpleAudioVolume>()) else { continue };
             // S_OK = the system sounds session, S_FALSE = an app's
             let pid = if c2.IsSystemSoundsSession() == HRESULT(0) { 0 } else { c2.GetProcessId().unwrap_or(0) };
-            sessions.push(Sess { pid, path: if pid == 0 { String::new() } else { exe_path(pid) }, vol, meter: c.cast().ok() });
+            let path = if pid == 0 { String::new() } else { exe_path(pid) };
+            // Listed: Windows' own sounds on the default device only (user's choice), and apps whose process
+            // still runs: the session of a closed app lingers for a while and can play nothing.
+            if (pid == 0 && !is_default) || (pid != 0 && path.is_empty()) {
+                continue;
+            }
+            sessions.push(Sess { pid, path, active: c.GetState() == Ok(AudioSessionStateActive), vol, meter: c.cast().ok() });
         }
         Ok(Dev {
-            is_default: default.as_deref() == Some(id.as_str()),
+            is_default,
             id,
             name,
             vol: d.Activate(CLSCTX_ALL, None)?,
@@ -225,6 +234,12 @@ fn scan() -> windows::core::Result<Vec<Dev>> {
             if let Ok(d) = all.Item(i).and_then(|d| open(&d, &default)) {
                 out.push(d);
             }
+        }
+        // An app that was moved keeps a silent session on its old device: while it plays somewhere, its
+        // silent sessions on other devices are left out.
+        let playing: Vec<(usize, String)> = out.iter().enumerate().flat_map(|(i, d)| d.sessions.iter().filter(|s| s.active && s.pid != 0).map(move |s| (i, s.path.to_ascii_lowercase()))).collect();
+        for (i, d) in out.iter_mut().enumerate() {
+            d.sessions.retain(|s| s.active || s.pid == 0 || !playing.iter().any(|(j, p)| *j != i && *p == s.path.to_ascii_lowercase()));
         }
         Ok(out)
     }
@@ -341,6 +356,35 @@ fn apply(cmd: &Cmd, devs: &[Dev]) -> Result<(), String> {
     }
 }
 
+/// Shows this program's tray icons beside the taskbar's overflow arrow instead of behind it. Windows 11 keeps
+/// that switch as `IsPromoted` (undocumented), one per program: every icon of this exe shares it (seen
+/// 2026-11-15: MyTune's icon and the speaker have one entry). It is written only while absent: once the user
+/// hides or shows the icons, Windows stores their choice and it is left alone.
+/// An icon must have been added before this is called. True when the switch was set.
+pub fn show_tray_icons() -> bool {
+    use crate::reg::{self, Hive, RegValue};
+    const ROOT: &str = r"Control Panel\NotifyIconSettings";
+    let exe = std::env::current_exe().map(|p| p.to_string_lossy().to_lowercase()).unwrap_or_default();
+    // Windows stores the path as is, or with a known-folder id for its start: `{6D80...}\MyTune\MyTune.exe`
+    let ours = |stored: &str| {
+        let s = stored.to_lowercase();
+        let tail = if s.starts_with('{') { s.split_once('}').map(|x| x.1.to_owned()).unwrap_or_default() } else { s.clone() };
+        !exe.is_empty() && tail.len() > 1 && (s == exe || (s.starts_with('{') && exe.ends_with(&tail)))
+    };
+    let mut done = false;
+    for k in reg::subkeys(Hive::Hkcu, ROOT).unwrap_or_default() {
+        let path = format!(r"{ROOT}\{k}");
+        let text = |n: &str| match reg::get(Hive::Hkcu, &path, n) {
+            Ok(Some(RegValue::String(s))) => s,
+            _ => String::new(),
+        };
+        if ours(&text("ExecutablePath")) && matches!(reg::get(Hive::Hkcu, &path, "IsPromoted"), Ok(None)) {
+            done |= reg::set(Hive::Hkcu, &path, "IsPromoted", &RegValue::Dword(1)).is_ok();
+        }
+    }
+    done
+}
+
 /// The running mixer. Dropping it ends the worker.
 pub struct Mixer {
     tx: Sender<Cmd>,
@@ -442,6 +486,29 @@ mod tests {
         assert_eq!(chrome.pids, vec![10, 11]);
         assert_eq!((chrome.volume, chrome.peak), (0.9, 0.7));
         assert!(!chrome.muted, "muted only when every session is");
+    }
+
+    /// Calls the two undocumented interfaces without changing what plays where: the default device is set to
+    /// itself, and an app on the default device is moved to that device, then back to "follow the default".
+    /// `cargo test -p mytune-core --lib audio::tests::real_policy -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn real_policy() {
+        unsafe {
+            let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+        }
+        let devs = scan().expect("scan");
+        let d = devs.iter().find(|d| d.is_default).expect("a default device");
+        set_default(&d.id).expect("set default to itself");
+        match d.sessions.iter().find(|s| s.pid != 0) {
+            Some(s) => {
+                move_app(s.pid, &d.id).expect("move to its own device");
+                move_app(s.pid, "").expect("back to following the default");
+                println!("moved pid {} ({})", s.pid, s.path);
+            }
+            None => println!("no app is playing on the default device: move not tried"),
+        }
+        assert!(scan().expect("scan").iter().any(|x| x.is_default && x.id == d.id), "default unchanged");
     }
 
     /// Reads this PC's real devices; changes nothing. `cargo test -p mytune-core --lib audio::tests::real -- --ignored --nocapture`

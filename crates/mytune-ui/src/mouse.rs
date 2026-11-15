@@ -167,7 +167,6 @@ impl MousePage {
             }
         }
 
-        ui.label(rt("Polling rate test and pointer settings.", 12.0).color(text2()));
         th::section(ui, "Polling rate");
         self.rate_card(ui, &ctx);
         th::section(ui, "Pointer");
@@ -289,9 +288,8 @@ impl MousePage {
                 });
             });
         });
-        if let Some((msg, ok)) = &self.status {
-            ui.add_space(6.0);
-            ui.label(rt(msg, 12.0).color(if *ok { th::SUCCESS } else { th::DANGER }));
+        if let Some((msg, ok)) = self.status.take() {
+            crate::notice::post(ui.ctx(), msg, ok);
         }
         if click {
             let on = !self.accel;

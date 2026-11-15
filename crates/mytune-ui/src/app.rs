@@ -52,8 +52,11 @@ pub struct App {
     settings: crate::settingspage::SettingsPage,
     mouse: crate::mouse::MousePage,
     sound: crate::soundpage::SoundPage,
+    flyout: crate::soundpage::Flyout,
     diagnostics: crate::diagnosticspage::DiagnosticsPage,
     display: crate::displaypage::DisplayPage,
+    #[cfg(feature = "taskbar-look")]
+    taskbar: crate::taskbarcard::TaskbarCard,
     chat: crate::chatpage::ChatPage,
     /// Empty until the build thread is done (it runs PowerShell).
     tweaks: Arc<Vec<TweakItem>>,
@@ -143,8 +146,11 @@ impl App {
             settings: crate::settingspage::SettingsPage::new(engine.clone()),
             mouse: crate::mouse::MousePage::new(),
             sound: crate::soundpage::SoundPage::new(),
+            flyout: crate::soundpage::Flyout::new(),
             diagnostics: crate::diagnosticspage::DiagnosticsPage::new(engine.clone()),
             display: crate::displaypage::DisplayPage::new(engine.clone()),
+            #[cfg(feature = "taskbar-look")]
+            taskbar: crate::taskbarcard::TaskbarCard::new(engine.clone()),
             chat: Default::default(),
             engine,
             tweaks: Arc::new(Vec::new()),
@@ -336,6 +342,8 @@ impl App {
         frame_cap();
         perf_log(ctx);
         self.poll(ctx);
+        self.flyout.show(ctx); // the tray speaker's volume window, also while this window is hidden
+        self.chat.popouts(ctx); // the song and stream windows, also while this window is hidden
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
             ctx.memory_mut(|m| m.request_focus(Id::new("search")));
         }
@@ -412,7 +420,8 @@ impl App {
             ui.set_clip_rect(clip);
             if self.page == Page::Chat {
                 // the chat sits in a rounded card inside the window: its square corners are covered with the base colour
-                let card = ui.max_rect().shrink2(vec2(10.0, 8.0));
+                let mut card = ui.max_rect().shrink2(vec2(10.0, 8.0));
+                card.max.y -= 8.0; // extra air under the card
                 ui.painter().add(th::glass(card, th::R_PANEL, Color32::TRANSPARENT));
                 ui.scope_builder(UiBuilder::new().max_rect(card), |ui| self.chat.ui(ui));
                 let full = ctx.content_rect();
@@ -425,7 +434,13 @@ impl App {
                     ui.set_width(ui.available_width());
                     if self.page != Page::Dashboard {
                         let settings = matches!(self.page, Page::Settings | Page::Restore);
-                        ui.label(dbd(if settings { Page::Settings.label() } else { self.page.label() }, 30.0));
+                        // lined up with the text inside cards (card pad 3 + 10), user's choice
+                        egui::Frame::new().outer_margin(Margin { left: 13, ..Default::default() }).show(ui, |ui| ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 14.0;
+                            ui.label(th::ico(crate::nav::glyph_of(self.page), 38.0).color(th::p().accent));
+                            ui.label(dbd("\u{B7}", 30.0).color(text2()));
+                            ui.label(dbd(if settings { Page::Settings.label() } else { self.page.label() }, 30.0));
+                        }));
                         ui.add_space(12.0);
                         if settings {
                             ui.horizontal(|ui| {
@@ -438,10 +453,12 @@ impl App {
                             });
                             ui.add_space(14.0);
                         }
-                        if let Some((msg, ok)) = &self.status {
-                            ui.label(rt(msg, 12.0).color(if *ok { th::SUCCESS } else { th::DANGER }));
-                            ui.add_space(8.0);
+                        if let Some((msg, ok)) = self.status.take() {
+                            crate::notice::post(ui.ctx(), msg, ok);
                         }
+                        th::page_gap(ui);
+                    } else {
+                        ui.ctx().data_mut(|d| d.remove::<f32>(egui::Id::new("page-top")));
                     }
                     match self.page {
                         Page::Dashboard => self.home(ui),
@@ -452,6 +469,7 @@ impl App {
                         Page::Settings => self.settings.ui(ui),
                         Page::Mouse => self.mouse.ui(ui),
                         Page::Sound => self.sound.ui(ui),
+                        Page::Music => crate::nowplaying::page(ui),
                         Page::Diagnostics => self.diagnostics.ui(ui),
                         Page::Display => self.display.ui(ui),
                         _ => th::card(ui, (10, 16, 16, 16), |ui| {
@@ -464,6 +482,7 @@ impl App {
         if self.confirm_optimize {
             self.optimize_modal(ctx);
         }
+        crate::notice::show(ctx, 44.0); // under the title bar
         crate::fade::end_frame(ctx);
     }
 
@@ -559,8 +578,8 @@ impl App {
         egui::Area::new(Id::new("sidebar")).fixed_pos(rect.min).order(egui::Order::Middle).show(ctx, |ui| {
             ui.allocate_rect(rect, Sense::hover());
             let paint = ui.painter().clone();
-            paint.add(th::glass(rect.shrink2(vec2(6.0, 4.0)), 24.0, pal.side));
-            let inner = Rect::from_min_max(rect.min + vec2(8.0, 4.0), rect.max - vec2(8.0, 12.0));
+            paint.add(th::glass(Rect::from_min_max(rect.min + vec2(6.0, 4.0), rect.max - vec2(6.0, 12.0)), 24.0, pal.side));
+            let inner = Rect::from_min_max(rect.min + vec2(8.0, 4.0), rect.max - vec2(8.0, 20.0));
             ui.scope_builder(UiBuilder::new().max_rect(inner), |ui| {
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                 let scroll_h = (inner.height() - 40.0).max(0.0);
@@ -723,9 +742,8 @@ impl App {
                 });
             });
         });
-        if let Some((msg, ok)) = &self.status {
-            ui.add_space(6.0);
-            ui.label(rt(msg, 12.0).color(if *ok { th::SUCCESS } else { th::DANGER }));
+        if let Some((msg, ok)) = self.status.take() {
+            crate::notice::post(ui.ctx(), msg, ok);
         }
         if optimize {
             self.confirm_optimize = true;
@@ -971,6 +989,10 @@ impl App {
         // Same order and group headings as C# `Layout.cs`.
         let mut order: Vec<usize> = (0..self.tweaks.len()).collect();
         order.sort_by_key(|&i| mytune_core::layout::placement(&self.tweaks[i].id).map_or(usize::MAX, |p| p.order));
+        #[cfg(feature = "taskbar-look")]
+        if self.page == Page::Customize && (q.is_empty() || "taskbar look clear tinted transparent".contains(&q)) {
+            self.taskbar.ui(ui);
+        }
         let mut last_group = "";
         for cat in 0..3 {
         let mut heading_done = false;
@@ -988,13 +1010,13 @@ impl App {
             }
             if categorized && !heading_done {
                 heading_done = true;
-                th::section(ui, ["Normal tweaks", "Risky", "Experimental"][cat]);
+                th::section_gap(ui, ["Normal tweaks", "Risky", "Experimental"][cat]);
             }
             if !categorized {
                 let g = mytune_core::layout::placement(&t.id).map_or("", |p| p.group);
                 if g != last_group {
                     last_group = g;
-                    th::section(ui, g);
+                    th::section_gap(ui, g);
                 }
             }
             let on = self.applied.get(&t.id).copied().unwrap_or(false);

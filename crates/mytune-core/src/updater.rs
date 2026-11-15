@@ -41,7 +41,8 @@ fn newer(latest: &[u32], current: &[u32]) -> bool {
 
 /// Validates the feed text. `Ok(Some)` = newer version, `Ok(None)` = up to date.
 pub fn evaluate(feed_json: &str, current: &str) -> Result<Option<UpdateInfo>, String> {
-    let feed: Feed = serde_json::from_str(feed_json).map_err(|_| "Empty update feed.".to_string())?;
+    // the release script writes version.json with PowerShell, which puts a UTF-8 BOM first
+    let feed: Feed = serde_json::from_str(feed_json.trim_start_matches('\u{feff}')).map_err(|_| "Empty update feed.".to_string())?;
     let latest = feed.version.as_deref().and_then(parse_version).ok_or("Update feed has no valid version.")?;
     let url = feed.url.unwrap_or_default();
     if !url.to_lowercase().starts_with("https://") {
@@ -77,6 +78,7 @@ mod tests {
         assert!(evaluate(&feed("2.4.4", "https://x/s.exe", SHA), "2.4.3").unwrap().is_some());
         assert!(evaluate(&feed("2.5.0", "https://x/s.exe", SHA), "2.4.3").unwrap().is_some());
         assert!(evaluate(&feed("2.4.3", "https://x/s.exe", SHA), "2.4.3").unwrap().is_none());
+        assert!(evaluate(&format!("\u{feff}{}", feed("2.4.4", "https://x/s.exe", SHA)), "2.4.3").unwrap().is_some(), "BOM first");
         assert!(evaluate(&feed("2.4.2", "https://x/s.exe", SHA), "2.4.3").unwrap().is_none());
         assert!(evaluate(&feed("2.4", "https://x/s.exe", SHA), "2.4.3").unwrap().is_none(), "2.4 == 2.4.0 < 2.4.3");
         assert!(evaluate(&feed("v10.0.0", "https://x/s.exe", SHA), "2.4.3").unwrap().is_some());

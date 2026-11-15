@@ -26,6 +26,7 @@ mod toast;
 mod picker;
 mod placemenu;
 mod poll;
+mod popout;
 mod serversettings;
 mod channelsettings;
 mod serverpages;
@@ -175,6 +176,39 @@ fn stream_preview(ctx: &egui::Context, s: &AppState, cache: &mut HashMap<String,
 }
 
 // Yapfast's own dark palette (ui/theme.slint), so the chat reads as Yapfast inside MyTune.
+/// Whether the small always-on-top song window is open, in egui's memory: the Music page's button flips it.
+pub fn song_window_id() -> egui::Id {
+    popout::song_id()
+}
+
+/// What plays on this PC with its buttons: the media bar's row (`pop`: with the button for its own window)
+/// and the song window's.
+fn media_row(ui: &mut Ui, now: &crate::nowplaying::Now, pop: bool) {
+    ui.horizontal(|ui| {
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            use crate::nowplaying::Cmd;
+            let icon = |ui: &mut Ui, g: &str, tip: &str| ui.add(egui::Button::new(rt(g, 14.0).family(th::icons()).color(SECONDARY)).frame(false)).on_hover_text(tip).clicked();
+            if pop && icon(ui, "\u{E8A7}", "Own window, always on top") {
+                let id = popout::song_id();
+                let open = ui.data(|d| d.get_temp::<bool>(id)).unwrap_or(false);
+                ui.data_mut(|d| d.insert_temp(id, !open));
+            }
+            for (g, tip, cmd) in [("\u{E893}", "Next", Cmd::Next), (if now.playing { "\u{E769}" } else { "\u{E768}" }, if now.playing { "Pause" } else { "Play" }, Cmd::Toggle), ("\u{E892}", "Previous", Cmd::Previous)] {
+                if icon(ui, g, tip) {
+                    crate::nowplaying::send(cmd);
+                }
+            }
+            ui.with_layout(Layout::top_down(Align::Min), |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                ui.add(egui::Label::new(rt(if now.title.is_empty() { "Nothing playing" } else { &now.title }, 13.0).color(TEXT)).truncate());
+                if !now.artist.is_empty() {
+                    ui.add(egui::Label::new(rt(&now.artist, 11.5).color(MUTED)).truncate());
+                }
+            });
+        });
+    });
+}
+
 const TEXT: Color32 = Color32::from_rgb(0xee, 0xf0, 0xf4);
 const SECONDARY: Color32 = Color32::from_rgb(0xb5, 0xb8, 0xc1);
 const MUTED: Color32 = Color32::from_rgb(0x8d, 0x91, 0x9c);
@@ -1151,7 +1185,7 @@ impl ChatPage {
                 } else if let Navigation::Server(id) = &s.navigation {
                     extras::server_rows(ui, s, id, acts);
                 }
-                egui::Panel::bottom("chat_user").frame(egui::Frame::new().fill(voice::k_panel()).inner_margin(egui::Margin { left: 8, right: 8, top: 6, bottom: 24 })).show_separator_line(false).show_inside(ui, |ui| {
+                egui::Panel::bottom("chat_user").frame(egui::Frame::new().inner_margin(egui::Margin { left: 8, right: 8, top: 6, bottom: 24 })).show_separator_line(false).show_inside(ui, |ui| {
                     settings::user_bar(ui, chat, &mut later, su, s, tex, asked, &mut want, acts);
                 });
                 if s.voice.active() {

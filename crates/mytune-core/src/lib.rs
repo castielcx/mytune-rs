@@ -23,6 +23,7 @@ pub mod procs;
 pub mod reg;
 pub mod session;
 pub mod special;
+pub mod soundcloud;
 pub mod speedtest;
 pub mod store;
 pub mod throttle;
@@ -35,6 +36,8 @@ pub mod cleaner;
 pub mod layout;
 pub mod stability;
 pub mod startup;
+#[cfg(feature = "taskbar-look")]
+pub mod taskbar;
 pub mod tools;
 pub mod vibrance;
 pub mod diagnostics;

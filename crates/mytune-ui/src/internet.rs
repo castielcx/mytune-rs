@@ -291,9 +291,8 @@ impl InternetPage {
         let q = search.to_lowercase();
         let show = |s: &str| q.is_empty() || s.to_lowercase().contains(&q);
 
-        if let Some((msg, ok)) = &self.status {
-            ui.label(rt(msg, 12.0).color(if *ok { th::SUCCESS } else { th::DANGER }));
-            ui.add_space(8.0);
+        if let Some((msg, ok)) = self.status.take() {
+            crate::notice::post(&ctx, msg, ok);
         }
         if show("speed test download upload ping jitter") {
             self.speed_ui(ui, &ctx);

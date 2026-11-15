@@ -37,6 +37,10 @@ fn shot(page: Page, name: &str) {
 
 #[test]
 fn shots() {
+    shot(Page::Customize, "customize");
+    if std::env::var("SHOT_ONLY").as_deref() == Ok("customize") {
+        return;
+    }
     shot(Page::Dashboard, "home");
     shot(Page::Optimize, "optimize");
     shot(Page::Games, "games");

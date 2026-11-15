@@ -9,8 +9,14 @@ pub mod icon;
 pub mod internet;
 pub mod mouse;
 pub mod nav;
+pub mod notice;
+pub mod nowplaying;
 pub mod settingspage;
+pub mod soundcloud;
+pub mod soundcloud_login;
 pub mod soundpage;
+#[cfg(feature = "taskbar-look")]
+pub mod taskbarcard;
 pub mod theme;
 pub mod toolspage;
 pub mod widgets;

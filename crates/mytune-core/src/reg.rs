@@ -218,6 +218,25 @@ pub fn value_names(hive: Hive, path: &str) -> Result<Vec<String>> {
     Ok(out)
 }
 
+/// Names of the keys directly under a key (empty when the key is missing).
+pub fn subkeys(hive: Hive, path: &str) -> Result<Vec<String>> {
+    let Some(key) = open(hive, path, KEY_ENUMERATE_SUB_KEYS)? else { return Ok(vec![]) };
+    let mut out = Vec::new();
+    for i in 0.. {
+        let mut buf = [0u16; 256]; // registry key names are at most 255 characters
+        let mut len = buf.len() as u32;
+        let r = unsafe { RegEnumKeyExW(key.0, i, Some(windows::core::PWSTR(buf.as_mut_ptr())), &mut len, None, None, None, None) };
+        if r == ERROR_SUCCESS {
+            out.push(String::from_utf16_lossy(&buf[..len as usize]));
+        } else if r == windows::Win32::Foundation::ERROR_NO_MORE_ITEMS {
+            break;
+        } else {
+            return Err(err("enumerate", path, r));
+        }
+    }
+    Ok(out)
+}
+
 /// Writes a value, creating the key (and parents) when needed.
 pub fn set(hive: Hive, path: &str, name: &str, value: &RegValue) -> Result<()> {
     let key = create(hive, path, KEY_SET_VALUE)?;

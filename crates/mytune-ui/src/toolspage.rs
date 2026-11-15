@@ -187,10 +187,8 @@ impl ToolsPage {
         if self.clean_busy || self.shader_busy || self.stab_busy {
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
         }
-        caption(ui, "Clean junk files, choose what starts with Windows and check your drives. The PC check is on the Home page.");
-        if let Some((m, ok)) = &self.status {
-            ui.add_space(6.0);
-            ui.label(rt(m, 12.0).color(if *ok { th::SUCCESS } else { th::DANGER }));
+        if let Some((m, ok)) = self.status.take() {
+            crate::notice::post(&ctx, m, ok);
         }
         self.junk_card(ui, &ctx);
         self.startup_card(ui, &ctx);

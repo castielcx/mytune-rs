@@ -25,8 +25,19 @@ const FIELD_PAD: (f32, f32) = (12.0, 7.0); // left/right, top (bottom 8)
 const ROW_H_PAD: (f32, f32, f32) = (12.0, 6.0, 7.0); // left/right, top, bottom
 
 /// `DropButton` field with its `PickList` popup. `rows` = (label, picked). Returns the clicked row.
-/// The field is `width` wide; the list opens 4 px below it and closes on any outside click.
+/// The field is `width` wide; the list opens 4 px below it (above when there is no room below), stays inside
+/// the window's right edge and closes on any outside click.
 pub fn dropdown(ui: &mut Ui, id: &str, width: f32, value: &str, rows: &[(String, bool)]) -> Option<usize> {
+    dropdown_styled(ui, id, width, value, rows, false)
+}
+
+/// The same pick list behind bare text with a small arrow: no glass field. As wide as the text needs.
+pub fn dropdown_text(ui: &mut Ui, id: &str, value: &str, rows: &[(String, bool)]) -> Option<usize> {
+    let width = ui.painter().layout_no_wrap(value.to_string(), FontId::proportional(14.0), TEXT).size().x + 2.0 * FIELD_PAD.0 + 2.0 + 16.0;
+    dropdown_styled(ui, id, width, value, rows, true)
+}
+
+fn dropdown_styled(ui: &mut Ui, id: &str, width: f32, value: &str, rows: &[(String, bool)], bare: bool) -> Option<usize> {
     let pal = th::p();
     let ctx = ui.ctx().clone();
     let key = Id::new(("dropdown", id));
@@ -34,23 +45,33 @@ pub fn dropdown(ui: &mut Ui, id: &str, width: f32, value: &str, rows: &[(String,
 
     let text_h = ui.painter().layout_no_wrap("Ag".into(), FontId::proportional(14.0), TEXT).size().y;
     let (rect, resp) = ui.allocate_exact_size(vec2(width, text_h + FIELD_PAD.1 + 8.0 + 2.0), Sense::click());
+    // as wide as the field, or wider when a row's text needs it (long device names)
+    let longest = rows.iter().map(|(l, _)| ui.painter().layout_no_wrap(l.clone(), FontId::new(14.0, th::semibold()), TEXT).size().x).fold(0.0, f32::max);
+    let list_w = (width - 10.0).max(longest + 2.0 * ROW_H_PAD.0);
+    let list_h = (rows.len() as f32 * (text_h + ROW_H_PAD.1 + ROW_H_PAD.2 + 1.0) + 8.0).min(272.0);
+    let screen = ctx.content_rect(); // this window
+    let up = rect.bottom() + 4.0 + list_h > screen.bottom() && rect.top() - screen.top() > screen.bottom() - rect.bottom();
     let paint = ui.painter();
-    th::capsule(paint, rect, if resp.hovered() { white(0x2C) } else { th::Glass::Raised.fill() }, 0x26);
-    if open {
-        paint.rect_stroke(rect, rect.height() / 2.0, Stroke::new(1.0, pal.accent), StrokeKind::Inside);
+    if !bare {
+        th::capsule(paint, rect, if resp.hovered() { white(0x2C) } else { th::Glass::Raised.fill() }, 0x26);
+        if open {
+            paint.rect_stroke(rect, rect.height() / 2.0, Stroke::new(1.0, pal.accent), StrokeKind::Inside);
+        }
     }
-    paint.text(pos2(rect.left() + 1.0 + FIELD_PAD.0, rect.center().y), egui::Align2::LEFT_CENTER, value, FontId::proportional(14.0), TEXT);
-    paint.text(pos2(rect.right() - 1.0 - FIELD_PAD.0, rect.center().y), egui::Align2::RIGHT_CENTER, "\u{E70D}", FontId::new(10.0, th::icons()), text2());
+    let ink = if !bare || open || resp.hovered() { TEXT } else { text2() };
+    paint.text(pos2(rect.right() - 1.0 - FIELD_PAD.0, rect.center().y + 1.5), egui::Align2::RIGHT_CENTER, if up { "\u{E70E}" } else { "\u{E70D}" }, FontId::new(10.0, th::icons()), if bare { ink } else { text2() });
+    paint.text(pos2(rect.left() + 1.0 + FIELD_PAD.0, rect.center().y), egui::Align2::LEFT_CENTER, value, FontId::proportional(14.0), ink);
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
 
     let mut picked = None;
     let mut list_rect = Rect::NOTHING;
     if open {
-        let area = egui::Area::new(key.with("list")).order(Order::Foreground).fixed_pos(pos2(rect.left(), rect.bottom() + 4.0)).show(&ctx, |ui| {
+        let x = rect.left().min(screen.right() - list_w - 14.0).max(screen.left() + 4.0);
+        let area = egui::Area::new(key.with("list")).order(Order::Foreground);
+        let area = if up { area.pivot(egui::Align2::LEFT_BOTTOM).fixed_pos(pos2(x, rect.top() - 4.0)) } else { area.fixed_pos(pos2(x, rect.bottom() + 4.0)) };
+        let area = area.show(&ctx, |ui| {
             th::float(ui, th::R_MENU, 4, |ui| {
-                // as wide as the field, or wider when a row's text needs it (long device names)
-                let longest = rows.iter().map(|(l, _)| ui.painter().layout_no_wrap(l.clone(), FontId::new(14.0, th::semibold()), TEXT).size().x).fold(0.0, f32::max);
-                ui.set_width((width - 10.0).max(longest + 2.0 * ROW_H_PAD.0));
+                ui.set_width(list_w);
                 ui.spacing_mut().item_spacing.y = 1.0;
                 egui::ScrollArea::vertical().max_height(264.0).auto_shrink([false, true]).show(ui, |ui| {
                     for (i, (label, sel)) in rows.iter().enumerate() {
@@ -99,13 +120,20 @@ pub struct SliderOut {
 /// `Slider` style: 6 px square track (accent left of the thumb, white 16 % right), 10x20 accent thumb with a
 /// 2 px Ink outline that grows to 1.2x on hover, a click moves the thumb to the pointer. Disabled = 40 % opacity.
 pub fn slider(ui: &mut Ui, id: Id, value: &mut f64, min: f64, max: f64, width: f32, enabled: bool) -> SliderOut {
+    slider_sized(ui, id, value, min, max, width, enabled, false)
+}
+
+/// `slider`; `thin` is the volume flyout's: a 3 px track and a round 14 px thumb.
+pub fn slider_sized(ui: &mut Ui, id: Id, value: &mut f64, min: f64, max: f64, width: f32, enabled: bool, thin: bool) -> SliderOut {
+    // half the thumb's width (its centre travels over the track minus the thumb), track height, thumb size
+    let (half, track_h, thumb_w, thumb_h, swell) = if thin { (5.0, 3.0, 10.0, 10.0, 2.0) } else { (11.0, 6.0, 22.0, 16.0, 8.0) };
     let pal = th::p();
     let (rect, resp) = ui.allocate_exact_size(vec2(width, 20.0), if enabled { Sense::click_and_drag() } else { Sense::hover() });
     let mut changed = false;
     if enabled && resp.is_pointer_button_down_on() {
         if let Some(p) = resp.interact_pointer_pos() {
             // the thumb centre travels over the track minus the thumb width
-            let t = ((p.x - rect.left() - 11.0) / (rect.width() - 22.0)).clamp(0.0, 1.0) as f64;
+            let t = ((p.x - rect.left() - half) / (rect.width() - 2.0 * half)).clamp(0.0, 1.0) as f64;
             let v = ((min + t * (max - min)) * 100.0).round() / 100.0; // the C# row rounds to 2 decimals
             if v != *value {
                 *value = v;
@@ -114,17 +142,17 @@ pub fn slider(ui: &mut Ui, id: Id, value: &mut f64, min: f64, max: f64, width: f
         }
     }
     let t = if max > min { ((*value - min) / (max - min)).clamp(0.0, 1.0) as f32 } else { 0.0 };
-    let cx = rect.left() + 11.0 + t * (rect.width() - 22.0);
+    let cx = rect.left() + half + t * (rect.width() - 2.0 * half);
     let ease = egui::emath::easing::cubic_out;
     let k = ui.ctx().animate_bool_with_time_and_easing(id, enabled && resp.hovered(), 0.14, ease);
     let held = ui.ctx().animate_bool_with_time_and_easing(id.with("held"), enabled && resp.is_pointer_button_down_on(), 0.12, ease);
     let op = if enabled { 1.0 } else { 0.4 };
     let fade = |c: Color32| c.gamma_multiply(op);
     let paint = ui.painter();
-    let track = Rect::from_center_size(rect.center(), vec2(rect.width(), 6.0));
-    paint.rect_filled(track, 3.0, fade(white(0x29)));
-    paint.rect_filled(Rect::from_min_max(track.min, pos2(cx, track.max.y)), 3.0, fade(pal.accent));
-    let thumb = Rect::from_center_size(pos2(cx, rect.center().y), vec2(22.0 + 2.0 * k + 8.0 * held, 16.0 + 2.0 * k));
+    let track = Rect::from_center_size(rect.center(), vec2(rect.width(), track_h));
+    paint.rect_filled(track, track_h / 2.0, fade(white(0x29)));
+    paint.rect_filled(Rect::from_min_max(track.min, pos2(cx, track.max.y)), track_h / 2.0, fade(pal.accent));
+    let thumb = Rect::from_center_size(pos2(cx, rect.center().y), vec2(thumb_w + 2.0 * k + swell * held, thumb_h + 2.0 * k));
     paint.add(egui::Shadow { offset: [0, 2], blur: 6, spread: 0, color: fade(Color32::from_black_alpha(70)) }.as_shape(thumb, egui::CornerRadius::from(thumb.height() / 2.0)));
     th::capsule(paint, thumb, fade(Color32::WHITE.gamma_multiply(1.0 - 0.6 * held)), 0x60);
     SliderOut { changed, released: enabled && (resp.drag_stopped() || resp.clicked()) }

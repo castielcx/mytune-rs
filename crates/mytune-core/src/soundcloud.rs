@@ -10,7 +10,7 @@ use serde_json::Value;
 use std::sync::Mutex;
 use std::time::Duration;
 
-const API: &str = "https://api-v2.soundcloud.com";
+pub const API: &str = "https://api-v2.soundcloud.com";
 const CRED: &str = "MyTune/SoundCloud";
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -149,6 +149,21 @@ fn me(token: &str) -> Result<u64, String> {
     get("/me", Some(token))?["id"].as_u64().ok_or_else(|| "SoundCloud did not say who is signed in".into())
 }
 
+/// The signed-in account's id (read, not bot-gated).
+pub fn my_id(token: &str) -> Result<u64, String> {
+    me(token)
+}
+
+/// The website client_id, for building the write URLs the webview runs.
+pub fn web_client_id() -> Result<String, String> {
+    client_id(false)
+}
+
+/// The JSON body for a create (`title` set) or a track-list replace.
+pub fn playlist_body_json(title: Option<&str>, ids: &[u64]) -> String {
+    playlist_body(title, ids).to_string()
+}
+
 /// The account's liked tracks, newest first.
 pub fn likes(token: &str) -> Result<Vec<Track>, String> {
     let list = pages(&format!("/users/{}/track_likes?limit=200", me(token)?), Some(token), 2000)?;
@@ -187,6 +202,27 @@ pub fn stream_url(track: &Track, token: Option<&str>) -> Result<String, String> 
     let t = track.transcoding.as_deref().ok_or("This track cannot be played here (DRM or no stream)")?;
     let v = get(&format!("{t}?track_authorization={}", track.auth), token)?;
     v["url"].as_str().map(str::to_owned).ok_or_else(|| "SoundCloud gave no stream address".into())
+}
+
+// ---------------------------------------------------------------- favourites and playlists
+// Writes (like, create/edit/delete playlist) are blocked by SoundCloud's DataDome bot check for a plain
+// HTTP client, so they run through the signed-in webview (mytune-ui `soundcloud_web`). Here are only the
+// request shape and the reads the webview path needs.
+
+/// The ids of the account's liked tracks, to show which are already favourited.
+pub fn liked_ids(token: &str) -> Result<Vec<u64>, String> {
+    Ok(likes(token)?.iter().map(|t| t.id).collect())
+}
+
+/// The JSON body for a create (`title` set) or a track-list replace. SoundCloud wants plain track ids.
+fn playlist_body(title: Option<&str>, ids: &[u64]) -> Value {
+    let tracks: Vec<Value> = ids.iter().map(|id| Value::from(*id)).collect();
+    let mut p = serde_json::json!({ "tracks": tracks });
+    if let Some(t) = title {
+        p["title"] = Value::from(t);
+        p["sharing"] = Value::from("private");
+    }
+    serde_json::json!({ "playlist": p })
 }
 
 /// Accepts the bare token or a pasted `oauth_token=...` cookie line.
@@ -265,4 +301,5 @@ mod tests {
             println!("SC likes={} playlists={}", likes(&token).map(|l| l.len()).unwrap_or(0), playlists(&token).map(|l| l.len()).unwrap_or(0));
         }
     }
+
 }

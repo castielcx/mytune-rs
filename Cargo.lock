@@ -4462,6 +4462,7 @@ dependencies = [
  "mytune-sensors",
  "raw-window-handle",
  "rfd",
+ "serde_json",
  "tray-icon",
  "ureq",
  "windows 0.62.2",

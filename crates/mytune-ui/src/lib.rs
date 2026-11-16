@@ -14,6 +14,7 @@ pub mod nowplaying;
 pub mod settingspage;
 pub mod soundcloud;
 pub mod soundcloud_login;
+pub mod soundcloud_web;
 pub mod soundpage;
 #[cfg(feature = "taskbar-look")]
 pub mod taskbarcard;

@@ -69,6 +69,52 @@ fn art_texture(ctx: &egui::Context, url: &str) -> Option<egui::TextureHandle> {
     }
 }
 
+// ---------------------------------------------------------------- favourites and playlists (webview writes)
+
+/// Build the api-v2 URL and run the write through the signed-in webview (past DataDome).
+fn api_write(method: &str, path: &str, body: Option<String>, token: &str) -> Result<serde_json::Value, String> {
+    let url = format!("{}{}?client_id={}", sc::API, path, sc::web_client_id()?);
+    let (status, text) = crate::soundcloud_web::fetch(method, &url, body, token)?;
+    match status {
+        200..=299 => Ok(serde_json::from_str(&text).unwrap_or(serde_json::Value::Null)),
+        401 => Err("SoundCloud login expired. Sign in again.".into()),
+        s => Err(format!("SoundCloud refused ({s}): {}", text.chars().take(300).collect::<String>())),
+    }
+}
+
+/// Favourite a track or remove it from favourites.
+pub fn set_favourite(id: u64, on: bool, token: &str) -> Result<(), String> {
+    let uid = sc::my_id(token)?;
+    api_write(if on { "PUT" } else { "DELETE" }, &format!("/users/{uid}/track_likes/{id}"), None, token).map(|_| ())
+}
+
+/// Create a private playlist with one track; returns its id.
+pub fn make_playlist(title: &str, ids: &[u64], token: &str) -> Result<u64, String> {
+    let v = api_write("POST", "/playlists", Some(sc::playlist_body_json(Some(title), ids)), token)?;
+    v["id"].as_u64().ok_or_else(|| "SoundCloud did not return the new playlist".into())
+}
+
+pub fn delete_playlist(pid: u64, token: &str) -> Result<(), String> {
+    api_write("DELETE", &format!("/playlists/{pid}"), None, token).map(|_| ())
+}
+
+fn set_tracks(pid: u64, ids: &[u64], token: &str) -> Result<(), String> {
+    api_write("PUT", &format!("/playlists/{pid}"), Some(sc::playlist_body_json(None, ids)), token).map(|_| ())
+}
+
+pub fn playlist_add(pid: u64, track_id: u64, token: &str) -> Result<(), String> {
+    let mut ids: Vec<u64> = sc::playlist_tracks(pid, Some(token))?.iter().map(|t| t.id).collect();
+    if !ids.contains(&track_id) {
+        ids.push(track_id);
+    }
+    set_tracks(pid, &ids, token)
+}
+
+pub fn playlist_remove(pid: u64, track_id: u64, token: &str) -> Result<(), String> {
+    let ids: Vec<u64> = sc::playlist_tracks(pid, Some(token))?.iter().map(|t| t.id).filter(|&i| i != track_id).collect();
+    set_tracks(pid, &ids, token)
+}
+
 // ---------------------------------------------------------------- player
 
 // Toggle/Next/Previous/Shuffle/Repeat are driven from the top now-playing card now, not this card, but the
@@ -234,7 +280,18 @@ struct State {
     found: Vec<Track>,
     likes: Option<Vec<Track>>,
     lists: Option<Vec<Playlist>>,
-    open: Option<(String, Vec<Track>)>,
+    /// An opened playlist: its id, title and tracks.
+    open: Option<(u64, String, Vec<Track>)>,
+    /// Ids of favourited tracks, to light the heart.
+    liked: std::collections::HashSet<u64>,
+    liked_loaded: bool,
+    /// The track whose "add to playlist" popup is open.
+    add_for: Option<u64>,
+    /// New-playlist name buffer, and whether its box is open on the Playlists tab.
+    new_name: String,
+    creating: bool,
+    /// A playlist waiting for delete confirmation.
+    confirm_delete: Option<u64>,
     busy: bool,
     error: Option<String>,
 }
@@ -270,19 +327,43 @@ enum Act {
     Search(String),
     Likes,
     Lists,
+    LoadLiked,
     Open(u64, String),
     Play(Vec<Track>, usize),
     Save(String),
     Login,
     SignOut,
     Player(Cmd),
+    Fav(u64, bool),
+    OpenAdd(u64),
+    AddTrack(u64, u64),
+    NewPlaylist(String, Option<u64>),
+    DeleteList(u64),
+    RemoveTrack(u64, u64),
 }
 
-/// The track rows; returns the clicked one.
-fn rows(ui: &mut egui::Ui, tracks: &[Track], playing: Option<u64>) -> Option<usize> {
+/// Map a row action to a page action, given the track list and (for a playlist) its id.
+fn row_act(row: Row, tracks: &[Track], pid: Option<u64>) -> Option<Act> {
+    match row {
+        Row::Play(i) => Some(Act::Play(tracks.to_vec(), i)),
+        Row::Fav(id, on) => Some(Act::Fav(id, on)),
+        Row::Add(id) => Some(Act::OpenAdd(id)),
+        Row::Remove(id) => pid.map(|p| Act::RemoveTrack(p, id)),
+    }
+}
+
+enum Row {
+    Play(usize),
+    Fav(u64, bool),
+    Add(u64),
+    Remove(u64),
+}
+
+/// The track rows: artwork, title, favourite heart, add-to-playlist, (in a playlist) remove, duration.
+fn rows(ui: &mut egui::Ui, tracks: &[Track], playing: Option<u64>, liked: &std::collections::HashSet<u64>, in_playlist: bool) -> Option<Row> {
     use crate::theme::{self as th, rt, sb, text2, text3};
     let ctx = ui.ctx().clone();
-    let mut clicked = None;
+    let mut action = None;
     for (i, t) in tracks.iter().enumerate() {
         let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 56.0), egui::Sense::click());
         if !ui.is_rect_visible(rect) {
@@ -290,9 +371,10 @@ fn rows(ui: &mut egui::Ui, tracks: &[Track], playing: Option<u64>) -> Option<usi
         }
         let ok = t.transcoding.is_some();
         let now = playing == Some(t.id);
+        let hover = resp.hovered();
         if now {
             ui.painter().rect_filled(rect, 12.0, th::p().accent.gamma_multiply(0.22));
-        } else if resp.hovered() && ok {
+        } else if hover && ok {
             ui.painter().rect_filled(rect, 12.0, egui::Color32::from_white_alpha(0x12));
         }
         // artwork thumbnail, or a note glyph while it loads or has none
@@ -309,17 +391,47 @@ fn rows(ui: &mut egui::Ui, tracks: &[Track], playing: Option<u64>) -> Option<usi
         let right = if ok { right } else { "Not playable".into() };
         let font = egui::FontId::proportional(12.0);
         let r = ui.painter().text(rect.right_center() - egui::vec2(14.0, 0.0), egui::Align2::RIGHT_CENTER, right, font, text3());
-        let width = (r.left() - tx - 12.0).max(40.0);
+
+        // action buttons between the text and the duration: heart (always), add and remove (on hover)
+        let is_liked = liked.contains(&t.id);
+        let n = 2 + in_playlist as i32; // heart, add, (remove)
+        let bx_right = r.left() - 10.0;
+        let bx_left = bx_right - n as f32 * 26.0;
+        let mut bx = bx_left;
+        let mut btn = |ui: &mut egui::Ui, glyph: &str, color: egui::Color32, key: &str, show: bool| -> bool {
+            let brect = egui::Rect::from_center_size(egui::pos2(bx + 13.0, rect.center().y), egui::vec2(26.0, 26.0));
+            bx += 26.0;
+            if !show {
+                return false;
+            }
+            let resp = ui.interact(brect, ui.id().with((t.id, key)), egui::Sense::click());
+            let c = if resp.hovered() { th::TEXT } else { color };
+            ui.painter().text(brect.center(), egui::Align2::CENTER_CENTER, glyph, egui::FontId::new(16.0, th::icons()), c);
+            resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+        };
+        let heart = if is_liked { ("\u{EB52}", th::p().accent) } else { ("\u{EB51}", text2()) }; // filled / outline heart
+        if btn(ui, heart.0, heart.1, "fav", true) {
+            action = Some(Row::Fav(t.id, !is_liked));
+        }
+        if btn(ui, "\u{E710}", text2(), "add", hover) {
+            action = Some(Row::Add(t.id));
+        }
+        if in_playlist && btn(ui, "\u{E738}", text2(), "rm", hover) {
+            action = Some(Row::Remove(t.id));
+        }
+
+        let width = (bx_left - tx - 12.0).max(40.0);
         let line = |text: egui::RichText| egui::WidgetText::from(text).into_galley(ui, Some(egui::TextWrapMode::Truncate), width, egui::FontSelection::Default);
         let title = line(sb(&t.title, 14.0).color(if ok { th::TEXT } else { text3() }));
         let artist = line(rt(&t.artist, 12.0).color(text2()));
         ui.painter().galley(egui::pos2(tx, rect.top() + 10.0), title, th::TEXT);
         ui.painter().galley(egui::pos2(tx, rect.top() + 31.0), artist, text2());
-        if resp.on_hover_cursor(if ok { egui::CursorIcon::PointingHand } else { egui::CursorIcon::NotAllowed }).clicked() && ok {
-            clicked = Some(i);
+        // a click on the row body (not on a button) plays the track
+        if resp.on_hover_cursor(if ok { egui::CursorIcon::PointingHand } else { egui::CursorIcon::NotAllowed }).clicked() && ok && action.is_none() {
+            action = Some(Row::Play(i));
         }
     }
-    clicked
+    action
 }
 
 fn clock(seconds: f64) -> String {
@@ -368,6 +480,17 @@ pub fn section(ui: &mut egui::Ui) {
             }
         }
         let token = s.token.clone().flatten();
+        // load the favourited-track ids once, so the heart lights on any tab
+        if token.is_some() && !s.liked_loaded {
+            s.liked_loaded = true;
+            let (t, ctx2) = (token.clone().unwrap(), ctx.clone());
+            std::thread::spawn(move || {
+                if let Ok(ids) = sc::liked_ids(&t) {
+                    state().liked = ids.into_iter().collect();
+                    ctx2.request_repaint();
+                }
+            });
+        }
         ui.horizontal(|ui| {
             for (tab, name) in [(Tab::Search, "Search"), (Tab::Likes, "Likes"), (Tab::Playlists, "Playlists")] {
                 if th::tab(ui, name, s.tab == tab).clicked() {
@@ -419,8 +542,8 @@ pub fn section(ui: &mut egui::Ui) {
                         act = Some(Act::Search(s.query.trim().to_owned()));
                     }
                 });
-                if let Some(i) = rows(ui, &s.found, playing) {
-                    act = Some(Act::Play(s.found.clone(), i));
+                if let Some(row) = rows(ui, &s.found, playing, &s.liked, false) {
+                    act = row_act(row, &s.found, None);
                 }
             }
             Tab::Likes => {
@@ -438,37 +561,116 @@ pub fn section(ui: &mut egui::Ui) {
                         }
                     });
                 });
-                if let Some(likes) = &s.likes {
-                    if let Some(i) = rows(ui, likes, playing) {
-                        act = Some(Act::Play(likes.clone(), i));
+                if let Some(likes) = s.likes.clone() {
+                    if let Some(row) = rows(ui, &likes, playing, &s.liked, false) {
+                        act = row_act(row, &likes, None);
                     }
                 }
             }
             Tab::Playlists => {
-                if let Some((title, tracks)) = s.open.clone() {
+                if let Some((pid, title, tracks)) = s.open.clone() {
                     ui.horizontal(|ui| {
                         if th::subtle_button(ui, "\u{2039}  Back", (10.0, 4.0, 10.0, 4.0)).clicked() {
                             s.open = None;
                         }
                         ui.label(th::sb(&title, 15.0));
                     });
-                    if let Some(i) = rows(ui, &tracks, playing) {
-                        act = Some(Act::Play(tracks, i));
+                    if let Some(row) = rows(ui, &tracks, playing, &s.liked, true) {
+                        act = row_act(row, &tracks, Some(pid));
                     }
                     return;
                 }
+                // new playlist
+                ui.horizontal(|ui| {
+                    if s.creating {
+                        let field = ui.add(egui::TextEdit::singleline(&mut s.new_name).hint_text("Playlist name").background_color(th::control_bg()).margin(egui::Margin::symmetric(10, 8)).desired_width(240.0));
+                        let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if (th::button(ui, "Create", true, (14.0, 6.0, 14.0, 7.0)).clicked() || enter) && !s.new_name.trim().is_empty() && !s.busy {
+                            act = Some(Act::NewPlaylist(s.new_name.trim().to_owned(), None));
+                        }
+                        if th::subtle_button(ui, "Cancel", (10.0, 6.0, 10.0, 6.0)).clicked() {
+                            s.creating = false;
+                            s.new_name.clear();
+                        }
+                    } else if th::button(ui, "\u{E710}  New playlist", true, (14.0, 6.0, 14.0, 7.0)).clicked() {
+                        s.creating = true;
+                    }
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if th::subtle_button(ui, "Sign out", (10.0, 4.0, 10.0, 4.0)).clicked() {
+                            act = Some(Act::SignOut);
+                        }
+                    });
+                });
                 if s.lists.is_none() && !s.busy && s.error.is_none() {
                     act = Some(Act::Lists);
                 }
                 for p in s.lists.clone().unwrap_or_default() {
-                    let label = format!("{}    {} tracks", p.title, p.count);
-                    if th::subtle_button(ui, &label, (14.0, 8.0, 14.0, 8.0)).clicked() && !s.busy {
-                        act = Some(Act::Open(p.id, p.title.clone()));
-                    }
+                    ui.horizontal(|ui| {
+                        let label = format!("{}    {} tracks", p.title, p.count);
+                        if th::subtle_button(ui, &label, (14.0, 8.0, 14.0, 8.0)).clicked() && !s.busy {
+                            act = Some(Act::Open(p.id, p.title.clone()));
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if s.confirm_delete == Some(p.id) {
+                                if th::button_tint(ui, "Delete", false, Some(th::DANGER), (12.0, 4.0, 12.0, 5.0)).clicked() {
+                                    act = Some(Act::DeleteList(p.id));
+                                    s.confirm_delete = None;
+                                }
+                                if th::subtle_button(ui, "Cancel", (8.0, 4.0, 8.0, 4.0)).clicked() {
+                                    s.confirm_delete = None;
+                                }
+                            } else if th::subtle_button(ui, "\u{E74D}", (8.0, 4.0, 8.0, 4.0)).on_hover_text("Delete playlist").clicked() {
+                                s.confirm_delete = Some(p.id);
+                            }
+                        });
+                    });
                 }
             }
         }
     });
+    // add-to-playlist popup (opened by the + on a row)
+    if let Some(track) = state().add_for {
+        use crate::theme as th;
+        let mut keep = true;
+        egui::Window::new("Add to playlist")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .open(&mut keep)
+            .show(&ctx, |ui| {
+                match state().lists.clone() {
+                    None => {
+                        ui.label(rt("Loading playlists…", 13.0).color(text2()));
+                    }
+                    Some(ls) if ls.is_empty() => {
+                        ui.label(rt("No playlists yet. Make one below.", 13.0).color(text2()));
+                    }
+                    Some(ls) => {
+                        egui::ScrollArea::vertical().max_height(260.0).show(ui, |ui| {
+                            for p in ls {
+                                if th::subtle_button(ui, &p.title, (12.0, 8.0, 12.0, 8.0)).clicked() {
+                                    act = Some(Act::AddTrack(p.id, track));
+                                }
+                            }
+                        });
+                    }
+                }
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let name = {
+                        let mut s = state();
+                        ui.add(egui::TextEdit::singleline(&mut s.new_name).hint_text("New playlist").background_color(th::control_bg()).margin(egui::Margin::symmetric(10, 8)).desired_width(180.0));
+                        s.new_name.trim().to_owned()
+                    };
+                    if th::button(ui, "Create", true, (12.0, 6.0, 12.0, 7.0)).clicked() && !name.is_empty() {
+                        act = Some(Act::NewPlaylist(name, Some(track)));
+                    }
+                });
+            });
+        if !keep {
+            state().add_for = None;
+        }
+    }
     let token = state().token.clone().flatten();
     match act {
         Some(Act::Search(q)) => {
@@ -484,7 +686,7 @@ pub fn section(ui: &mut egui::Ui) {
             background(&ctx, move || sc::playlists(&t), |s, lists| s.lists = Some(lists));
         }
         Some(Act::Open(id, title)) => {
-            background(&ctx, move || sc::playlist_tracks(id, token.as_deref()), move |s, tracks| s.open = Some((title, tracks)));
+            background(&ctx, move || sc::playlist_tracks(id, token.as_deref()), move |s, tracks| s.open = Some((id, title, tracks)));
         }
         Some(Act::Play(tracks, i)) => {
             // keep only playable tracks in the queue, so the list never stops on a DRM/no-stream one
@@ -511,9 +713,87 @@ pub fn section(ui: &mut egui::Ui) {
             let mut s = state();
             s.token = Some(None);
             (s.likes, s.lists, s.open) = (None, None, None);
+            s.liked.clear();
+            s.liked_loaded = false;
         }
         Some(Act::Login) => crate::soundcloud_login::open(&ctx),
         Some(Act::Player(cmd)) => send(&ctx, cmd),
+        Some(Act::LoadLiked) => {}
+        Some(Act::Fav(id, on)) => {
+            // show it at once, undo if the write fails
+            {
+                let mut s = state();
+                if on {
+                    s.liked.insert(id);
+                } else {
+                    s.liked.remove(&id);
+                }
+                s.error = None;
+            }
+            let (t, ctx2) = (token.unwrap_or_default(), ctx.clone());
+            std::thread::spawn(move || {
+                match set_favourite(id, on, &t) {
+                    Err(e) => {
+                        let mut s = state();
+                        if on {
+                            s.liked.remove(&id);
+                        } else {
+                            s.liked.insert(id);
+                        }
+                        s.error = Some(e);
+                    }
+                    Ok(()) => state().likes = None, // the Likes tab reloads next time it is shown
+                }
+                ctx2.request_repaint();
+            });
+        }
+        Some(Act::OpenAdd(id)) => {
+            let need_lists = {
+                let mut s = state();
+                s.add_for = Some(id);
+                s.lists.is_none() && !s.busy
+            };
+            if need_lists {
+                let t = token.unwrap_or_default();
+                background(&ctx, move || sc::playlists(&t), |s, lists| s.lists = Some(lists));
+            }
+        }
+        Some(Act::AddTrack(pid, track)) => {
+            state().add_for = None;
+            let t = token.unwrap_or_default();
+            background(&ctx, move || playlist_add(pid, track, &t), |_, _| {});
+        }
+        Some(Act::NewPlaylist(name, first)) => {
+            {
+                let mut s = state();
+                (s.creating, s.add_for) = (false, None);
+                s.new_name.clear();
+            }
+            let t = token.unwrap_or_default();
+            let ids: Vec<u64> = first.into_iter().collect();
+            background(&ctx, move || make_playlist(&name, &ids, &t).map(|_| ()), |s, _| s.lists = None);
+        }
+        Some(Act::DeleteList(pid)) => {
+            let t = token.unwrap_or_default();
+            background(&ctx, move || delete_playlist(pid, &t), move |s, _| {
+                if let Some(list) = &mut s.lists {
+                    list.retain(|p| p.id != pid);
+                }
+                if matches!(&s.open, Some((p, _, _)) if *p == pid) {
+                    s.open = None;
+                }
+            });
+        }
+        Some(Act::RemoveTrack(pid, track)) => {
+            let t = token.unwrap_or_default();
+            background(&ctx, move || playlist_remove(pid, track, &t).map(|_| (pid, track)), |s, (pid, track)| {
+                if let Some((p, _, tracks)) = &mut s.open {
+                    if *p == pid {
+                        tracks.retain(|t| t.id != track);
+                    }
+                }
+            });
+        }
         None => {}
     }
 }

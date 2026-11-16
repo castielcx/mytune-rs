@@ -417,7 +417,15 @@ pub fn section(ui: &mut egui::Ui) {
         Some(Act::Open(id, title)) => {
             background(&ctx, move || sc::playlist_tracks(id, token.as_deref()), move |s, tracks| s.open = Some((title, tracks)));
         }
-        Some(Act::Play(tracks, i)) => send(&ctx, Cmd::Play(tracks, i, token)),
+        Some(Act::Play(tracks, i)) => {
+            // keep only playable tracks in the queue, so the list never stops on a DRM/no-stream one
+            let id = tracks[i].id;
+            let playable: Vec<Track> = tracks.into_iter().filter(|t| t.transcoding.is_some()).collect();
+            let start = playable.iter().position(|t| t.id == id).unwrap_or(0);
+            if !playable.is_empty() {
+                send(&ctx, Cmd::Play(playable, start, token));
+            }
+        }
         Some(Act::Save(t)) => {
             let mut s = state();
             match sc::save_token(&t) {

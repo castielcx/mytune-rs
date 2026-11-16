@@ -14,6 +14,7 @@ mytune-core = { version = "0.1.0", path = "../mytune-core" }
 mytune-chat = { version = "0.1.0", path = "../mytune-chat" }
 mytune-sensors = { version = "0.1.0", path = "../mytune-sensors" }
 rfd = "0.15"
+ureq = "2" # fetch SoundCloud artwork thumbnails
 wry = "0.52" # WebView2 for the SoundCloud sign-in window
 raw-window-handle = "0.6"
 image = { version = "0.25", default-features = false, features = ["png"] }

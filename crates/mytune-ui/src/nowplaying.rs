@@ -324,6 +324,10 @@ pub fn page(ui: &mut egui::Ui) {
                     if let Some(shuffle) = now.shuffle {
                         if round(ui, "\u{E8B1}", icon(18.0), text2(), 0.0, true, shuffle).on_hover_text(if shuffle { "Shuffle is on" } else { "Shuffle" }).clicked() {
                             send(Cmd::Shuffle(!shuffle));
+                            // shuffle and repeat are not both on
+                            if !shuffle && now.repeat.unwrap_or(0) != 0 {
+                                send(Cmd::Repeat(0));
+                            }
                         }
                     }
                     let play = if now.playing { ("\u{E769}", "Pause") } else { ("\u{E768}", "Play") };
@@ -346,7 +350,12 @@ pub fn page(ui: &mut egui::Ui) {
                             ui.painter().text(at, egui::Align2::CENTER_CENTER, "1", egui::FontId::proportional(9.0), egui::Color32::BLACK);
                         }
                         if r.on_hover_text(tip).clicked() {
-                            send(Cmd::Repeat(next_repeat(repeat)));
+                            let next = next_repeat(repeat);
+                            send(Cmd::Repeat(next));
+                            // shuffle and repeat are not both on
+                            if next != 0 && now.shuffle.unwrap_or(false) {
+                                send(Cmd::Shuffle(false));
+                            }
                         }
                     }
                     // speed: one round button with the current speed; its list opens beside it, downwards

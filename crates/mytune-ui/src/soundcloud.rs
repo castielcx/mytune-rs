@@ -18,6 +18,57 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+// ---------------------------------------------------------------- artwork thumbnails
+
+enum Art {
+    Loading,
+    Ready(egui::ColorImage),
+    Failed,
+}
+
+fn art_cache() -> &'static Mutex<std::collections::HashMap<String, Art>> {
+    static C: OnceLock<Mutex<std::collections::HashMap<String, Art>>> = OnceLock::new();
+    C.get_or_init(Default::default)
+}
+
+/// Fetch a small artwork and decode it; SoundCloud serves a 120 px variant.
+fn fetch_art(url: &str) -> Option<egui::ColorImage> {
+    use std::io::Read;
+    let small = url.replace("t500x500", "t120x120").replace("-large.", "-t120x120.");
+    let resp = ureq::AgentBuilder::new().timeout(std::time::Duration::from_secs(10)).build().get(&small).call().ok()?;
+    let mut bytes = Vec::new();
+    resp.into_reader().take(8 * 1024 * 1024).read_to_end(&mut bytes).ok()?;
+    let pic = mytune_chat::yapfast_core::chat::decode_picture(&bytes, 120, 120)?;
+    Some(egui::ColorImage::from_rgba_unmultiplied([pic.width as usize, pic.height as usize], &pic.rgba))
+}
+
+/// The artwork texture for a URL, loaded once in the background and cached; `None` until it is ready.
+fn art_texture(ctx: &egui::Context, url: &str) -> Option<egui::TextureHandle> {
+    let id = egui::Id::new(("scart", url));
+    if let Some(t) = ctx.data(|d| d.get_temp::<egui::TextureHandle>(id)) {
+        return Some(t);
+    }
+    let mut cache = lock(art_cache());
+    match cache.get(url) {
+        Some(Art::Ready(img)) => {
+            let tex = ctx.load_texture(format!("scart:{url}"), img.clone(), crate::theme::SMOOTH);
+            ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
+            Some(tex)
+        }
+        Some(_) => None, // loading or failed
+        None => {
+            cache.insert(url.to_string(), Art::Loading);
+            let (url, ctx) = (url.to_string(), ctx.clone());
+            std::thread::spawn(move || {
+                let art = fetch_art(&url).map_or(Art::Failed, Art::Ready);
+                lock(art_cache()).insert(url, art);
+                ctx.request_repaint();
+            });
+            None
+        }
+    }
+}
+
 // ---------------------------------------------------------------- player
 
 // Toggle/Next/Previous/Shuffle/Repeat are driven from the top now-playing card now, not this card, but the
@@ -230,9 +281,10 @@ enum Act {
 /// The track rows; returns the clicked one.
 fn rows(ui: &mut egui::Ui, tracks: &[Track], playing: Option<u64>) -> Option<usize> {
     use crate::theme::{self as th, rt, sb, text2, text3};
+    let ctx = ui.ctx().clone();
     let mut clicked = None;
     for (i, t) in tracks.iter().enumerate() {
-        let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 48.0), egui::Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 56.0), egui::Sense::click());
         if !ui.is_rect_visible(rect) {
             continue;
         }
@@ -243,16 +295,26 @@ fn rows(ui: &mut egui::Ui, tracks: &[Track], playing: Option<u64>) -> Option<usi
         } else if resp.hovered() && ok {
             ui.painter().rect_filled(rect, 12.0, egui::Color32::from_white_alpha(0x12));
         }
+        // artwork thumbnail, or a note glyph while it loads or has none
+        let thumb = egui::Rect::from_min_size(rect.left_top() + egui::vec2(8.0, 8.0), egui::vec2(40.0, 40.0));
+        match t.artwork.as_deref().and_then(|u| art_texture(&ctx, u)) {
+            Some(tex) => egui::Image::from_texture((tex.id(), thumb.size())).corner_radius(8.0).paint_at(ui, thumb),
+            None => {
+                ui.painter().rect_filled(thumb, 8.0, egui::Color32::from_white_alpha(0x10));
+                ui.painter().text(thumb.center(), egui::Align2::CENTER_CENTER, "\u{E8D6}", egui::FontId::new(18.0, th::icons()), text3());
+            }
+        }
+        let tx = thumb.right() + 12.0;
         let right = if t.preview { "Preview  " } else { "" }.to_owned() + &clock(t.duration);
         let right = if ok { right } else { "Not playable".into() };
         let font = egui::FontId::proportional(12.0);
         let r = ui.painter().text(rect.right_center() - egui::vec2(14.0, 0.0), egui::Align2::RIGHT_CENTER, right, font, text3());
-        let width = (r.left() - rect.left() - 32.0).max(40.0);
+        let width = (r.left() - tx - 12.0).max(40.0);
         let line = |text: egui::RichText| egui::WidgetText::from(text).into_galley(ui, Some(egui::TextWrapMode::Truncate), width, egui::FontSelection::Default);
         let title = line(sb(&t.title, 14.0).color(if ok { th::TEXT } else { text3() }));
         let artist = line(rt(&t.artist, 12.0).color(text2()));
-        ui.painter().galley(rect.left_top() + egui::vec2(14.0, 6.0), title, th::TEXT);
-        ui.painter().galley(rect.left_top() + egui::vec2(14.0, 27.0), artist, text2());
+        ui.painter().galley(egui::pos2(tx, rect.top() + 10.0), title, th::TEXT);
+        ui.painter().galley(egui::pos2(tx, rect.top() + 31.0), artist, text2());
         if resp.on_hover_cursor(if ok { egui::CursorIcon::PointingHand } else { egui::CursorIcon::NotAllowed }).clicked() && ok {
             clicked = Some(i);
         }
@@ -286,7 +348,14 @@ pub fn section(ui: &mut egui::Ui) {
             Err(e) => s.error = Some(e),
         }
     }
-    th::section(ui, "SoundCloud");
+    // heading: a cloud mark in SoundCloud orange, then the name
+    ui.add_space(24.0);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 8.0;
+        ui.label(th::ico("\u{E753}", 18.0).color(egui::Color32::from_rgb(0xFF, 0x55, 0x00)));
+        ui.label(th::dsb("SoundCloud", 13.0).color(th::TEXT));
+    });
+    ui.add_space(8.0);
     th::card(ui, (18, 18, 18, 18), |ui| {
         ui.spacing_mut().item_spacing.y = 8.0;
         let mut s = state();

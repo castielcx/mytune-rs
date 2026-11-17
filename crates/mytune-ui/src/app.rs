@@ -453,11 +453,24 @@ impl App {
                                 ui.spacing_mut().item_spacing.x = 4.0;
                                 for (page, name) in [(Page::Settings, "General"), (Page::Restore, "Restore")] {
                                     if th::tab(ui, name, self.page == page).clicked() {
+                                        if self.page != page {
+                                            let now = ui.input(|i| i.time);
+                                            ui.data_mut(|d| d.insert_temp(egui::Id::new("settings-tab-at"), now));
+                                        }
                                         self.page = page;
                                     }
                                 }
                             });
                             ui.add_space(14.0);
+                            // tab switch: the new tab's content fades in while rising 10 px
+                            let at = ui.data(|d| d.get_temp::<f64>(egui::Id::new("settings-tab-at")));
+                            let t = at.map_or(1.0, |at| ((ui.input(|i| i.time) - at) / 0.2).clamp(0.0, 1.0) as f32);
+                            if t < 1.0 {
+                                let k = egui::emath::easing::cubic_out(t);
+                                ui.set_opacity(k);
+                                ui.add_space((1.0 - k) * 10.0);
+                                ui.ctx().request_repaint();
+                            }
                         }
                         if let Some((msg, ok)) = self.status.take() {
                             crate::notice::post(ui.ctx(), msg, ok);

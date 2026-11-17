@@ -584,7 +584,7 @@ impl App {
         egui::Area::new(Id::new("sidebar")).fixed_pos(rect.min).order(egui::Order::Middle).show(ctx, |ui| {
             ui.allocate_rect(rect, Sense::hover());
             let paint = ui.painter().clone();
-            paint.add(th::glass(Rect::from_min_max(rect.min + vec2(6.0, 4.0), rect.max - vec2(6.0, 12.0)), 24.0, pal.side));
+            paint.add(th::glass(Rect::from_min_max(rect.min + vec2(6.0, 4.0), rect.max - vec2(6.0, 12.0)), th::R_PANEL, pal.side));
             let inner = Rect::from_min_max(rect.min + vec2(8.0, 4.0), rect.max - vec2(8.0, 20.0));
             ui.scope_builder(UiBuilder::new().max_rect(inner), |ui| {
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);

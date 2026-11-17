@@ -3,7 +3,8 @@ use mytune_ui::{app::App, nav::Page};
 use egui_kittest::Harness;
 
 fn shot(page: Page, name: &str) {
-    let dir = std::env::temp_dir().join("mytune-ui-shot");
+    // SHOT_STORE: folder of a state.json to show (a copy of the real one, for the Restore list)
+    let dir = std::env::var("SHOT_STORE").map_or_else(|_| std::env::temp_dir().join("mytune-ui-shot"), Into::into);
     let _ = std::fs::create_dir_all(&dir);
     let mut app = App::with_store(mytune_core::store::Store::load(&dir));
     app.goto(page);
@@ -37,6 +38,9 @@ fn shot(page: Page, name: &str) {
 
 #[test]
 fn shots() {
+    if std::env::var("SHOT_ONLY").as_deref() == Ok("restore") {
+        return shot(Page::Restore, "restore");
+    }
     shot(Page::Customize, "customize");
     if std::env::var("SHOT_ONLY").as_deref() == Ok("customize") {
         return;

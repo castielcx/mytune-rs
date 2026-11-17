@@ -1082,6 +1082,7 @@ impl App {
             let idx = self.tweaks.iter().position(|t| &t.id == id);
             th::card(ui, (10, 16, 16, 16), |ui| {
                 ui.horizontal(|ui| {
+                    ui.set_min_height(ROW_H);
                     ui.label(sb(idx.map(|i| self.tweaks[i].title.as_str()).unwrap_or(id), 14.0));
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| match idx {
                         Some(i) => {
@@ -1102,6 +1103,10 @@ impl App {
         }
     }
 }
+
+/// Height of a `th::BTN` button. A row that starts with a title and ends with a button takes this height first:
+/// egui centres each item in the row as it stood when the item was added, so the title sat above the middle.
+const ROW_H: f32 = 30.0;
 
 /// UniformGrid with 3 columns and 8 px gaps; cells share the tallest height (kept from the last frame).
 fn grid3(ui: &mut Ui, mut f: impl FnMut(&mut Ui, usize)) {

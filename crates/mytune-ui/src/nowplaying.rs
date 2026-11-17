@@ -115,7 +115,7 @@ fn run(ctx: egui::Context, rx: mpsc::Receiver<Cmd>) {
             Err(mpsc::RecvTimeoutError::Timeout) => None,
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         };
-        let idle = shared.start.elapsed().as_millis() as u64 - shared.seen.load(Ordering::Relaxed) > 5000;
+        let idle = (shared.start.elapsed().as_millis() as u64).saturating_sub(shared.seen.load(Ordering::Relaxed)) > 5000;
         if cmd.is_none() && idle {
             continue;
         }

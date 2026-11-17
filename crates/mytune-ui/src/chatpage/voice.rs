@@ -30,6 +30,8 @@ const I_SIGNAL: &str = "\u{E701}";
 #[derive(Default)]
 pub struct CallUi {
     video: HashMap<String, TextureHandle>,
+    /// When each video texture was last drawn (egui time): one not drawn for 5 s is freed in `end_frame`.
+    video_used: HashMap<String, f64>,
     /// Camera feeds drawn this frame and the last; one that stops showing is told so, so its sender stops.
     feeds_now: Vec<Feed>,
     feeds_last: Vec<Feed>,
@@ -52,6 +54,11 @@ impl CallUi {
             }
         }
         std::mem::swap(&mut self.feeds_now, &mut self.feeds_last);
+        // a person who left, a stream that ended: their last frame (up to a screen's size) was kept for ever
+        let now = ctx.input(|i| i.time);
+        self.video_used.retain(|_, t| now - *t < 5.0);
+        let used = &self.video_used;
+        self.video.retain(|k, _| used.contains_key(k));
         if std::mem::take(&mut self.live) {
             ctx.request_repaint_after(Duration::from_millis(33));
         }
@@ -81,6 +88,13 @@ impl CallUi {
                 None => {
                     self.video.insert(key.to_owned(), ctx.load_texture(key, img, egui::TextureOptions::LINEAR));
                 }
+            }
+        }
+        let now = ctx.input(|i| i.time);
+        match self.video_used.get_mut(key) {
+            Some(t) => *t = now,
+            None => {
+                self.video_used.insert(key.to_owned(), now);
             }
         }
         self.video.get(key).map(|t| (t.id(), t.size_vec2()))

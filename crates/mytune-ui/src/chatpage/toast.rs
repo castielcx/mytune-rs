@@ -15,6 +15,14 @@ struct Seen {
 
 /// Shows a toast with a title and a line, from a thread so the UI never waits on PowerShell.
 fn show(title: String, line: String) {
+    // Each toast is a PowerShell start (~0.5 s of CPU): a busy server sent dozens at once while MyTune was
+    // in the tray. Two at a time; the rest of a burst is dropped (the unread marks still show them).
+    static RUNNING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    use std::sync::atomic::Ordering::Relaxed;
+    if RUNNING.fetch_add(1, Relaxed) >= 2 {
+        RUNNING.fetch_sub(1, Relaxed);
+        return;
+    }
     std::thread::spawn(move || {
         use std::os::windows::process::CommandExt;
         // The texts are other people's: they go in as environment variables, never as part of the script, so
@@ -25,6 +33,7 @@ fn show(title: String, line: String) {
              $toast = [Windows.UI.Notifications.ToastNotification]::new($x); \
              [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe').Show($toast)";
         let _ = std::process::Command::new("powershell").args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", script]).env("MYTUNE_TOAST_TITLE", title.replace('\0', "")).env("MYTUNE_TOAST_LINE", line.replace('\0', "")).creation_flags(0x0800_0000).output();
+        RUNNING.fetch_sub(1, Relaxed);
     });
 }
 

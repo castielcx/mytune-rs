@@ -214,6 +214,20 @@ pub fn liked_ids(token: &str) -> Result<Vec<u64>, String> {
     Ok(likes(token)?.iter().map(|t| t.id).collect())
 }
 
+/// Every track id of a playlist, in order, straight from SoundCloud's list. Use this (never the parsed
+/// tracks, which leave out ones that cannot be shown) when sending the list back: a replace with a
+/// shorter list deletes the missing tracks.
+pub fn playlist_track_ids(id: u64, token: Option<&str>) -> Result<Vec<u64>, String> {
+    let p = get(&format!("/playlists/{id}"), token)?;
+    let raw = p["tracks"].as_array().ok_or("SoundCloud did not send the playlist's tracks")?;
+    let ids: Vec<u64> = raw.iter().filter_map(|t| t["id"].as_u64()).collect();
+    // refuse to go on with a partial list
+    if ids.len() != raw.len() || p["track_count"].as_u64().is_some_and(|n| n as usize != ids.len()) {
+        return Err("SoundCloud sent an incomplete track list; the playlist was not changed".into());
+    }
+    Ok(ids)
+}
+
 /// The JSON body for a create (`title` set) or a track-list replace. SoundCloud wants plain track ids.
 fn playlist_body(title: Option<&str>, ids: &[u64]) -> Value {
     let tracks: Vec<Value> = ids.iter().map(|id| Value::from(*id)).collect();
@@ -239,8 +253,8 @@ pub fn load_token() -> Option<String> {
     unsafe {
         CredReadW(windows::core::PCWSTR(name.as_ptr()), CRED_TYPE_GENERIC, None, &mut cred).ok()?;
         let c = &*cred;
-        let blob = std::slice::from_raw_parts(c.CredentialBlob, c.CredentialBlobSize as usize);
-        let token = String::from_utf8(blob.to_vec()).ok();
+        // an empty credential has a null blob, which `from_raw_parts` must never see
+        let token = if c.CredentialBlob.is_null() { None } else { String::from_utf8(std::slice::from_raw_parts(c.CredentialBlob, c.CredentialBlobSize as usize).to_vec()).ok() };
         CredFree(cred as *const _);
         token.filter(|t| !t.is_empty())
     }

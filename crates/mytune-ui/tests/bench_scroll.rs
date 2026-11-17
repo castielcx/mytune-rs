@@ -10,6 +10,7 @@ fn scroll() {
     if let Ok(f) = std::env::var("FORUM") {
         std::env::set_var("MYTUNE_CHAT_OPEN", f);
     }
+    std::env::set_var("MYTUNE_NO_CAP", "1"); // the frame's own cost, not the display's refresh period
     let dir = std::env::temp_dir().join("mytune-ui-bench-scroll");
     let _ = std::fs::create_dir_all(&dir);
     let mut app = App::with_store(mytune_core::store::Store::load(&dir));

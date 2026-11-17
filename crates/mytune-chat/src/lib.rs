@@ -290,6 +290,24 @@ impl Chat {
         yapfast_core::sounds::play(s.sound_set, sound, s.sound_gain(sound), speaker.as_deref());
     }
 
+    /// Loads a room's newest messages before it is opened (pointer on its row, top DMs at start), so the open
+    /// shows them without the wait for Discord. Once per room and run; call it only while Discord is online
+    /// (offline nothing loads and the room would not be asked again). Takes no engine lock: safe inside `with_app`.
+    pub fn warm(&self, room: &str) {
+        static ASKED: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+        {
+            let mut asked = lock(&ASKED);
+            let asked = asked.get_or_insert_with(Default::default);
+            if asked.contains(room) {
+                return; // the common case, every frame for the top DMs: no allocation
+            }
+            asked.insert(room.to_owned());
+        }
+        if let Some(b) = lock(&self.0.backend).as_ref() {
+            let _ = b.send(yapfast_core::chat::Command::Warm(room.to_owned()));
+        }
+    }
+
     /// Connects with the Discord login saved on this PC (a no-op error event when there is none).
     pub fn restore(&self) {
         self.execute(vec![Effect::Start(Start::Restore)]);

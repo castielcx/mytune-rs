@@ -1,6 +1,6 @@
 // MyTune taskbar look. Windows' XAML diagnostics (InitializeXamlDiagnosticsEx, called by
 // mytune-core/src/taskbar.rs) loads this DLL into explorer.exe. It finds the taskbar's background
-// rectangle and swaps its brush. MyTune says which look through the shared memory `Local\MyTuneTaskbar1`;
+// rectangle and swaps its brush. MyTune says which look through the shared memory `Local\MyTuneTaskbar2`;
 // when MyTune stops writing its heartbeat, the normal taskbar comes back.
 #include <unknwn.h>
 #include <windows.h>
@@ -10,6 +10,7 @@
 #include <winrt/Windows.Foundation.h>
 #include <winrt/Windows.UI.h>
 #include <winrt/Windows.UI.Xaml.h>
+#include <winrt/Windows.UI.Xaml.Controls.h>
 #include <winrt/Windows.UI.Xaml.Media.h>
 #include <winrt/Windows.UI.Xaml.Shapes.h>
 #include <chrono>
@@ -61,7 +62,16 @@ struct Line {
     bool hidden = false; // hidden by this DLL
 };
 
+// The plate behind a taskbar button. Its border is light at the top: on a clear or dark taskbar
+// that shows as a bar above the active app's icon.
+struct Plate {
+    InstanceHandle handle;
+    Controls::Border border;
+    bool hidden = false; // border removed by this DLL
+};
+
 // Everything below is per XAML thread: XAML objects must stay on the thread that made them.
+thread_local std::vector<Plate> t_plates;
 thread_local std::vector<Bar> t_bars;
 thread_local std::vector<Line> t_lines;
 thread_local DispatcherTimer t_timer{nullptr};
@@ -117,6 +127,18 @@ static void tick() try {
             l.hidden = false;
         }
     }
+    for (auto& p : t_plates) {
+        if (look) {
+            auto t = p.border.BorderThickness();
+            if (t.Left || t.Top || t.Right || t.Bottom) {
+                p.border.BorderThickness({});
+                p.hidden = true;
+            }
+        } else if (p.hidden) {
+            p.border.ClearValue(Controls::Border::BorderThicknessProperty());
+            p.hidden = false;
+        }
+    }
 } catch (...) {
     log(L"tick failed");
 }
@@ -160,21 +182,31 @@ struct Tap : implements<Tap, IObjectWithSite, IVisualTreeServiceCallback2, non_a
             auto gone = std::erase_if(t_bars, [&](auto& b) { return b.handle == e.Handle; });
             if (g_shared && gone) InterlockedAdd(&g_shared->bars, -(LONG)gone);
             std::erase_if(t_lines, [&](auto& l) { return l.handle == e.Handle; });
+            std::erase_if(t_plates, [&](auto& p) { return p.handle == e.Handle; });
             return S_OK;
         }
         std::wstring_view name = e.Name ? e.Name : L"";
-        bool fill = name == L"BackgroundFill", stroke = name == L"BackgroundStroke";
-        if (!fill && !stroke) return S_OK;
+        bool fill = name == L"BackgroundFill", stroke = name == L"BackgroundStroke", plate = name == L"BackgroundElement";
+        if (!fill && !stroke && !plate) return S_OK;
         com_ptr<::IInspectable> raw;
         if (FAILED(diag->GetIInspectableFromHandle(e.Handle, raw.put()))) return S_OK;
-        auto shape = raw.try_as<Shapes::Shape>();
-        if (!shape || !in_taskbar(shape)) return S_OK;
-        log(L"found ", e.Name);
-        if (fill) {
-            t_bars.push_back({e.Handle, shape});
-            if (g_shared) InterlockedIncrement(&g_shared->bars);
+        if (plate) {
+            // Taskbar.TaskListButtonPanel or Taskbar.TaskListLabeledButtonPanel
+            auto border = raw.try_as<Controls::Border>();
+            auto parent = border ? Media::VisualTreeHelper::GetParent(border) : nullptr;
+            if (!parent || std::wstring_view(get_class_name(parent)).rfind(L"Taskbar.TaskList", 0) != 0) return S_OK;
+            log(L"found plate");
+            t_plates.push_back({e.Handle, border});
+        } else {
+            auto shape = raw.try_as<Shapes::Shape>();
+            if (!shape || !in_taskbar(shape)) return S_OK;
+            log(L"found ", e.Name);
+            if (fill) {
+                t_bars.push_back({e.Handle, shape});
+                if (g_shared) InterlockedIncrement(&g_shared->bars);
+            }
+            else t_lines.push_back({e.Handle, shape});
         }
-        else t_lines.push_back({e.Handle, shape});
         if (!t_timer) {
             t_timer = DispatcherTimer();
             t_timer.Interval(std::chrono::milliseconds(1000));
@@ -206,7 +238,7 @@ STDAPI DllGetClassObject(REFCLSID clsid, REFIID iid, void** out) try {
     if (clsid != CLSID_Tap) return CLASS_E_CLASSNOTAVAILABLE;
     if (!g_shared) {
         // Made here, not by MyTune: MyTune runs elevated and explorer could not open its objects.
-        HANDLE m = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(Shared), L"Local\\MyTuneTaskbar1");
+        HANDLE m = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(Shared), L"Local\\MyTuneTaskbar2");
         if (m) g_shared = static_cast<Shared*>(MapViewOfFile(m, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(Shared)));
         log(g_shared ? L"loaded" : L"no shared memory");
     }

@@ -76,6 +76,11 @@ fn open_hotkey(ctx: egui::Context) {
 }
 
 fn main() -> eframe::Result {
+    // This exe has no console: without this a panic (the UI's or a worker thread's) leaves no trace anywhere.
+    std::panic::set_hook(Box::new(|info| {
+        let thread = std::thread::current();
+        mytune_core::log::error(&format!("PANIC in thread {}", thread.name().unwrap_or("?")), Some(info));
+    }));
     // Go Live and the share picker's screen pictures run in a copy of this exe; it opens no window.
     mytune_chat::run_stream_worker();
     // Setup runs this after it removed the C# MyTune, whose uninstaller deletes the "Start with Windows" task.

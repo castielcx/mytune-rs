@@ -1983,6 +1983,23 @@
     ]
   },
   {
+    "id": "cust.adblock",
+    "cls": "AdBlockTweak",
+    "removed": false,
+    "title": "Block ads in Chrome and Edge",
+    "description": "Adds the uBlock Origin Lite ad blocker to Chrome and Edge, which also blocks YouTube ads. The browser then says \"Managed by your organization\"; turning this off removes the blocker again.",
+    "details": "HKLM\\SOFTWARE\\Policies\\Google\\Chrome\\ExtensionInstallForcelist and HKLM\\SOFTWARE\\Policies\\Microsoft\\Edge\\ExtensionInstallForcelist: uBlock Origin Lite in the first free slot",
+    "flags": "None",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": []
+  },
+  {
     "id": "cust.dragoutline",
     "cls": "RegistryTweak",
     "removed": false,

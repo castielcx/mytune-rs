@@ -16,7 +16,7 @@ use crate::engine::Tweak;
 use crate::error::{Error, Result};
 use crate::nvidia::{self, NvidiaGlobalProfileTweak, NvidiaGsyncTweak};
 use crate::pccheck::on_battery_capable;
-use crate::special::{adapter_tweaks, msi_tweak, service_tweaks, ComTaskApi, DirectXTweak, DnsRevert, MemoryCompressionRevert, ProtocolBindingsTweak, ScheduledTasksTweak, TcpStackRevert};
+use crate::special::{adapter_tweaks, msi_tweak, service_tweaks, AdBlockTweak, ComTaskApi, DirectXTweak, DnsRevert, MemoryCompressionRevert, ProtocolBindingsTweak, ScheduledTasksTweak, TcpStackRevert};
 use crate::store::Store;
 use crate::tweaks::{Cmd, HibernationTweak, PowerPlanTweak, TimerTickTweak, VbsTweak};
 use std::collections::HashMap;
@@ -116,7 +116,8 @@ pub fn build(cmd: Arc<dyn Cmd>) -> Result<Vec<TweakItem>> {
         put("adv.msi", Box::new(msi));
     }
     put("general.powerplan", Box::new(PowerPlanTweak { cmd: cmd.clone(), laptop: on_battery_capable() }));
-    put("adv.hibernation", Box::new(HibernationTweak::system(cmd.clone())));
+    put("cust.adblock", Box::new(AdBlockTweak));
+    put("adv.hibernation",Box::new(HibernationTweak::system(cmd.clone())));
     put("adv.vbs", Box::new(VbsTweak::system(cmd.clone())));
     for t in DirectXTweak::catalog() {
         let id = t.id.clone();

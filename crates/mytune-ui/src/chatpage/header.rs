@@ -1051,7 +1051,7 @@ fn profile_menu(ctx: &egui::Context, s: &AppState, acts: &mut Vec<Action>) {
     let id = egui::Id::new(MORE);
     let Some(mut m) = ctx.data(|d| d.get_temp::<More>(id)) else { return };
     let screen = ctx.content_rect();
-    let pos = pos2(m.at.x.clamp(screen.left() + 8.0, screen.right() - 260.0), m.at.y.min(screen.bottom() - 330.0).max(screen.top() + 8.0)).round();
+    let pos = pos2(m.at.x.min(screen.right() - 260.0).max(screen.left() + 8.0), m.at.y.min(screen.bottom() - 330.0).max(screen.top() + 8.0)).round();
     let mut close = false;
     let mut invite_at = None; // the Invite to Server row while its server list is open
     let user = m.user.clone();

@@ -397,6 +397,11 @@ fn rich_body(ui: &mut Ui, s: &AppState, m: &mytune_chat::yapfast_core::chat::Cha
             }
         }
     }
+    // no emoji after all (smart quotes, dashes, other scripts): one label, not one per word
+    if pieces.iter().all(|p| matches!(p, P::T(_))) {
+        ui.add(egui::Label::new(rt(&m.body, size).color(color)).wrap().selectable(true));
+        return;
+    }
     let only = pieces.len() <= 27 && pieces.iter().all(|p| !matches!(p, P::T(t) if !t.trim().is_empty()));
     let es = if only { 44.0 } else { (size * 1.35).round() };
     let ctx = ui.ctx().clone();
@@ -968,6 +973,12 @@ impl ChatPage {
         let csu = &mut self.channel_ui;
         let mut later: settings::Later = Vec::new();
         chat.with_app(|app| {
+            // the ten DMs at the top open without a wait even on the first click (ten requests, once a run)
+            if app.state.discord_online {
+                for r in app.state.rooms.iter().filter(|r| r.direct && !r.voice).take(10) {
+                    chat.warm(&r.id);
+                }
+            }
             let s = &app.state;
             // switching between the chat and a settings screen fades the new screen in over 150 ms
             let screen: u8 = if s.channel_settings.is_some() { 1 } else if s.server_settings.is_some() { 2 } else if su.open { 3 } else { 0 };
@@ -1341,6 +1352,10 @@ impl ChatPage {
                         }
                         if resp.secondary_clicked() {
                             placemenu::open(&ctx, &r.id);
+                        }
+                        // the pointer is on its way to a click: its messages load now, not after it
+                        if resp.hovered() && s.discord_online && !r.voice && !r.forum && !r.locked {
+                            chat.warm(&r.id);
                         }
                         if resp.clicked() {
                             acts.push(Action::Open(r.id.clone()));

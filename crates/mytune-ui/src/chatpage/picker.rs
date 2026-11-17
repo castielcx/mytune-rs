@@ -98,7 +98,7 @@ pub fn show(ctx: &egui::Context, pk: &mut PickerUi, app: &Application, draft: &m
     let (w, h) = (440.0, 460.0);
     let screen = ctx.content_rect();
     let pos = match (&what, pk.at) {
-        (For::Reaction(_), Some(at)) => pos2((at.x - w / 2.0).clamp(screen.left() + 8.0, screen.right() - w - 8.0), (at.y - h - 8.0).max(screen.top() + 8.0)),
+        (For::Reaction(_), Some(at)) => pos2((at.x - w / 2.0).min(screen.right() - w - 8.0).max(screen.left() + 8.0), (at.y - h - 8.0).max(screen.top() + 8.0)),
         _ => pos2(composer.right() - w, composer.top() - h - 8.0),
     };
     let mut close = false;
@@ -199,7 +199,7 @@ fn emoji(ui: &mut Ui, pk: &mut PickerUi, app: &Application, what: &For, draft: &
             ui.spacing_mut().item_spacing = vec2(2.0, 2.0);
             for (e, words) in EMOJI.iter().filter(|(_, words)| q.is_empty() || words.contains(&q)) {
                 let (r, resp) = tile(ui);
-                match crate::emoji::texture(&ctx, e) {
+                match crate::emoji::texture_paced(&ctx, e) {
                     Some(t) => egui::Image::new(egui::load::SizedTexture::new(t, vec2(30.0, 30.0))).paint_at(ui, Rect::from_center_size(r.center(), vec2(30.0, 30.0))),
                     None => {
                         ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, *e, egui::FontId::proportional(24.0), TEXT);

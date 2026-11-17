@@ -233,6 +233,9 @@ impl App {
             self.applied.extend(touched);
             self.work_rx = None;
             self.refresh();
+            if self.page == Page::Dashboard {
+                self.start_check(ctx); // the PC check shows the new state
+            }
         }
         if self.items_rx.is_some() || self.states_rx.is_some() || self.work_rx.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
@@ -271,15 +274,16 @@ impl App {
                     Ok(()) => ok += 1,
                     Err(e) => {
                         bad += 1;
-                        last = format!("{}: {e}", t.title);
+                        last = e;
                     }
                 }
             }
             let msg = if idxs.len() == 1 {
-                if bad == 0 { (format!("{}: {}", tweaks[idxs[0]].title, if on { "applied" } else { "reverted" }), true) } else { (last, false) }
+                crate::notice::toggled(&tweaks[idxs[0]].title, on, (bad > 0).then_some(last.as_str()))
+            } else if bad == 0 {
+                crate::notice::toggled(&format!("{ok} tweaks"), on, None)
             } else {
-                let tail = if bad > 0 { format!(", {bad} failed (see log)") } else { String::new() };
-                (format!("{} {ok} tweaks{tail}", if on { "Applied" } else { "Reverted" }), bad == 0)
+                crate::notice::toggled(&format!("{bad} of {} tweaks", idxs.len()), on, Some("see the log"))
             };
             let touched = idxs.iter().map(|&i| (tweaks[i].id.clone(), tweaks[i].is_applied().unwrap_or(false))).collect();
             let _ = tx.send((msg, touched));
@@ -369,10 +373,12 @@ impl App {
                 self.pc_rx = None;
             }
         }
+        // Home's live tiles only while the window can be seen: in the tray this kept 1 s sensor reads and a frame a second
+        let home = self.page == Page::Dashboard && window_shown();
         if let Some(s) = &self.sensors {
-            s.set_watched(self.page == Page::Dashboard); // 1 s samples only while Home is on screen
+            s.set_watched(home); // 1 s samples only while Home is on screen
         }
-        if self.page == Page::Dashboard {
+        if home {
             self.sample();
             ctx.request_repaint_after(Duration::from_secs(1));
         }
@@ -934,13 +940,20 @@ impl App {
                 }
             }
         });
-        if let Some(f) = fix {
-            self.status = Some(match pccheck::run_fix(f, &self.engine) {
-                Ok(()) => ("Done.".to_string(), true),
-                Err(e) => (format!("{e}"), false),
+        if let (Some(f), true) = (fix, self.work_rx.is_none()) {
+            // on a thread like every other change (a fix runs powercfg); `poll` shows the result and checks again
+            let (tx, rx) = mpsc::channel();
+            let engine = self.engine.clone();
+            self.status = Some(("Working\u{2026}".into(), true));
+            self.work_page = self.page;
+            std::thread::spawn(move || {
+                let st = match pccheck::run_fix(f, &engine) {
+                    Ok(()) => ("Done.".to_string(), true),
+                    Err(e) => (format!("{e}"), false),
+                };
+                let _ = tx.send((st, Default::default()));
             });
-            self.refresh();
-            run = true;
+            self.work_rx = Some(rx);
         }
         if run {
             self.start_check(ui.ctx());
@@ -988,7 +1001,7 @@ impl App {
         let categorized = self.page == Page::Optimize;
         // Same order and group headings as C# `Layout.cs`.
         let mut order: Vec<usize> = (0..self.tweaks.len()).collect();
-        order.sort_by_key(|&i| mytune_core::layout::placement(&self.tweaks[i].id).map_or(usize::MAX, |p| p.order));
+        order.sort_by_cached_key(|&i| mytune_core::layout::placement(&self.tweaks[i].id).map_or(usize::MAX, |p| p.order));
         #[cfg(feature = "taskbar-look")]
         if self.page == Page::Customize && (q.is_empty() || "taskbar look clear tinted transparent".contains(&q)) {
             self.taskbar.ui(ui);
@@ -1107,18 +1120,34 @@ fn grid3(ui: &mut Ui, mut f: impl FnMut(&mut Ui, usize)) {
 fn frame_cap() {
     use std::{sync::Mutex, time::{Duration, Instant}};
     // (start of the last frame, frame time, when the refresh rate was last read)
-    static LAST: Mutex<Option<(Instant, Duration, Instant)>> = Mutex::new(None);
-    let mut last = LAST.lock().unwrap();
+    // env MYTUNE_NO_CAP: benchmarks measure the frame's own cost (with the cap, bench_scroll printed the display's period)
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *OFF.get_or_init(|| std::env::var_os("MYTUNE_NO_CAP").is_some()) {
+        return;
+    }
+    static LAST: Mutex<Option<(Instant, Duration, Option<Instant>)>> = Mutex::new(None);
+    let mut last = LAST.lock().unwrap_or_else(|p| p.into_inner());
     let now = Instant::now();
-    let (prev, mut period, mut read) = last.unwrap_or((now - Duration::from_secs(1), Duration::ZERO, now - Duration::from_secs(60)));
-    if now - read > Duration::from_secs(10) {
+    // no `now - 60 s` here: an Instant before boot panics, and autostart runs this in the first minute
+    let (prev, mut period, mut read) = last.unwrap_or((now, Duration::ZERO, None));
+    if read.is_none_or(|r| now - r > Duration::from_secs(10)) {
         period = Duration::from_secs_f64(1.0 / refresh_hz() as f64);
-        read = now;
+        read = Some(now);
     }
     if let Some(wait) = period.checked_sub(now - prev) {
         std::thread::sleep(wait);
     }
     *last = Some((Instant::now(), period, read));
+}
+
+/// False while MyTune's window is hidden in the tray or minimised. True when no window is found (headless tests).
+fn window_shown() -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, IsIconic, IsWindowVisible};
+    let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
+    unsafe {
+        let w = FindWindowW(wide("Window Class").as_ptr(), wide("MyTune").as_ptr());
+        w.is_null() || (IsWindowVisible(w) != 0 && IsIconic(w) == 0)
+    }
 }
 
 /// The primary display's refresh rate, 60 when Windows does not say.
@@ -1140,20 +1169,30 @@ fn perf_log(ctx: &egui::Context) {
     let Some(path) = FILE.get_or_init(|| std::env::var("MYTUNE_PERF").ok()) else { return };
     let mut s = SEEN.lock().unwrap();
     s.1 += 1;
+    static COST: Mutex<(u64, u32)> = Mutex::new((0, 0)); // (sum, worst) of the frames' cost in microseconds
+    let us = FRAME_US.load(std::sync::atomic::Ordering::Relaxed);
+    let mut cost = COST.lock().unwrap();
+    *cost = (cost.0 + us as u64, cost.1.max(us));
     for c in ctx.repaint_causes() {
         *s.2.entry(c.to_string()).or_default() += 1;
     }
     let now = ctx.input(|i| i.time);
     if now - s.0 >= 2.0 {
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-            let _ = writeln!(f, "{:.0}s frames={} {:?}", now, s.1, s.2);
+            let _ = writeln!(f, "{:.0}s frames={} mean_ms={:.2} worst_ms={:.2} {:?}", now, s.1, cost.0 as f64 / s.1.max(1) as f64 / 1000.0, cost.1 as f64 / 1000.0, s.2);
         }
+        *cost = (0, 0);
         *s = (now, 0, BTreeMap::new());
     }
 }
 
+/// The last frame's whole cost as eframe measured it (update, tessellation and painting, no V-Sync wait), in
+/// microseconds; `perf_log` prints its mean and worst.
+static FRAME_US: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+        FRAME_US.store((_frame.info().cpu_usage.unwrap_or(0.0) * 1e6) as u32, std::sync::atomic::Ordering::Relaxed);
         self.ui(ui);
     }
 }

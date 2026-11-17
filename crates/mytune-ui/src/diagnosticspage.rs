@@ -26,6 +26,8 @@ pub struct DiagnosticsPage {
     engine: Arc<Engine>,
     // background programs
     monitor: Arc<Mutex<ProcessMonitor>>,
+    /// The monitor's network trace runs (kept from the last sample, so no frame waits on the monitor lock).
+    net_seen: bool,
     running: bool,
     sampling: bool,
     samples: Vec<ProcessSample>,
@@ -55,6 +57,7 @@ impl DiagnosticsPage {
         DiagnosticsPage {
             engine,
             monitor: Arc::new(Mutex::new(ProcessMonitor::new(None))),
+            net_seen: false,
             running: false,
             sampling: false,
             samples: vec![],
@@ -84,9 +87,8 @@ impl DiagnosticsPage {
             self.running = false;
             self.last_tick = None;
             self.net = None; // stops the network trace
-            if let Ok(mut m) = self.monitor.lock() {
-                *m = ProcessMonitor::new(None);
-            }
+            // a new monitor, not a lock on the old one: a sample in flight holds that lock
+            self.monitor = Arc::new(Mutex::new(ProcessMonitor::new(None)));
         }
     }
 
@@ -116,7 +118,7 @@ impl DiagnosticsPage {
     }
 
     fn live_text(&self) -> &'static str {
-        if self.monitor.lock().map(|m| m.network_available()).unwrap_or(false) {
+        if self.net_seen {
             LIVE
         } else {
             LIVE_NO_NET
@@ -131,6 +133,8 @@ impl DiagnosticsPage {
                 match r {
                     Ok(s) => {
                         self.samples = s;
+                        // read here, between samples: the sampling thread holds this lock while it works
+                        self.net_seen = self.monitor.try_lock().map(|m| m.network_available()).unwrap_or(self.net_seen);
                         if !self.hover {
                             self.status = self.live_text().into();
                         }
@@ -278,7 +282,7 @@ impl DiagnosticsPage {
     }
 
     fn processes_card(&mut self, ui: &mut Ui, ctx: &egui::Context) {
-        let net = self.monitor.lock().map(|m| m.network_available()).unwrap_or(false);
+        let net = self.net_seen;
         let mut new_sort = None;
         let mut end = None;
         let rows: Vec<ProcessSample> = self.sorted().into_iter().cloned().collect();

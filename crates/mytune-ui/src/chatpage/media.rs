@@ -141,7 +141,8 @@ fn video(ui: &mut Ui, ctx: &egui::Context, rect: egui::Rect, v: &mytune_chat::ya
     use mytune_chat::yapfast_core::chat::VideoCommand;
     let key = egui::Id::new("video_frame");
     if let Some(frames) = &v.frames {
-        let img = frames.take(|w, h, px| egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &px[..w as usize * h as usize * 4]));
+        // video has no transparency: taken as it is (no per-pixel un-multiply each frame); a short buffer is skipped
+        let img = frames.take(|w, h, px| px.get(..w as usize * h as usize * 4).map(|px| egui::ColorImage::from_rgba_premultiplied([w as usize, h as usize], px))).flatten();
         let mut t: Option<TextureHandle> = ctx.data(|d| d.get_temp(key));
         if let Some(img) = img {
             match &mut t {

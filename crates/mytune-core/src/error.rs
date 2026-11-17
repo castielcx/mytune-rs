@@ -21,6 +21,9 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("json: {0}")]
     Json(#[from] serde_json::Error),
+    /// A message for the user as it is, e.g. why a tweak has nothing to turn off.
+    #[error("{0}")]
+    Plain(String),
     #[error("`{0}` timed out")]
     Timeout(String),
     #[error("`{cmd}` exited with {code}: {output}")]

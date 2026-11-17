@@ -28,20 +28,24 @@ fn index() -> &'static [(&'static str, usize, usize)] {
 /// Twemoji's file name for an emoji: its code points in lower-case hex joined by '-', without U+FE0F unless the
 /// sequence joins with U+200D (Twemoji's own rule).
 pub fn name(emoji: &str) -> String {
+    use std::fmt::Write;
     let zwj = emoji.contains('\u{200D}');
-    emoji
-        .chars()
-        .filter(|&c| zwj || c != '\u{FE0F}')
-        .map(|c| format!("{:x}", c as u32))
-        .collect::<Vec<_>>()
-        .join("-")
+    // one allocation: `split` asks this for up to 10 candidates per char, for every message, every frame
+    let mut n = String::with_capacity(emoji.len() * 2);
+    for c in emoji.chars().filter(|&c| zwj || c != '\u{FE0F}') {
+        if !n.is_empty() {
+            n.push('-');
+        }
+        let _ = write!(n, "{:x}", c as u32);
+    }
+    n
 }
 
 /// The PNG of an emoji, when Twemoji has one.
 pub fn png(emoji: &str) -> Option<&'static [u8]> {
     let find = |n: &str| index().binary_search_by(|(k, _, _)| (*k).cmp(n)).ok().map(|i| index()[i]);
     let n = name(emoji);
-    let (_, at, len) = find(&n).or_else(|| find(&n.replace("-fe0f", "")))?;
+    let (_, at, len) = find(&n).or_else(|| n.contains("-fe0f").then(|| find(&n.replace("-fe0f", ""))).flatten())?;
     BLOB.get(at..at + len)
 }
 
@@ -51,11 +55,30 @@ thread_local! {
 
 /// The emoji's picture as a texture, made once.
 pub fn texture(ctx: &egui::Context, emoji: &str) -> Option<TextureId> {
+    make(ctx, emoji, false)
+}
+
+/// As `texture`, but at most 8 PNG decodes a frame: over that it gives None for a frame and asks again.
+/// Only for fixed-size cells (the picker): in message text the fallback glyph has another size, so rows jumped.
+pub fn texture_paced(ctx: &egui::Context, emoji: &str) -> Option<TextureId> {
+    make(ctx, emoji, true)
+}
+
+fn make(ctx: &egui::Context, emoji: &str, paced: bool) -> Option<TextureId> {
     TEXTURES.with(|t| {
         let mut t = t.borrow_mut();
         if let Some(h) = t.get(emoji) {
             return h.as_ref().map(|h| h.id());
         }
+        // The picker's first open decoded its whole table in one frame.
+        thread_local!(static SPENT: std::cell::Cell<(u64, u32)> = const { std::cell::Cell::new((0, 0)) });
+        let frame = ctx.cumulative_frame_nr();
+        let spent = SPENT.with(|s| if s.get().0 == frame { s.get().1 } else { 0 });
+        if paced && spent >= 8 {
+            ctx.request_repaint();
+            return None;
+        }
+        SPENT.with(|s| s.set((frame, spent + 1)));
         let made = png(emoji).and_then(|bytes| image::load_from_memory(bytes).ok()).map(|img| {
             let rgba = img.to_rgba8();
             let size = [rgba.width() as usize, rgba.height() as usize];

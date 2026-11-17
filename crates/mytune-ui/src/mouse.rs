@@ -293,10 +293,8 @@ impl MousePage {
         }
         if click {
             let on = !self.accel;
-            self.status = match mouse::set_acceleration(on) {
-                Ok(()) => None,
-                Err(e) => Some((format!("Mouse acceleration: {e}"), false)),
-            };
+            let r = mouse::set_acceleration(on).map_err(|e| e.to_string());
+            self.status = Some(crate::notice::toggled("Mouse acceleration", on, r.err().as_deref()));
             self.accel = mouse::acceleration_on();
         }
         let _ = text3;

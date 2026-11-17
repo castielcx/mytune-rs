@@ -546,11 +546,11 @@ impl ToolsPage {
         match self.engine.revert(t) {
             Ok(_) => {
                 self.undone.insert(id, format!("Switched off: {label}"));
-                self.status = Some((format!("Switched off {label}."), true));
+                self.status = Some(crate::notice::toggled(&label, false, None));
             }
             Err(e) => {
                 mytune_core::log::error(&format!("stability undo {id}"), Some(&e));
-                self.status = Some((format!("Couldn't switch off {label}. See the log."), false));
+                self.status = Some(crate::notice::toggled(&label, false, Some("see the log")));
             }
         }
     }

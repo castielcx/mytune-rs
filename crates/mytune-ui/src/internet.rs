@@ -37,6 +37,8 @@ pub struct InternetPage {
     applied: Vec<bool>,
     applied_rx: Rx<Vec<bool>>,
     tweak_rx: Rx<(String, bool)>,
+    /// Row of the tweak being switched while `tweak_rx` is set.
+    tweak_busy: usize,
     pub(crate) status: Option<(String, bool)>,
 
     speed_rx: Rx<SpeedMsg>,
@@ -74,6 +76,7 @@ impl InternetPage {
             tweaks,
             applied_rx: None,
             tweak_rx: None,
+            tweak_busy: 0,
             status: None,
             speed_rx: None,
             speed_cancel: Arc::new(AtomicBool::new(false)),
@@ -117,14 +120,20 @@ impl InternetPage {
         let (tw, eng, ctx) = (self.tweaks.clone(), self.engine.clone(), ctx.clone());
         std::thread::spawn(move || {
             let t = &tw[i].tweak;
-            let r = if on { eng.apply(&**t) } else { eng.revert(&**t).map(|_| ()) };
-            let msg = match r {
-                Ok(()) => (format!("{}: {}", t.title(), if on { "applied" } else { "reverted" }), true),
-                Err(e) => (format!("{}: {e}", t.title()), false),
+            let r = if on {
+                eng.apply(&**t).map_err(|e| e.to_string())
+            } else {
+                match eng.revert(&**t) {
+                    Ok(mytune_core::engine::RevertOutcome::Reverted) => Ok(()),
+                    Ok(mytune_core::engine::RevertOutcome::NoBackup) => Err("it is already at your driver's default, nothing changed".to_string()),
+                    Err(e) => Err(e.to_string()),
+                }
             };
+            let msg = crate::notice::toggled(t.title(), on, r.err().as_deref());
             let _ = tx.send(msg);
             ctx.request_repaint();
         });
+        self.tweak_busy = i;
         self.tweak_rx = Some(rx);
     }
 
@@ -326,9 +335,9 @@ impl InternetPage {
                         th::flag_chips(ui, n.flags);
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if working {
+                        if working && i == self.tweak_busy {
                             ui.label(rt("Working…", 12.0).color(text3()));
-                        } else if th::switch(ui, self.applied[i]).on_hover_text(&n.details).clicked() {
+                        } else if th::switch(ui, self.applied[i]).on_hover_text(&n.details).clicked() && !working {
                             click = Some((i, !self.applied[i]));
                         }
                     });

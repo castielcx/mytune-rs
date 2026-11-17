@@ -1,4 +1,4 @@
-//! Apply / revert with backup. Mirrors C# `Engine.ApplyNow` / `RevertNow` (one at a time, under one lock).
+//! Apply / revert with backup. Mirrors C# `Engine.ApplyNow` / `RevertNow` (one at a time, under the `op` lock).
 //!
 //! Rules (do not weaken):
 //! - A tweak captures originals into its `TweakBackup` BEFORE writing.
@@ -49,11 +49,14 @@ pub enum RevertOutcome {
 
 pub struct Engine {
     store: Mutex<Store>,
+    /// One apply or revert at a time. The store lock is NOT held while a tweak's commands run (they take
+    /// up to 2 min), or every reader of a setting, the UI each frame among them, would wait that long.
+    op: Mutex<()>,
 }
 
 impl Engine {
     pub fn new(store: Store) -> Engine {
-        Engine { store: Mutex::new(store) }
+        Engine { store: Mutex::new(store), op: Mutex::new(()) }
     }
 
     pub fn with_store<R>(&self, f: impl FnOnce(&mut Store) -> R) -> R {
@@ -61,13 +64,14 @@ impl Engine {
     }
 
     pub fn apply(&self, t: &dyn Tweak) -> Result<()> {
+        let _op = self.op.lock().unwrap_or_else(|p| p.into_inner());
+        let mut backup = self.with_store(|s| s.get_backup(t.id()).cloned()).unwrap_or_else(|| TweakBackup::new(t.title()));
+        let result = t.apply(&mut backup);
+        if let Err(e) = &result {
+            log::error(&format!("apply {} failed", t.id()), Some(e));
+        }
+        let keep = !backup.is_empty() || t.is_applied().unwrap_or(false);
         self.with_store(|store| {
-            let mut backup = store.get_backup(t.id()).cloned().unwrap_or_else(|| TweakBackup::new(t.title()));
-            let result = t.apply(&mut backup);
-            if let Err(e) = &result {
-                log::error(&format!("apply {} failed", t.id()), Some(e));
-            }
-            let keep = !backup.is_empty() || t.is_applied().unwrap_or(false);
             if keep {
                 if let Err(e) = store.set_backup(t.id(), backup) {
                     log::error(&format!("saving backup for {} failed", t.id()), Some(&e));
@@ -83,22 +87,25 @@ impl Engine {
     }
 
     pub fn revert(&self, t: &dyn Tweak) -> Result<RevertOutcome> {
-        self.with_store(|store| {
-            let Some(backup) = store.get_backup(t.id()).cloned() else {
-                // set outside MyTune: turning it off writes the Windows defaults when the catalog knows them
-                if !t.revert_default()? {
-                    log::info(&format!("revert {}: no backup, nothing changed", t.id()));
-                    return Ok(RevertOutcome::NoBackup);
-                }
-                log::info(&format!("revert {}: no backup, Windows defaults written", t.id()));
+        let _op = self.op.lock().unwrap_or_else(|p| p.into_inner());
+        let Some(backup) = self.with_store(|s| s.get_backup(t.id()).cloned()) else {
+            // set outside MyTune: turning it off writes the Windows defaults when the catalog knows them
+            if !t.revert_default()? {
+                log::info(&format!("revert {}: no backup, nothing changed", t.id()));
+                return Ok(RevertOutcome::NoBackup);
+            }
+            log::info(&format!("revert {}: no backup, Windows defaults written", t.id()));
+            return self.with_store(|store| {
                 crate::stability::record(store.dir(), "off", t.id(), t.title());
                 t.on_reverted(store)?;
-                return Ok(RevertOutcome::Reverted);
-            };
-            if let Err(e) = t.revert(&backup) {
-                log::error(&format!("revert {} failed, backup kept", t.id()), Some(&e));
-                return Err(e);
-            }
+                Ok(RevertOutcome::Reverted)
+            });
+        };
+        if let Err(e) = t.revert(&backup) {
+            log::error(&format!("revert {} failed, backup kept", t.id()), Some(&e));
+            return Err(e);
+        }
+        self.with_store(|store| {
             store.remove_backup(t.id())?;
             crate::stability::record(store.dir(), "off", t.id(), t.title());
             t.on_reverted(store)?;

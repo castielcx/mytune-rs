@@ -17,6 +17,17 @@ struct Notice {
 
 fn id() -> Id { Id::new("mytune-notice") }
 
+/// Status for a switch (user's choice 2026-11-16): turned on is green, turned off is red, a failure is red
+/// with the error badge and the reason.
+pub fn toggled(name: &str, on: bool, err: Option<&str>) -> (String, bool) {
+    let verb = if on { "on" } else { "off" };
+    match err {
+        None => (format!("{SUCCESS} {verb} {name}"), on),
+        Some(e) => (format!("Unable to turn {verb} {name}: {e}"), false),
+    }
+}
+const SUCCESS: &str = "Successfully turned";
+
 /// Shows `text` in the bar, replacing the one there.
 pub fn post(ctx: &Context, text: String, ok: bool) {
     let at = ctx.input(|i| i.time);
@@ -41,7 +52,8 @@ pub fn show(ctx: &Context, top: f32) {
         let p = ui.painter();
         p.rect_filled(rect, 0.0, fill.gamma_multiply(alpha));
         let white = Color32::WHITE.gamma_multiply(alpha);
-        let glyph = if n.ok { "\u{E73E}" } else { "\u{E783}" }; // check mark / error badge
+        // check mark, also on the red "turned off" bar; error badge for failures
+        let glyph = if n.ok || n.text.starts_with(SUCCESS) { "\u{E73E}" } else { "\u{E783}" };
         let font = |s: f32, f: egui::FontFamily| egui::FontId::new(s, f);
         let text_w = p.layout_no_wrap(n.text.clone(), font(13.0, th::semibold()), white).size().x;
         let x = rect.center().x - (text_w + 24.0) / 2.0;

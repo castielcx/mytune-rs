@@ -530,7 +530,11 @@ fn sheen_into(out: &mut Vec<egui::Shape>, rect: Rect, r: f32, (rim, hi, glow): (
     let white = Color32::from_white_alpha;
     // light from above inside the plate: one fan over the rounded outline, fading to nothing at the bottom
     let inner = rect.shrink(1.0);
-    let ri = (r - 1.0).max(0.0);
+    // a plate thinner than its corners (window being minimised, a panel closing): `clamp` below panicked and closed the app
+    if !(inner.width() > 0.0 && inner.height() > 0.0) {
+        return;
+    }
+    let ri = (r - 1.0).max(0.0).min(inner.width() / 2.0).min(inner.height() / 2.0);
     const SEG: usize = 16; // per corner: fine enough that no corner shows its straight pieces
     let shade = |y: f32| white((glow as f32 * (1.0 - (y - inner.top()) / inner.height().max(1.0))) as u8);
     let mut m = egui::Mesh::default();
@@ -1088,6 +1092,15 @@ mod tests {
 
     /// The accent is one global: tests that set it run one at a time.
     static ACCENT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A plate thinner than its corner radius must not panic (it closed the app while the window shrank).
+    #[test]
+    fn sheen_survives_thin_plates() {
+        for (w, h) in [(10.0, 200.0), (200.0, 10.0), (1.0, 1.0), (0.0, 50.0), (-5.0, 50.0), (64.0, 64.0)] {
+            let mut out = Vec::new();
+            sheen_into(&mut out, Rect::from_min_size(pos2(27.0, 27.0), vec2(w, h)), 22.0, (40, 40, 40), true);
+        }
+    }
 
     /// The backdrop picture follows the unrounded colour: averaged over a block, rounding leaves no step.
     #[test]

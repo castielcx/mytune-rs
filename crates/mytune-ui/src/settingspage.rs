@@ -74,10 +74,10 @@ impl SettingsPage {
         self.engine.with_store(|s| s.settings_flag(name)).unwrap_or(default)
     }
 
-    fn set_flag(&mut self, name: &str, value: bool) {
-        if let Err(e) = self.engine.with_store(|s| s.set_settings_flag(name, value)) {
-            self.status = Some((format!("Couldn't save {name}: {e}"), false));
-        }
+    /// `title` is the switch's label, shown in the status bar.
+    fn set_flag(&mut self, name: &str, title: &str, value: bool) {
+        let r = self.engine.with_store(|s| s.set_settings_flag(name, value)).map_err(|e| e.to_string());
+        self.status = Some(crate::notice::toggled(title, value, r.err().as_deref()));
     }
 
     fn spawn(&self, ctx: &egui::Context, f: impl FnOnce(&Sender<Msg>) + Send + 'static) {
@@ -181,7 +181,7 @@ impl SettingsPage {
         let mut tray = self.flag("MinimizeToTray", true);
         if row(ui, "Keep running in the tray when closed", "Needed for the game booster and per-game core settings.", 80.0, |ui| th::switch(ui, tray).clicked()) {
             tray = !tray;
-            self.set_flag("MinimizeToTray", tray);
+            self.set_flag("MinimizeToTray", "Keep running in the tray", tray);
         }
         let on = self.autostart.unwrap_or(false);
         let busy = self.autostart_busy || self.autostart.is_none();
@@ -194,9 +194,8 @@ impl SettingsPage {
             self.spawn(&ctx, move |tx| {
                 let ok = if want { autostart::enable() } else { autostart::disable() };
                 let _ = tx.send(Msg::Autostart(if ok { want } else { !want }));
-                if !ok {
-                    let _ = tx.send(Msg::Status(format!("Couldn't {} start with Windows. See the log.", if want { "turn on" } else { "turn off" }), false));
-                }
+                let (t, good) = crate::notice::toggled("Start with Windows", want, (!ok).then_some("see the log"));
+                let _ = tx.send(Msg::Status(t, good));
             });
         }
 
@@ -208,7 +207,7 @@ impl SettingsPage {
         ] {
             let v = self.flag(key, default);
             if row(ui, title, desc, 80.0, |ui| th::switch(ui, v).clicked()) {
-                self.set_flag(key, !v);
+                self.set_flag(key, title, !v);
             }
         }
 
@@ -223,7 +222,7 @@ impl SettingsPage {
             false
         });
         if toggled {
-            self.set_flag("CheckForUpdates", !upd);
+            self.set_flag("CheckForUpdates", "Check for updates", !upd);
         }
         if check {
             self.status = Some(("Checking…".into(), true));
@@ -361,7 +360,7 @@ impl SettingsPage {
             80.0,
             |ui| th::switch(ui, thr).clicked(),
         ) {
-            self.set_flag("ThrottleBackground", !thr);
+            self.set_flag("ThrottleBackground", "Lower background programs while gaming", !thr);
         }
 
         heading(ui, "About", 20.0);

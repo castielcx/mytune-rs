@@ -52,6 +52,7 @@ const CUSTOMIZE: &[Group] = &[
     ("Window snapping", &["cust.snapoff", "cust.snapflyout", "cust.snapassist"]),
     ("Keyboard", &["cust.numlock", "sys.keyboard", "qol.stickykeys"]),
     ("Windows behavior", &["cust.verbose", "cust.crashdetails", "cust.settingshome"]),
+    ("Browsers", &["cust.adblock"]),
 ];
 
 const PAGES: [(Section, &[Group]); 5] =
@@ -129,7 +130,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(seen.len(), 70);
+        assert_eq!(seen.len(), 71);
     }
 
     #[test]

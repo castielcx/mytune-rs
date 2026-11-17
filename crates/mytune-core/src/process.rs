@@ -47,6 +47,17 @@ fn drain<R: Read + Send + 'static>(mut r: R) -> thread::JoinHandle<Vec<u8>> {
     })
 }
 
+/// The child's output once it has exited. A grandchild that inherited the pipe (a service a CLI started) keeps
+/// it open, and `join` would then wait for ever: after 2 s the reader thread is left behind.
+// shortcut: output is dropped in that case, share the buffer with the reader if a caller needs the partial text
+fn collect(h: thread::JoinHandle<Vec<u8>>) -> Vec<u8> {
+    let until = Instant::now() + Duration::from_secs(2);
+    while !h.is_finished() && Instant::now() < until {
+        thread::sleep(Duration::from_millis(5));
+    }
+    if h.is_finished() { h.join().unwrap_or_default() } else { Vec::new() }
+}
+
 pub fn run(file: &str, args: &[&str]) -> Result<RunResult> {
     run_with(file, args, DEFAULT_TIMEOUT, None)
 }
@@ -78,13 +89,12 @@ pub fn run_with(file: &str, args: &[&str], timeout: Duration, log_as: Option<&st
                 .status();
             let _ = child.kill();
             let _ = child.wait();
-            let _ = (out.join(), err.join());
             return Err(Error::Timeout(shown));
         }
         thread::sleep(Duration::from_millis(15));
     };
-    let mut text = decode(&out.join().unwrap_or_default());
-    text.push_str(&decode(&err.join().unwrap_or_default()));
+    let mut text = decode(&collect(out));
+    text.push_str(&decode(&collect(err)));
     let code = status.code().unwrap_or(-1);
     log::info(&format!("run {shown} -> {code}"));
     Ok(RunResult { exit_code: code, output: text.trim().to_string() })

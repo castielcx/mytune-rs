@@ -21,6 +21,8 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 // ---------------------------------------------------------------- artwork thumbnails
 
 enum Art {
+    /// Its texture was made: the pixels are not kept a second time.
+    Shown,
     Loading,
     Ready(egui::ColorImage),
     Failed,
@@ -49,12 +51,13 @@ fn art_texture(ctx: &egui::Context, url: &str) -> Option<egui::TextureHandle> {
         return Some(t);
     }
     let mut cache = lock(art_cache());
+    if matches!(cache.get(url), Some(Art::Ready(_))) {
+        let Some(Art::Ready(img)) = cache.insert(url.to_string(), Art::Shown) else { return None };
+        let tex = ctx.load_texture(format!("scart:{url}"), img, crate::theme::SMOOTH);
+        ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
+        return Some(tex);
+    }
     match cache.get(url) {
-        Some(Art::Ready(img)) => {
-            let tex = ctx.load_texture(format!("scart:{url}"), img.clone(), crate::theme::SMOOTH);
-            ctx.data_mut(|d| d.insert_temp(id, tex.clone()));
-            Some(tex)
-        }
         Some(_) => None, // loading or failed
         None => {
             cache.insert(url.to_string(), Art::Loading);
@@ -103,7 +106,7 @@ fn set_tracks(pid: u64, ids: &[u64], token: &str) -> Result<(), String> {
 }
 
 pub fn playlist_add(pid: u64, track_id: u64, token: &str) -> Result<(), String> {
-    let mut ids: Vec<u64> = sc::playlist_tracks(pid, Some(token))?.iter().map(|t| t.id).collect();
+    let mut ids = sc::playlist_track_ids(pid, Some(token))?;
     if !ids.contains(&track_id) {
         ids.push(track_id);
     }
@@ -111,7 +114,7 @@ pub fn playlist_add(pid: u64, track_id: u64, token: &str) -> Result<(), String> 
 }
 
 pub fn playlist_remove(pid: u64, track_id: u64, token: &str) -> Result<(), String> {
-    let ids: Vec<u64> = sc::playlist_tracks(pid, Some(token))?.iter().map(|t| t.id).filter(|&i| i != track_id).collect();
+    let ids: Vec<u64> = sc::playlist_track_ids(pid, Some(token))?.into_iter().filter(|&i| i != track_id).collect();
     set_tracks(pid, &ids, token)
 }
 
@@ -371,7 +374,9 @@ fn rows(ui: &mut egui::Ui, tracks: &[Track], playing: Option<u64>, liked: &std::
         }
         let ok = t.transcoding.is_some();
         let now = playing == Some(t.id);
-        let hover = resp.hovered();
+        // by rectangle, not `resp.hovered()`: the buttons inside the row take the hover from it, which
+        // hid the + the moment the pointer reached it
+        let hover = ui.rect_contains_pointer(rect);
         if now {
             ui.painter().rect_filled(rect, 12.0, th::p().accent.gamma_multiply(0.22));
         } else if hover && ok {

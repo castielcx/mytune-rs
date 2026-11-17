@@ -69,9 +69,20 @@ struct AdapterRow {
 
 /// Connected Ethernet / Wi-Fi adapters, no virtual ones (same filter as C# `Net.ActiveAdapters`).
 pub fn active_adapters(cmd: &dyn Cmd) -> Result<Vec<String>> {
+    adapters(cmd, "$_.Status -eq 'Up'")
+}
+
+/// Adapters the driver tweaks work on: every enabled Ethernet / Wi-Fi adapter, connected or not.
+/// Not `active_adapters`: a tweak restarts the adapter, so "connected right now" changed between two
+/// calls and the tweaks read and wrote whichever adapter happened to be up.
+fn tweak_adapters(cmd: &dyn Cmd) -> Result<Vec<String>> {
+    adapters(cmd, "$_.Status -ne 'Disabled' -and $_.Status -ne 'Not Present'")
+}
+
+fn adapters(cmd: &dyn Cmd, filter: &str) -> Result<Vec<String>> {
     let out = powershell(
         cmd,
-        "ConvertTo-Json -InputObject @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object Status -eq 'Up' | ForEach-Object { [pscustomobject]@{N=$_.Name;D=$_.InterfaceDescription;T=[int]$_.InterfaceType} }) -Compress",
+        &format!("ConvertTo-Json -InputObject @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {{ {filter} }} | ForEach-Object {{ [pscustomobject]@{{N=$_.Name;D=$_.InterfaceDescription;T=[int]$_.InterfaceType}} }}) -Compress"),
     )?;
     const BAD: [&str; 11] = ["virtual", "hyper-v", "vpn", "tap-", "wintun", "loopback", "vmware", "virtualbox", "bluetooth", "wireguard", "tailscale"];
     Ok(json_rows::<AdapterRow>(&out)?
@@ -95,12 +106,21 @@ struct PropRow {
     keyword: String,
     #[serde(rename = "V")]
     value: Option<String>,
+    /// Driver default, empty when the driver names none.
+    #[serde(rename = "D", default)]
+    default: Option<String>,
+    /// Values the driver accepts, comma separated; empty when it lists none.
+    #[serde(rename = "L", default)]
+    valid: Option<String>,
 }
 
+/// Restarts the adapter; waits for the link only when it had one (a disconnected adapter never comes up).
 fn restart_script(a: &str) -> String {
     let q = ps_quote(a);
-    format!("Restart-NetAdapter -Name {q}; for($i=0;$i -lt 30 -and (Get-NetAdapter -Name {q} -ErrorAction SilentlyContinue).Status -ne 'Up';$i++){{ Start-Sleep 1 }}")
+    format!("$u=(Get-NetAdapter -Name {q} -ErrorAction SilentlyContinue).Status -eq 'Up'; Restart-NetAdapter -Name {q}; for($i=0;$u -and $i -lt 30 -and (Get-NetAdapter -Name {q} -ErrorAction SilentlyContinue).Status -ne 'Up';$i++){{ Start-Sleep 1 }}")
 }
+
+const NOTHING_TO_UNDO: &str = "these are already your network driver's default settings, there is nothing to turn off";
 
 /// Driver keyword tweak, e.g. "Adapter power management off". Targets are (keyword, value).
 pub struct AdapterPropertyTweak {
@@ -110,24 +130,48 @@ pub struct AdapterPropertyTweak {
     pub targets: Vec<(String, String)>,
 }
 
-type Found = (String, String, String); // adapter, keyword, current value
+type Found = (String, String, String); // adapter, keyword, value
 
 impl AdapterPropertyTweak {
-    fn found(&self, adapters: &[String]) -> Result<Vec<Found>> {
+    /// The keywords this tweak can set on the adapters. A keyword whose driver does not accept the target
+    /// value is left out: it could never be set, so the tweak would never read as on.
+    fn found(&self, adapters: &[String]) -> Result<Vec<PropRow>> {
         if adapters.is_empty() {
             return Ok(vec![]);
         }
         let kws: Vec<String> = self.targets.iter().map(|t| t.0.clone()).collect();
         let script = format!(
-            "$r=@(); foreach($a in {}){{ foreach($k in {}){{ $p=Get-NetAdapterAdvancedProperty -Name $a -AllProperties -RegistryKeyword $k -ErrorAction SilentlyContinue; if($p){{ $r+=[pscustomobject]@{{A=$a;K=$k;V=(@($p.RegistryValue) -join ',')}} }} }} }}; ConvertTo-Json -InputObject @($r) -Compress",
+            "$r=@(); foreach($a in {}){{ foreach($k in {}){{ $p=Get-NetAdapterAdvancedProperty -Name $a -AllProperties -RegistryKeyword $k -ErrorAction SilentlyContinue; if($p){{ $r+=[pscustomobject]@{{A=$a;K=$k;V=(@($p.RegistryValue) -join ',');D=(@($p.DefaultRegistryValue) -join ',');L=(@($p.ValidRegistryValues) -join ',')}} }} }} }}; ConvertTo-Json -InputObject @($r) -Compress",
             ps_list(adapters),
             ps_list(&kws)
         );
-        Ok(json_rows::<PropRow>(&powershell(&*self.cmd, &script)?)?.into_iter().map(|r| (r.adapter, r.keyword, r.value.unwrap_or_default())).collect())
+        let rows = json_rows::<PropRow>(&powershell(&*self.cmd, &script)?)?;
+        Ok(rows
+            .into_iter()
+            .filter(|r| {
+                let valid = r.valid.as_deref().unwrap_or("");
+                valid.is_empty() || self.target(&r.keyword).is_some_and(|t| valid.split(',').any(|v| v == t))
+            })
+            .collect())
     }
 
     fn target(&self, kw: &str) -> Option<&str> {
         self.targets.iter().find(|t| t.0 == kw).map(|t| t.1.as_str())
+    }
+
+    /// Off without stored originals: every keyword at the target goes back to the driver's default.
+    /// False when there is none to write (default unknown or equal to the target), nothing touched.
+    fn defaults(&self) -> Result<bool> {
+        let changes: Vec<Found> = self
+            .found(&tweak_adapters(&*self.cmd)?)?
+            .into_iter()
+            .filter_map(|r| {
+                let (v, d) = (r.value.unwrap_or_default(), r.default.unwrap_or_default());
+                (self.target(&r.keyword) == Some(v.as_str()) && !d.is_empty() && d != v).then_some((r.adapter, r.keyword, d))
+            })
+            .collect();
+        self.set(&changes)?;
+        Ok(!changes.is_empty())
     }
 
     fn set(&self, changes: &[Found]) -> Result<()> {
@@ -152,11 +196,11 @@ impl AdapterPropertyTweak {
 
     /// Reason this PC can't use the tweak, or None.
     pub fn unavailable(&self) -> Result<Option<String>> {
-        let adapters = active_adapters(&*self.cmd)?;
+        let adapters = tweak_adapters(&*self.cmd)?;
         if adapters.is_empty() {
             return Ok(Some(NO_ADAPTER.into()));
         }
-        if self.is_applied()? || !self.found(&adapters)?.is_empty() {
+        if !self.found(&adapters)?.is_empty() {
             return Ok(None);
         }
         Ok(Some("Your network driver doesn't expose these settings.".into()))
@@ -171,17 +215,17 @@ impl Tweak for AdapterPropertyTweak {
         &self.title
     }
     fn is_applied(&self) -> Result<bool> {
-        let found = self.found(&active_adapters(&*self.cmd)?)?;
-        Ok(!found.is_empty() && found.iter().all(|(_, k, v)| self.target(k) == Some(v.as_str())))
+        let found = self.found(&tweak_adapters(&*self.cmd)?)?;
+        Ok(!found.is_empty() && found.iter().all(|r| self.target(&r.keyword) == r.value.as_deref()))
     }
     fn apply(&self, b: &mut TweakBackup) -> Result<()> {
         let mut changes = Vec::new();
-        for (a, k, v) in self.found(&active_adapters(&*self.cmd)?)? {
-            b.data.entry(format!("{a}|{k}")).or_insert_with(|| v.clone());
-            if let Some(t) = self.target(&k) {
-                if v != t {
-                    changes.push((a, k, t.to_string()));
-                }
+        for r in self.found(&tweak_adapters(&*self.cmd)?)? {
+            let v = r.value.unwrap_or_default();
+            // Only a value this changes is an original worth keeping.
+            if let Some(t) = self.target(&r.keyword).filter(|t| *t != v) {
+                b.data.entry(format!("{}|{}", r.adapter, r.keyword)).or_insert(v);
+                changes.push((r.adapter, r.keyword, t.to_string()));
             }
         }
         self.set(&changes)
@@ -193,12 +237,19 @@ impl Tweak for AdapterPropertyTweak {
             .filter_map(|(key, v)| {
                 let mut p = key.splitn(3, '|');
                 match (p.next(), p.next(), p.next()) {
-                    (Some(a), Some(k), None) => Some((a.to_string(), k.to_string(), v.clone())),
+                    // Older backups also stored values that were already at the target: not an original.
+                    (Some(a), Some(k), None) if self.target(k) != Some(v.as_str()) => Some((a.to_string(), k.to_string(), v.clone())),
                     _ => None,
                 }
             })
             .collect();
+        if restore.is_empty() && !self.defaults()? {
+            return Err(Error::Plain(NOTHING_TO_UNDO.into()));
+        }
         self.set(&restore)
+    }
+    fn revert_default(&self) -> Result<bool> {
+        self.defaults()
     }
 }
 
@@ -221,7 +272,7 @@ pub struct ProtocolBindingsTweak {
 
 impl ProtocolBindingsTweak {
     fn read(&self) -> Result<Vec<BindRow>> {
-        let adapters = active_adapters(&*self.cmd)?;
+        let adapters = tweak_adapters(&*self.cmd)?;
         if adapters.is_empty() {
             return Ok(vec![]);
         }
@@ -232,6 +283,21 @@ impl ProtocolBindingsTweak {
             ps_list(&comps)
         );
         json_rows(&powershell(&*self.cmd, &script)?)
+    }
+
+    fn enable(&self, pairs: &[(String, String)]) -> Result<()> {
+        if pairs.is_empty() {
+            return Ok(());
+        }
+        let lines: Vec<String> = pairs.iter().map(|(a, c)| format!("Enable-NetAdapterBinding -Name {} -ComponentID {} -ErrorAction SilentlyContinue", ps_quote(a), ps_quote(c))).collect();
+        powershell(&*self.cmd, &lines.join(";")).map(|_| ())
+    }
+
+    /// Off without stored originals: Windows binds all three, so every unbound one is bound again.
+    fn defaults(&self) -> Result<bool> {
+        let off: Vec<(String, String)> = self.read()?.into_iter().filter(|r| !r.enabled).map(|r| (r.adapter, r.component)).collect();
+        self.enable(&off)?;
+        Ok(!off.is_empty())
     }
 }
 
@@ -249,8 +315,8 @@ impl Tweak for ProtocolBindingsTweak {
     fn apply(&self, b: &mut TweakBackup) -> Result<()> {
         let mut lines = Vec::new();
         for r in self.read()? {
-            b.data.entry(format!("{}|{}", r.adapter, r.component)).or_insert_with(|| if r.enabled { "1" } else { "0" }.into());
             if r.enabled {
+                b.data.entry(format!("{}|{}", r.adapter, r.component)).or_insert_with(|| "1".into());
                 lines.push(format!("Disable-NetAdapterBinding -Name {} -ComponentID {}", ps_quote(&r.adapter), ps_quote(&r.component)));
             }
         }
@@ -260,17 +326,20 @@ impl Tweak for ProtocolBindingsTweak {
         powershell(&*self.cmd, &lines.join(";")).map(|_| ())
     }
     fn revert(&self, b: &TweakBackup) -> Result<()> {
-        let lines: Vec<String> = b
+        let on: Vec<(String, String)> = b
             .data
             .iter()
             .filter(|(_, v)| v.as_str() == "1")
             .filter_map(|(k, _)| k.split_once('|'))
-            .map(|(a, c)| format!("Enable-NetAdapterBinding -Name {} -ComponentID {} -ErrorAction SilentlyContinue", ps_quote(a), ps_quote(c)))
+            .map(|(a, c)| (a.to_string(), c.to_string()))
             .collect();
-        if lines.is_empty() {
-            return Ok(());
+        if on.is_empty() && !self.defaults()? {
+            return Err(Error::Plain("nothing is unbound, there is nothing to turn off".into()));
         }
-        powershell(&*self.cmd, &lines.join(";")).map(|_| ())
+        self.enable(&on)
+    }
+    fn revert_default(&self) -> Result<bool> {
+        self.defaults()
     }
 }
 
@@ -676,6 +745,68 @@ impl Tweak for MemoryCompressionRevert {
     }
 }
 
+/// uBlock Origin Lite force-installed in Chrome and Edge through their ExtensionInstallForcelist policy.
+/// Brave is left out on purpose (Shields already blocks ads); Opera ignores these policies.
+pub struct AdBlockTweak;
+
+const ADBLOCK: [(&str, &str); 2] = [
+    (r"SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist", "ddkjiahejlhfcafbddmgiahcphecmpfh;https://clients2.google.com/service/update2/crx"),
+    (r"SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist", "cimighlppcgcoapaliogpjjdehbnofhn;https://edge.microsoft.com/extensionwebstorebase/v1/crx"),
+];
+
+/// Value name holding `entry`, or the first free one. Browsers read the list as 1, 2, 3... and stop at the
+/// first missing number, so a new entry must fill the first gap, never overwrite the user's own entries.
+fn adblock_slot(path: &str, entry: &str) -> Result<(String, bool)> {
+    for i in 1u32.. {
+        let name = i.to_string();
+        match reg::get(Hive::Hklm, path, &name)? {
+            None => return Ok((name, false)),
+            Some(RegValue::String(s)) if s.eq_ignore_ascii_case(entry) => return Ok((name, true)),
+            Some(_) => {}
+        }
+    }
+    unreachable!()
+}
+
+impl Tweak for AdBlockTweak {
+    fn id(&self) -> &str {
+        "cust.adblock"
+    }
+    fn title(&self) -> &str {
+        "Block ads in Chrome and Edge"
+    }
+    fn is_applied(&self) -> Result<bool> {
+        for (path, entry) in ADBLOCK {
+            if !adblock_slot(path, entry)?.1 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+    fn apply(&self, backup: &mut TweakBackup) -> Result<()> {
+        for (path, entry) in ADBLOCK {
+            let (name, there) = adblock_slot(path, entry)?;
+            if !there {
+                backup.capture(Hive::Hklm, path, &name)?;
+                reg::set(Hive::Hklm, path, &name, &RegValue::String(entry.into()))?;
+            }
+        }
+        Ok(())
+    }
+    fn revert(&self, backup: &TweakBackup) -> Result<()> {
+        backup.restore_registry()
+    }
+    fn revert_default(&self) -> Result<bool> {
+        for (path, entry) in ADBLOCK {
+            if let (name, true) = adblock_slot(path, entry)? {
+                reg::delete_value(Hive::Hklm, path, &name)?;
+                reg::delete_key_if_empty(Hive::Hklm, path)?;
+            }
+        }
+        Ok(true)
+    }
+}
+
 #[allow(dead_code)]
 fn _unused(_: BTreeMap<String, String>) {}
 
@@ -773,6 +904,26 @@ mod tests {
                 None
             }
         })
+    }
+
+    #[test]
+    fn adapter_off_without_backup_writes_driver_default_and_skips_unsettable() {
+        let fake = Fake::new(|l| {
+            if l.contains("Get-NetAdapter -ErrorAction") {
+                Some(r#"[{"N":"Ethernet","D":"Intel","T":6}]"#.into())
+            } else if l.contains("Get-NetAdapterAdvancedProperty") {
+                // flow control at the target with default 3; *EEE cannot be 0 on this driver
+                Some(r#"[{"A":"Ethernet","K":"*FlowControl","V":"0","D":"3","L":"0,1,2,3"},{"A":"Ethernet","K":"*EEE","V":"1","D":"1","L":"1,2"}]"#.into())
+            } else {
+                None
+            }
+        });
+        let t = adapter_tweaks(fake.clone()).remove(1);
+        assert!(t.is_applied().unwrap(), "a keyword that cannot be 0 does not count");
+        let (_d, e) = engine();
+        assert_eq!(e.revert(&t).unwrap(), RevertOutcome::Reverted);
+        let last = fake.calls().last().unwrap().clone();
+        assert!(last.contains("-RegistryKeyword '*FlowControl' -RegistryValue '3'") && !last.contains("*EEE"), "{last}");
     }
 
     #[test]
@@ -986,5 +1137,32 @@ mod tests {
         let fake = Fake::new(|_| None);
         MemoryCompressionRevert { cmd: fake.clone() }.revert(&TweakBackup::new("m")).unwrap();
         assert_eq!(fake.calls(), ["ps Start-Service SysMain -ErrorAction SilentlyContinue;Enable-MMAgent -MemoryCompression"]);
+    }
+}
+
+#[cfg(test)]
+mod adblock_tests {
+    use super::*;
+
+    /// Writes the real Chrome/Edge policy keys (admin). Slot 1 holds a dummy the browsers ignore.
+    #[test]
+    #[ignore]
+    fn real_adblock_keeps_user_entries() {
+        let t = AdBlockTweak;
+        let (chrome, _) = ADBLOCK[0];
+        let dummy = RegValue::String("not-an-extension".into());
+        reg::set(Hive::Hklm, chrome, "1", &dummy).unwrap();
+        let mut b = TweakBackup::new("adblock");
+        assert!(!t.is_applied().unwrap());
+        t.apply(&mut b).unwrap();
+        assert!(t.is_applied().unwrap());
+        assert_eq!(reg::get(Hive::Hklm, chrome, "1").unwrap(), Some(dummy.clone()));
+        assert!(reg::get(Hive::Hklm, chrome, "2").unwrap().is_some());
+        t.revert(&b).unwrap();
+        assert!(!t.is_applied().unwrap());
+        assert_eq!(reg::get(Hive::Hklm, chrome, "1").unwrap(), Some(dummy));
+        assert_eq!(reg::get(Hive::Hklm, chrome, "2").unwrap(), None);
+        reg::delete_value(Hive::Hklm, chrome, "1").unwrap();
+        reg::delete_key_if_empty(Hive::Hklm, chrome).unwrap();
     }
 }

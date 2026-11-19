@@ -12,6 +12,8 @@ use std::time::Duration;
 
 pub const API: &str = "https://api-v2.soundcloud.com";
 const CRED: &str = "MyTune/SoundCloud";
+/// The error for a refused account token; the UI compares against it to renew the login.
+pub const LOGIN_REFUSED: &str = "SoundCloud did not accept the login. Sign in again.";
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Track {
@@ -83,7 +85,7 @@ fn get(path: &str, token: Option<&str>) -> Result<Value, String> {
         }
         match req.call() {
             Ok(r) => return serde_json::from_str(&r.into_string().map_err(|e| e.to_string())?).map_err(|e| e.to_string()),
-            Err(ureq::Error::Status(401, _)) if token.is_some() => return Err("SoundCloud did not accept the login token. Paste a new one.".into()),
+            Err(ureq::Error::Status(401, _)) if token.is_some() => return Err(LOGIN_REFUSED.into()),
             Err(ureq::Error::Status(401 | 403, _)) if !fresh => continue,
             Err(e) => return Err(e.to_string()),
         }

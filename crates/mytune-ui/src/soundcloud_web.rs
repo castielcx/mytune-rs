@@ -43,6 +43,24 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 /// Run one SoundCloud write through the signed-in webview. Blocks until it answers (or times out).
 /// Returns the HTTP status and the response body.
 pub fn fetch(method: &str, url: &str, body: Option<String>, token: &str) -> Result<(u16, String), String> {
+    request(method, url, body, token)
+}
+
+/// Request kinds handled on the webview thread itself instead of by a page fetch().
+const READ_COOKIE: &str = "MYTUNE_READ_COOKIE";
+const FORGET_COOKIE: &str = "MYTUNE_FORGET_COOKIE";
+
+/// The profile's current `oauth_token` cookie ("" when there is none). Blocks.
+pub fn token_cookie() -> Result<String, String> {
+    request(READ_COOKIE, "", None, "").map(|(_, v)| v)
+}
+
+/// Drops the profile's `oauth_token` cookie, so the next sign-in cannot capture the same one. Blocks.
+pub fn forget_token() -> Result<(), String> {
+    request(FORGET_COOKIE, "", None, "").map(|_| ())
+}
+
+fn request(method: &str, url: &str, body: Option<String>, token: &str) -> Result<(u16, String), String> {
     let (reply, rx) = channel();
     let tx = TX.get_or_init(|| {
         let (tx, rrx) = channel::<Req>();
@@ -133,6 +151,17 @@ fn run(rx: std::sync::mpsc::Receiver<Req>) {
             }
             if msg.message == WM_TIMER && READY.load(Ordering::Relaxed) {
                 while let Ok(req) = rx.try_recv() {
+                    if req.method == READ_COOKIE {
+                        let r = webview.cookies_for_url("https://soundcloud.com").map(|c| c.iter().find(|c| c.name() == "oauth_token").map(|c| c.value().to_string()).unwrap_or_default());
+                        let _ = req.reply.send(r.map(|v| (200, v)).map_err(|e| e.to_string()));
+                        continue;
+                    }
+                    if req.method == FORGET_COOKIE {
+                        // wry 0.52 has no cookie delete; the site reads this cookie from JS, so JS can expire it
+                        let js = "for(const d of['','; domain=.soundcloud.com','; domain=soundcloud.com'])document.cookie='oauth_token=; Max-Age=0; path=/'+d;";
+                        let _ = req.reply.send(webview.evaluate_script(js).map(|_| (200, String::new())).map_err(|e| e.to_string()));
+                        continue;
+                    }
                     let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
                     lock(pending()).insert(id, req.reply);
                     // embed the body as a JS object literal (valid JSON is valid JS) and let the page

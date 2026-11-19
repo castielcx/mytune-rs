@@ -80,7 +80,7 @@ fn api_write(method: &str, path: &str, body: Option<String>, token: &str) -> Res
     let (status, text) = crate::soundcloud_web::fetch(method, &url, body, token)?;
     match status {
         200..=299 => Ok(serde_json::from_str(&text).unwrap_or(serde_json::Value::Null)),
-        401 => Err("SoundCloud login expired. Sign in again.".into()),
+        401 => Err(sc::LOGIN_REFUSED.into()),
         s => Err(format!("SoundCloud refused ({s}): {}", text.chars().take(300).collect::<String>())),
     }
 }
@@ -305,16 +305,48 @@ fn state() -> std::sync::MutexGuard<'static, State> {
     lock(STATE.get_or_init(Default::default))
 }
 
-/// Runs `work` on its own thread, then hands its result to `done` (or shows its error).
-fn background<T: Send + 'static>(ctx: &egui::Context, work: impl FnOnce() -> Result<T, String> + Send + 'static, done: impl FnOnce(&mut State, T) + Send + 'static) {
-    {
+/// Set when a refused login opened the sign-in window by itself; cleared by the next success.
+static AUTO_LOGIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The profile's cookie, when it is a token other than the refused one.
+fn renewed(cookie: Option<String>, old: Option<&str>) -> Option<String> {
+    cookie.filter(|c| !c.is_empty() && Some(c.as_str()) != old)
+}
+
+/// Runs `work` with the token. On a refused login: retries once with a renewed cookie, else opens the
+/// sign-in window (once until something succeeds again). Blocks: call it off the UI thread.
+fn with_login<T>(ctx: &egui::Context, token: Option<String>, work: impl Fn(Option<&str>) -> Result<T, String>) -> Result<T, String> {
+    let refused = |r: &Result<T, String>| matches!(r, Err(e) if e == sc::LOGIN_REFUSED);
+    let mut r = work(token.as_deref());
+    if refused(&r) {
+        if let Some(new) = renewed(crate::soundcloud_web::token_cookie().ok(), token.as_deref()) {
+            if sc::save_token(&new).is_ok() {
+                state().token = Some(Some(new.clone()));
+                r = work(Some(&new));
+            }
+        }
+        if refused(&r) && !crate::soundcloud_login::is_open() && !AUTO_LOGIN.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            let _ = crate::soundcloud_web::forget_token();
+            crate::soundcloud_login::open(ctx);
+        }
+    }
+    if r.is_ok() {
+        AUTO_LOGIN.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+    r
+}
+
+/// Runs `work` (given the saved token) on its own thread, then hands its result to `done` (or shows its error).
+fn background<T: Send + 'static>(ctx: &egui::Context, work: impl Fn(Option<&str>) -> Result<T, String> + Send + 'static, done: impl FnOnce(&mut State, T) + Send + 'static) {
+    let token = {
         let mut s = state();
         s.busy = true;
         s.error = None;
-    }
+        s.token.clone().flatten()
+    };
     let ctx = ctx.clone();
     std::thread::spawn(move || {
-        let r = work();
+        let r = with_login(&ctx, token, work);
         let mut s = state();
         s.busy = false;
         match r {
@@ -461,6 +493,7 @@ pub fn section(ui: &mut egui::Ui) {
             Ok(()) => {
                 s.token = Some(sc::load_token());
                 (s.likes, s.lists, s.error) = (None, None, None);
+                s.liked_loaded = false;
             }
             Err(e) => s.error = Some(e),
         }
@@ -490,10 +523,15 @@ pub fn section(ui: &mut egui::Ui) {
             s.liked_loaded = true;
             let (t, ctx2) = (token.clone().unwrap(), ctx.clone());
             std::thread::spawn(move || {
-                if let Ok(ids) = sc::liked_ids(&t) {
-                    state().liked = ids.into_iter().collect();
-                    ctx2.request_repaint();
+                match with_login(&ctx2, Some(t), |t| sc::liked_ids(t.unwrap_or_default())) {
+                    Ok(ids) => state().liked = ids.into_iter().collect(),
+                    Err(_) => {
+                        // try again later, not every frame
+                        std::thread::sleep(std::time::Duration::from_secs(30));
+                        state().liked_loaded = false;
+                    }
                 }
+                ctx2.request_repaint();
             });
         }
         ui.horizontal(|ui| {
@@ -511,7 +549,16 @@ pub fn section(ui: &mut egui::Ui) {
         });
         ui.add_space(6.0);
         if let Some(e) = s.error.clone().or_else(|| lock(&PLAY_ERROR).clone()) {
+            let refused = e == sc::LOGIN_REFUSED;
             ui.label(rt(e, 13.0).color(th::DANGER));
+            if refused && !crate::soundcloud_login::is_open() && th::button(ui, "Sign in again", true, (14.0, 6.0, 14.0, 7.0)).clicked() {
+                // drop the dead cookie first: the sign-in window ignores it and would never finish
+                let ctx2 = ctx.clone();
+                std::thread::spawn(move || {
+                    let _ = crate::soundcloud_web::forget_token();
+                    crate::soundcloud_login::open(&ctx2);
+                });
+            }
         }
         let needs_login = s.tab != Tab::Search && token.is_none();
         if needs_login {
@@ -556,7 +603,12 @@ pub fn section(ui: &mut egui::Ui) {
                     act = Some(Act::Likes);
                 }
                 ui.horizontal(|ui| {
-                    ui.label(rt(format!("{} liked tracks", s.likes.as_ref().map_or(0, Vec::len)), 13.0).color(text2()));
+                    let count = match (&s.likes, &s.error) {
+                        (Some(l), _) => format!("{} liked tracks", l.len()),
+                        (None, None) => "Loading…".into(),
+                        (None, Some(_)) => String::new(),
+                    };
+                    ui.label(rt(count, 13.0).color(text2()));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if th::subtle_button(ui, "Sign out", (10.0, 4.0, 10.0, 4.0)).clicked() {
                             act = Some(Act::SignOut);
@@ -679,19 +731,16 @@ pub fn section(ui: &mut egui::Ui) {
     let token = state().token.clone().flatten();
     match act {
         Some(Act::Search(q)) => {
-            let t = token.clone();
-            background(&ctx, move || sc::search(&q, t.as_deref()), |s, found| s.found = found);
+            background(&ctx, move |t| sc::search(&q, t), |s, found| s.found = found);
         }
         Some(Act::Likes) => {
-            let t = token.unwrap_or_default();
-            background(&ctx, move || sc::likes(&t), |s, likes| s.likes = Some(likes));
+            background(&ctx, |t| sc::likes(t.unwrap_or_default()), |s, likes| s.likes = Some(likes));
         }
         Some(Act::Lists) => {
-            let t = token.unwrap_or_default();
-            background(&ctx, move || sc::playlists(&t), |s, lists| s.lists = Some(lists));
+            background(&ctx, |t| sc::playlists(t.unwrap_or_default()), |s, lists| s.lists = Some(lists));
         }
         Some(Act::Open(id, title)) => {
-            background(&ctx, move || sc::playlist_tracks(id, token.as_deref()), move |s, tracks| s.open = Some((id, title, tracks)));
+            background(&ctx, move |t| sc::playlist_tracks(id, t), move |s, tracks| s.open = Some((id, title, tracks)));
         }
         Some(Act::Play(tracks, i)) => {
             // keep only playable tracks in the queue, so the list never stops on a DRM/no-stream one
@@ -709,17 +758,26 @@ pub fn section(ui: &mut egui::Ui) {
                     s.token = Some(Some(t));
                     s.field.clear();
                     (s.likes, s.lists, s.error) = (None, None, None);
+                    s.liked_loaded = false;
                 }
                 Err(e) => s.error = Some(e),
             }
         }
         Some(Act::SignOut) => {
-            let _ = sc::save_token("");
+            let saved = sc::save_token("");
             let mut s = state();
             s.token = Some(None);
             (s.likes, s.lists, s.open) = (None, None, None);
+            s.error = saved.err();
             s.liked.clear();
             s.liked_loaded = false;
+            let ctx2 = ctx.clone();
+            std::thread::spawn(move || {
+                if let Err(e) = crate::soundcloud_web::forget_token() {
+                    state().error = Some(e);
+                    ctx2.request_repaint();
+                }
+            });
         }
         Some(Act::Login) => crate::soundcloud_login::open(&ctx),
         Some(Act::Player(cmd)) => send(&ctx, cmd),
@@ -735,9 +793,9 @@ pub fn section(ui: &mut egui::Ui) {
                 }
                 s.error = None;
             }
-            let (t, ctx2) = (token.unwrap_or_default(), ctx.clone());
+            let ctx2 = ctx.clone();
             std::thread::spawn(move || {
-                match set_favourite(id, on, &t) {
+                match with_login(&ctx2, token, |t| set_favourite(id, on, t.unwrap_or_default())) {
                     Err(e) => {
                         let mut s = state();
                         if on {
@@ -759,14 +817,20 @@ pub fn section(ui: &mut egui::Ui) {
                 s.lists.is_none() && !s.busy
             };
             if need_lists {
-                let t = token.unwrap_or_default();
-                background(&ctx, move || sc::playlists(&t), |s, lists| s.lists = Some(lists));
+                background(&ctx, |t| sc::playlists(t.unwrap_or_default()), |s, lists| s.lists = Some(lists));
             }
         }
         Some(Act::AddTrack(pid, track)) => {
             state().add_for = None;
-            let t = token.unwrap_or_default();
-            background(&ctx, move || playlist_add(pid, track, &t), |_, _| {});
+            // the list's count and, when it is open, its tracks change
+            background(&ctx, move |t| playlist_add(pid, track, t.unwrap_or_default()).map(|_| sc::playlist_tracks(pid, t).ok()), move |s, tracks| {
+                s.lists = None;
+                if let (Some((p, _, open)), Some(tracks)) = (&mut s.open, tracks) {
+                    if *p == pid {
+                        *open = tracks;
+                    }
+                }
+            });
         }
         Some(Act::NewPlaylist(name, first)) => {
             {
@@ -774,13 +838,11 @@ pub fn section(ui: &mut egui::Ui) {
                 (s.creating, s.add_for) = (false, None);
                 s.new_name.clear();
             }
-            let t = token.unwrap_or_default();
             let ids: Vec<u64> = first.into_iter().collect();
-            background(&ctx, move || make_playlist(&name, &ids, &t).map(|_| ()), |s, _| s.lists = None);
+            background(&ctx, move |t| make_playlist(&name, &ids, t.unwrap_or_default()).map(|_| ()), |s, _| s.lists = None);
         }
         Some(Act::DeleteList(pid)) => {
-            let t = token.unwrap_or_default();
-            background(&ctx, move || delete_playlist(pid, &t), move |s, _| {
+            background(&ctx, move |t| delete_playlist(pid, t.unwrap_or_default()), move |s, _| {
                 if let Some(list) = &mut s.lists {
                     list.retain(|p| p.id != pid);
                 }
@@ -790,8 +852,7 @@ pub fn section(ui: &mut egui::Ui) {
             });
         }
         Some(Act::RemoveTrack(pid, track)) => {
-            let t = token.unwrap_or_default();
-            background(&ctx, move || playlist_remove(pid, track, &t).map(|_| (pid, track)), |s, (pid, track)| {
+            background(&ctx, move |t| playlist_remove(pid, track, t.unwrap_or_default()).map(|_| (pid, track)), |s, (pid, track)| {
                 if let Some((p, _, tracks)) = &mut s.open {
                     if *p == pid {
                         tracks.retain(|t| t.id != track);
@@ -806,6 +867,15 @@ pub fn section(ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn renews_only_with_a_new_cookie() {
+        assert_eq!(renewed(Some("new".into()), Some("old")).as_deref(), Some("new"));
+        assert_eq!(renewed(Some("new".into()), None).as_deref(), Some("new"));
+        assert_eq!(renewed(Some("old".into()), Some("old")), None);
+        assert_eq!(renewed(Some(String::new()), Some("old")), None);
+        assert_eq!(renewed(None, Some("old")), None);
+    }
 
     /// Plays the first playable search result, muted, through the real player: it must reach Playing
     /// without an error, and Windows' media sessions should list it (printed, not asserted).

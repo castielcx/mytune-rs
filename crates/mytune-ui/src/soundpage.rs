@@ -14,7 +14,8 @@ use std::time::{Duration, Instant};
 const SLIDER_W: f32 = 160.0;
 /// A tick: lit on the default device, a button on the others. True when clicked (make it the default).
 fn default_tick(ui: &mut Ui, is_default: bool) -> bool {
-    let (b, resp) = ui.allocate_exact_size(vec2(28.0, 28.0), if is_default { Sense::hover() } else { Sense::click() });
+    let (b, mut resp) = ui.allocate_exact_size(vec2(28.0, 28.0), if is_default { Sense::hover() } else { Sense::click_and_drag() });
+    let b = crate::theme::pulled(b, crate::theme::pull(ui, &mut resp));
     if resp.hovered() && !is_default {
         ui.painter().rect_filled(b, 14.0, Color32::from_white_alpha(18));
     }

@@ -88,13 +88,8 @@ pub fn apply_settings(store: &mut Store, snap: &Snapshot) -> Result<()> {
     let attached: Vec<String> = display::monitors().into_iter().map(|m| m.device.to_lowercase()).collect();
     for (dev, profile) in &snap.displays {
         display::register(store, dev, Some(profile));
-        if !attached.contains(&dev.to_lowercase()) {
-            continue;
-        }
-        let mut p = profile.clone();
-        let r = display::apply_ramp(dev, &p).and_then(|()| display::apply_vibrance(dev, &mut p));
-        if let Err(e) = r {
-            log::error(&format!("import display {dev}"), Some(&e));
+        if attached.contains(&dev.to_lowercase()) {
+            display::want(dev, profile); // the colour worker applies it (and logs a failure)
         }
     }
     for (id, on) in &snap.vpns {

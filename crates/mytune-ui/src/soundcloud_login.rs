@@ -121,6 +121,8 @@ fn run() -> Result<(), String> {
         ShowWindow(hwnd, SW_SHOW);
         SetTimer(hwnd, 1, 800, None); // poll the cookie every 0.8 s
 
+        // a stored token only exists here when SoundCloud refused it, so the same cookie must not count
+        let stale = mytune_core::soundcloud::load_token();
         let mut captured = None;
         let mut msg: MSG = std::mem::zeroed();
         loop {
@@ -130,7 +132,7 @@ fn run() -> Result<(), String> {
             }
             if msg.message == WM_TIMER {
                 if let Ok(cookies) = webview.cookies_for_url("https://soundcloud.com") {
-                    if let Some(token) = cookies.iter().find(|c| c.name() == "oauth_token").map(|c| c.value().to_string()).filter(|v| !v.is_empty()) {
+                    if let Some(token) = cookies.iter().find(|c| c.name() == "oauth_token").map(|c| c.value().to_string()).filter(|v| !v.is_empty() && Some(v) != stale.as_ref()) {
                         captured = Some(token);
                         DestroyWindow(hwnd);
                     }

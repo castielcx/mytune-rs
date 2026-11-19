@@ -100,9 +100,180 @@ pub fn set(number: u32, level: i32) -> Result<()> {
     chk("NvAPI_SetDVCLevelEx", unsafe { func::<FnDvc>(0x4A82C2B1, "NvAPI_SetDVCLevelEx")?(h, 0, &mut info) })
 }
 
+// ---------------------------------------------------------------- colour space conversion (extra saturation)
+//
+// Undocumented NvAPI_GPU_Get/SetColorSpaceConversion. Ids, layout and meaning of the fields are the facts
+// published in novideo_srgb (github.com/ledoge/novideo_srgb, Novideo.cs); the code here is our own.
+// Observed pipeline there: content degamma -> content to sRGB -> sRGB to monitor -> matrix2 -> matrix1 ->
+// monitor gamma. With content = monitor = 2 (sRGB) only the matrix changes the picture, in linear light.
+
+/// V1 struct, 0x7C bytes. Matrices are 3 rows of (r, g, b gain, offset).
+#[repr(C)]
+#[derive(Clone, Copy, Default, Debug, PartialEq)]
+pub struct Csc {
+    version: u32,
+    /// 1..12, driver default 2 (sRGB).
+    pub content: u32,
+    /// 0 = conversion off (driver default), 2 = sRGB.
+    pub monitor: u32,
+    unknown1: u32,
+    unknown2: u32,
+    pub use_matrix1: u32,
+    pub matrix1: [f32; 12],
+    pub use_matrix2: u32,
+    pub matrix2: [f32; 12],
+}
+
+const CSC_VER: u32 = ver(std::mem::size_of::<Csc>(), 1);
+
+type FnDisplayId = unsafe extern "C" fn(*const u8, *mut u32) -> i32;
+type FnCsc = unsafe extern "C" fn(u32, *mut Csc) -> i32;
+
+impl Csc {
+    /// The state that switches the conversion off (what novideo_srgb writes to disable).
+    pub fn off() -> Csc {
+        Csc { version: CSC_VER, content: 2, ..Default::default() }
+    }
+
+    /// sRGB in, sRGB out, with a saturation matrix in between.
+    pub fn saturation(s: f64) -> Csc {
+        Csc { version: CSC_VER, content: 2, monitor: 2, use_matrix1: 1, matrix1: saturation_matrix(s), ..Default::default() }
+    }
+
+    /// Off, or Unity's HDR output state (12/12 without matrices), which is not a user's conversion either.
+    pub fn is_off(&self) -> bool {
+        self.monitor == 0 || (self.monitor == 12 && self.content == 12 && self.use_matrix1 != 1 && self.use_matrix2 != 1)
+    }
+
+    /// The factor when this is exactly a `Csc::saturation` (what MyTune writes), else `None`.
+    pub fn factor(&self) -> Option<f64> {
+        let s = ((self.matrix1[0] - 0.2126) / (1.0 - 0.2126)) as f64;
+        let m = saturation_matrix(s);
+        let close = self.matrix1.iter().zip(m).all(|(a, b)| (a - b).abs() < 1e-4);
+        (self.content == 2 && self.monitor == 2 && self.use_matrix1 == 1 && self.use_matrix2 != 1 && close).then_some(s)
+    }
+
+    /// Same picture as `other` (ignores the unknown fields and unused matrices).
+    pub fn same(&self, other: &Csc) -> bool {
+        let m = |c: &Csc| (c.content, c.monitor, (c.use_matrix1 == 1).then_some(c.matrix1), (c.use_matrix2 == 1).then_some(c.matrix2));
+        (self.is_off() && other.is_off()) || m(self) == m(other)
+    }
+}
+
+/// M = (1 - s) * L + s * I with Rec.709 luma weights: every row sums to 1, so greys stay grey.
+/// s = 1 is the identity, above 1 pushes colours away from grey.
+pub fn saturation_matrix(s: f64) -> [f32; 12] {
+    const L: [f64; 3] = [0.2126, 0.7152, 0.0722];
+    let mut m = [0f32; 12];
+    for r in 0..3 {
+        for c in 0..3 {
+            m[r * 4 + c] = ((1.0 - s) * L[c] + if r == c { s } else { 0.0 }) as f32;
+        }
+    }
+    m
+}
+
+/// NVAPI display id of `\\.\DISPLAY<n>`; `None` when no NVIDIA GPU drives it.
+pub(crate) fn display_id(dev: &str) -> Result<Option<u32>> {
+    if !available() {
+        return Ok(None);
+    }
+    let name: Vec<u8> = dev.bytes().chain(Some(0)).collect();
+    let mut id = 0u32;
+    let s = unsafe { func::<FnDisplayId>(0xAE457190, "NvAPI_DISP_GetDisplayIdByDisplayName")?(name.as_ptr(), &mut id) };
+    Ok((s == OK).then_some(id))
+}
+
+/// The display's colour space conversion, or `None` when it is not driven by an NVIDIA GPU.
+pub fn csc_get(dev: &str) -> Result<Option<Csc>> {
+    let Some(id) = display_id(dev)? else { return Ok(None) };
+    let mut c = Csc { version: CSC_VER, ..Default::default() };
+    chk("NvAPI_GPU_GetColorSpaceConversion", unsafe { func::<FnCsc>(0x8159E87A, "NvAPI_GPU_GetColorSpaceConversion")?(id, &mut c) })?;
+    Ok(Some(c))
+}
+
+/// Writes a conversion. With Windows HDR on the driver answers `NOT_SUPPORTED` (-104).
+pub fn csc_set(dev: &str, c: &Csc) -> Result<()> {
+    let id = display_id(dev)?.ok_or(Error::Nvapi { func: "NvAPI_GPU_SetColorSpaceConversion", status: NO_IMPLEMENTATION })?;
+    let mut c = Csc { version: CSC_VER, unknown1: 0, ..*c };
+    chk("NvAPI_GPU_SetColorSpaceConversion", unsafe { func::<FnCsc>(0xFCABD23A, "NvAPI_GPU_SetColorSpaceConversion")?(id, &mut c) })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saturation_matrix_keeps_grey() {
+        let one = saturation_matrix(1.0);
+        assert_eq!(one, [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0]);
+        for s in [0.0, 0.5, 1.0, 1.25, 2.0, 4.0] {
+            let m = saturation_matrix(s);
+            for r in 0..3 {
+                let row = &m[r * 4..r * 4 + 4];
+                assert!((row[0] + row[1] + row[2] - 1.0).abs() < 1e-6 && row[3] == 0.0, "s{s} row{r}");
+                let grey = 0.4 * (row[0] + row[1] + row[2]);
+                assert!((grey - 0.4).abs() < 1e-6, "grey stays grey, s{s}");
+            }
+        }
+        // above 1 a colour moves away from grey: pure red gets more red, negative green
+        let m = saturation_matrix(2.0);
+        assert!(m[0] > 1.0 && m[4] < 0.0);
+        assert_eq!(std::mem::size_of::<Csc>(), 0x7C);
+        assert_eq!(CSC_VER, 0x1007C);
+        assert!(Csc::off().is_off() && !Csc::saturation(1.5).is_off());
+        assert!(Csc::saturation(1.5).same(&Csc::saturation(1.5)) && !Csc::saturation(1.5).same(&Csc::saturation(1.6)));
+        // MyTune knows its own matrix again, and not another tool's
+        assert!((Csc::saturation(1.37).factor().unwrap() - 1.37).abs() < 1e-4);
+        let mut clamp = Csc::saturation(1.0);
+        clamp.matrix1[1] = 0.1;
+        assert!(clamp.factor().is_none() && Csc::off().factor().is_none());
+    }
+
+    /// Changes the picture of the NON-primary display for a moment: reads its conversion, sets saturation
+    /// matrices, reads them back, restores what was there (also on a panic). Never touches the primary display.
+    /// `cargo test -p mytune-core --lib vibrance::tests::real_csc_on_second_display -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn real_csc_on_second_display() {
+        use windows::core::PCWSTR;
+        use windows::Win32::Graphics::Gdi::{EnumDisplayDevicesW, DISPLAY_DEVICEW};
+        let mut dev = None;
+        for i in 0.. {
+            let mut d = DISPLAY_DEVICEW { cb: std::mem::size_of::<DISPLAY_DEVICEW>() as u32, ..Default::default() };
+            if !unsafe { EnumDisplayDevicesW(PCWSTR::null(), i, &mut d, 0) }.as_bool() {
+                break;
+            }
+            let name = String::from_utf16_lossy(&d.DeviceName[..d.DeviceName.iter().position(|&c| c == 0).unwrap_or(32)]);
+            let (attached, primary) = (d.StateFlags.0 & 1 != 0, d.StateFlags.0 & 4 != 0);
+            eprintln!("{name}: attached {attached}, primary {primary}");
+            if attached && !primary && dev.is_none() {
+                dev = Some(name);
+            }
+        }
+        let Some(dev) = dev else { return eprintln!("no non-primary display: nothing tested") };
+        let before = csc_get(&dev).expect("get").expect("not an NVIDIA display");
+        eprintln!("{dev} before: {before:?}");
+        struct Restore(String, Csc);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let to = if self.1.is_off() { Csc::off() } else { self.1 };
+                eprintln!("{} restore: {:?}", self.0, csc_set(&self.0, &to));
+                let now = csc_get(&self.0);
+                eprintln!("{} after restore: {now:?}", self.0);
+            }
+        }
+        let guard = Restore(dev.clone(), before);
+        for s in [1.25, 2.0, 3.0] {
+            let want = Csc::saturation(s);
+            let set = csc_set(&dev, &want);
+            let got = csc_get(&dev).expect("get").unwrap();
+            eprintln!("{dev} s={s}: set {set:?}, read back same: {}, matrix1 {:?}", got.same(&want), got.matrix1);
+            assert!(set.is_ok() && got.same(&want));
+        }
+        drop(guard);
+        assert!(csc_get(&dev).unwrap().unwrap().same(&before));
+    }
 
     #[test]
     fn names_and_layout() {

@@ -1,5 +1,5 @@
 //! The composer's + menu (Upload a File, Create Poll) and Discord's "Create a Poll" dialog, driven by the
-//! engine's poll draft. Use Apps, Schedule Message and Record Voice Message have no engine support.
+//! engine's poll draft. Use Apps, Schedule Message and Record Voice Message (the mic button in the composer does that) have no engine support.
 
 use super::voice::{glyph, k_edge, k_panel, QUICK, k_raised};
 use super::*;

@@ -243,6 +243,11 @@ fn attachment(ui: &mut Ui, ctx: &egui::Context, m: &ChatMessage, i: usize, a: &A
         ui.painter().rect_filled(rect, if sticker { 0.0 } else { 8.0 }, k_raised());
         return;
     }
+    if super::voicenote::is_voice(a) {
+        let resp = super::voicenote::chip(ui, m, i, a, acts);
+        attachment_menu(&resp, ctx, m, i, a, acts);
+        return;
+    }
     // a file, or a picture not loaded (yet): a chip with its name and size
     let size = a.size.map(human_size).unwrap_or_default();
     let (rect, resp) = ui.allocate_exact_size(vec2(MAX_W.min(ui.available_width()), 52.0), Sense::click());

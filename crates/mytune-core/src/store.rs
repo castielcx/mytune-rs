@@ -44,6 +44,35 @@ enum Read {
 pub struct Store {
     dir: PathBuf,
     state: State,
+    /// The state as this process last read or wrote it. `save` compares with it to tell this process's own
+    /// changes from those of another MyTune writing the same file.
+    base: std::sync::Mutex<Value>,
+}
+
+/// `theirs` (the file as another process left it) with this process's changes laid over it: every key where
+/// `mine` differs from `base` is this process's doing (set, changed or removed), everything else is theirs.
+fn merge(base: &Value, mine: &Value, theirs: Value) -> Value {
+    match (base, mine, theirs) {
+        (Value::Object(b), Value::Object(m), Value::Object(mut t)) => {
+            for k in b.keys().chain(m.keys()).collect::<std::collections::BTreeSet<_>>() {
+                match (b.get(k), m.get(k)) {
+                    (was, now) if was == now => {}
+                    (_, None) => {
+                        t.remove(k);
+                    }
+                    (was, Some(now)) => {
+                        let v = match (was, t.remove(k)) {
+                            (Some(was), Some(their)) => merge(was, now, their),
+                            _ => now.clone(),
+                        };
+                        t.insert(k.clone(), v);
+                    }
+                }
+            }
+            Value::Object(t)
+        }
+        (_, mine, _) => mine.clone(),
+    }
 }
 
 fn read_state(p: &Path) -> Read {
@@ -107,7 +136,8 @@ impl Store {
                 }
             }
         };
-        Store { dir: dir.to_path_buf(), state }
+        let base = serde_json::to_value(&state).unwrap_or(Value::Null);
+        Store { dir: dir.to_path_buf(), state, base: std::sync::Mutex::new(base) }
     }
 
     pub fn dir(&self) -> &Path {
@@ -151,6 +181,11 @@ impl Store {
         }
     }
 
+    /// Removes a top-level key (in memory; call `save`).
+    pub fn remove_top(&mut self, key: &str) {
+        self.state.other.remove(key);
+    }
+
     /// A boolean in the C# `Settings` object (e.g. `GameTimer`); `None` if missing or not a bool.
     pub fn settings_flag(&self, name: &str) -> Option<bool> {
         self.state.other.get("Settings")?.get(name)?.as_bool()
@@ -191,11 +226,23 @@ impl Store {
     }
 
     pub fn save(&self) -> Result<()> {
-        let json = serde_json::to_vec_pretty(&self.state)?;
+        let mine = serde_json::to_value(&self.state)?;
+        let mut base = self.base.lock().unwrap_or_else(|e| e.into_inner());
+        // A second MyTune (the comparison copy beside the installed one) may have saved since this process read
+        // the file: its changes stay, only what this process changed itself goes over them. Without this the
+        // later save dropped the other one's tweak backups.
+        let out = match read_state(&self.dir.join("state.json")) {
+            Read::Ok(theirs) => merge(&base, &mine, serde_json::to_value(&theirs)?),
+            _ => mine.clone(),
+        };
+        let json = serde_json::to_vec_pretty(&out)?;
         let mut last = None;
         for attempt in 0..3 {
             match self.write_once(&json) {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    *base = mine;
+                    return Ok(());
+                }
                 Err(e) => {
                     log::error(&format!("state.json save attempt {} failed", attempt + 1), Some(&e));
                     last = Some(e);
@@ -265,6 +312,47 @@ mod tests {
         assert_eq!(v["Games"][0]["Name"], "x");
         assert_eq!(v["Applied"]["adv.timer"]["Registry"][0]["Kind"], "DWord");
         assert!(v["Applied"]["other"].is_object());
+    }
+
+    /// Two processes on one file: neither save drops what the other wrote, and a removal stays removed.
+    #[test]
+    fn save_keeps_another_process_changes() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("state.json"), r#"{"Settings":{"Theme":"dark","GameTimer":false},"Games":[1]}"#).unwrap();
+        let (mut a, mut b) = (Store::load(d.path()), Store::load(d.path()));
+        a.set_backup("x", bk("from a")).unwrap();
+        a.set_settings_flag("GameTimer", true).unwrap();
+        b.set_settings_str("AccentColor", "#F2F2F2").unwrap(); // b still holds the file as it was before a's saves
+        let s = Store::load(d.path());
+        assert_eq!(s.applied_ids(), vec!["x".to_string()]);
+        assert_eq!(s.settings_flag("GameTimer"), Some(true));
+        assert_eq!(s.settings_str("AccentColor").as_deref(), Some("#F2F2F2"));
+        assert_eq!(s.other("Settings").unwrap()["Theme"], "dark");
+        b.set_backup("y", bk("from b")).unwrap();
+        a.remove_backup("x").unwrap();
+        b.set_settings_flag("Other", true).unwrap();
+        assert_eq!(Store::load(d.path()).applied_ids(), vec!["y".to_string()]);
+    }
+
+    /// The journal key (`Pending`, engine.rs) is a raw top-level key: another process's save keeps it, and
+    /// removing it removes it from the file.
+    #[test]
+    fn pending_key_survives_another_process_save() {
+        let d = tempfile::tempdir().unwrap();
+        fs::write(d.path().join("state.json"), CS_JSON).unwrap();
+        let (mut a, mut b) = (Store::load(d.path()), Store::load(d.path()));
+        a.set_top("Pending", serde_json::json!({"x": {"Op": "apply"}}));
+        a.save().unwrap();
+        b.set_settings_flag("GameTimer", true).unwrap(); // b read the file before the entry was there
+        let s = Store::load(d.path());
+        assert_eq!(s.top("Pending").unwrap()["x"]["Op"], "apply");
+        assert_eq!(s.other("Games").unwrap()[0]["Name"], "x");
+        a.remove_top("Pending");
+        a.save().unwrap();
+        b.set_settings_flag("Other", true).unwrap();
+        let s = Store::load(d.path());
+        assert!(s.top("Pending").is_none());
+        assert_eq!(s.settings_flag("GameTimer"), Some(true));
     }
 
     #[test]

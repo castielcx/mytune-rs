@@ -1,5 +1,5 @@
 use crate::nav::{Item, Page, GROUPS, SETTINGS};
-use crate::theme::{self as th, bd, dbd, dsb, ico, p, rt, sb, text2, text3};
+use crate::theme::{self as th, dsb, ico, p, rt, sb, text2, text3};
 use eframe::egui::{self, pos2, vec2, Align, Color32, FontId, Id, Layout, Margin, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder};
 use mytune_core::alltweaks::{self, TweakItem};
 use mytune_core::catalog::TweakFlags;
@@ -12,6 +12,9 @@ use std::time::{Duration, Instant};
 
 /// How long the pointer rests on the closed sidebar rail before it opens.
 const HOVER_OPEN: Duration = Duration::from_secs(1);
+/// Height and corner radius of a sidebar row (search, nav items).
+const ROW: f32 = 32.0;
+const ROW_R: f32 = 10.0;
 
 /// Cubic ease-out over `dur` seconds, like the WPF `CubicEase EaseOut` (egui's own animate is linear).
 struct Anim {
@@ -55,6 +58,9 @@ pub struct App {
     flyout: crate::soundpage::Flyout,
     diagnostics: crate::diagnosticspage::DiagnosticsPage,
     display: crate::displaypage::DisplayPage,
+    vibrance: crate::vibrancepage::VibrancePage,
+    games: crate::gamespage::GamesPage,
+    bios: crate::biospage::BiosPage,
     #[cfg(feature = "taskbar-look")]
     taskbar: crate::taskbarcard::TaskbarCard,
     chat: crate::chatpage::ChatPage,
@@ -74,6 +80,7 @@ pub struct App {
     /// The page `run_work` was started on; its result shows only there.
     work_page: Page,
     confirm_optimize: bool,
+    confirm_revert_all: bool,
     ids_in_store: Vec<String>,
     checks: Option<Vec<Check>>,
     check_rx: Option<mpsc::Receiver<Vec<Check>>>,
@@ -88,8 +95,6 @@ pub struct App {
     last_cpu: Option<(u64, u64)>,
     last_sample: Option<Instant>,
     side_w: f32,
-    anim_base: Anim,
-    anim_side: Anim,
     anim_pill: Anim,
     /// When the pointer came to rest on the closed sidebar rail (it opens after `HOVER_OPEN`).
     hover_since: Option<Instant>,
@@ -111,6 +116,34 @@ fn page_of(id: &str) -> Option<Page> {
         Section::Customize => Page::Customize,
         Section::Network => return None,
     })
+}
+
+/// The one notice after `Engine::recover` rolled back interrupted changes; green only when all were put back.
+fn recovered_text(left: &[mytune_core::engine::Recovered]) -> Option<(String, bool)> {
+    use mytune_core::layout::{placement, Section};
+    let bad: Vec<_> = left.iter().filter(|r| !r.put_back).collect();
+    let what = match left {
+        [] => return None,
+        [one] => one.title.clone(),
+        _ => format!("{} settings", left.len()),
+    };
+    let end = match (left.len(), bad.as_slice()) {
+        (1, []) => "It was put back.".to_string(),
+        (_, []) => "They were put back.".to_string(),
+        (_, [one]) => {
+            let page = match placement(&one.id).map(|p| p.section) {
+                Some(Section::General | Section::Advanced) => ", check it on Optimize",
+                Some(Section::Network) => ", check it on Internet",
+                Some(Section::Debloat) => ", check it on Debloat",
+                Some(Section::Customize) => ", check it on Customize",
+                None => "",
+            };
+            let it = if left.len() == 1 { "It".to_string() } else { one.title.clone() };
+            format!("{it} could not be put back{page}.")
+        }
+        (_, many) => format!("{} could not be put back, see the log.", many.len()),
+    };
+    Some((format!("MyTune closed while changing {what}. {end}"), bad.is_empty()))
 }
 
 /// `Settings.AccentColor` from state.json (the C# app's own setting).
@@ -138,6 +171,7 @@ impl App {
         std::thread::spawn(move || {
             let _ = tx.send(pccheck::this_pc());
         });
+        mytune_core::display::apply_saved(&store); // saved display colours, kept on by the colour worker
         let engine = Arc::new(Engine::new(store));
         let mut app = App {
             page: Page::Chat,
@@ -149,6 +183,9 @@ impl App {
             flyout: crate::soundpage::Flyout::new(),
             diagnostics: crate::diagnosticspage::DiagnosticsPage::new(engine.clone()),
             display: crate::displaypage::DisplayPage::new(engine.clone()),
+            vibrance: crate::vibrancepage::VibrancePage::new(engine.clone()),
+            games: crate::gamespage::GamesPage::new(engine.clone()),
+            bios: Default::default(),
             #[cfg(feature = "taskbar-look")]
             taskbar: crate::taskbarcard::TaskbarCard::new(engine.clone()),
             chat: Default::default(),
@@ -164,6 +201,7 @@ impl App {
             shown_page: Page::Chat,
             work_page: Page::Chat,
             confirm_optimize: false,
+            confirm_revert_all: false,
             ids_in_store: vec![],
             checks: None,
             check_rx: None,
@@ -177,8 +215,6 @@ impl App {
             last_cpu: None,
             last_sample: None,
             side_w: 248.0,
-            anim_base: Anim::new(248.0),
-            anim_side: Anim::new(248.0),
             anim_pill: Anim::new(0.0),
             hover_since: None,
             suppress_hover: false,
@@ -219,7 +255,25 @@ impl App {
         if let Some(items) = self.items_rx.as_ref().and_then(|r| r.try_recv().ok()) {
             self.tweaks = Arc::new(items);
             self.items_rx = None;
-            self.refresh();
+            // First what a MyTune that died mid-change left half done is put back, then the states are read.
+            let (tx, rx) = mpsc::channel();
+            let (tweaks, engine, ctx) = (self.tweaks.clone(), self.engine.clone(), ctx.clone());
+            std::thread::spawn(move || {
+                // game profiles are not in the tweak list: their revert needs the backup alone
+                let games = engine.with_store(|s| mytune_core::gameprofile::pending_reverts(s));
+                let left = engine.recover(|id| tweaks.iter().find(|t| t.id == id).map(|t| t as &dyn Tweak).or_else(|| games.iter().find(|g| g.id == id).map(|g| g as &dyn Tweak)));
+                let applied = tweaks.iter().map(|t| (t.id.clone(), t.is_applied().unwrap_or(false))).collect();
+                let _ = tx.send((applied, engine.with_store(|s| s.applied_ids())));
+                if let Some((text, ok)) = recovered_text(&left) {
+                    // the bar counts its seconds from now: started in the tray, nobody would see it
+                    while !window_shown() {
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
+                    crate::notice::post(&ctx, text, ok);
+                    ctx.request_repaint();
+                }
+            });
+            self.states_rx = Some(rx);
         }
         if let Some((applied, ids)) = self.states_rx.as_ref().and_then(|r| r.try_recv().ok()) {
             self.applied = applied;
@@ -233,9 +287,12 @@ impl App {
             self.applied.extend(touched);
             self.work_rx = None;
             self.refresh();
-            if self.page == Page::Dashboard {
+            if self.page == Page::Diagnostics && self.checks.is_some() {
                 self.start_check(ctx); // the PC check shows the new state
             }
+        }
+        if self.games.poll(ctx) {
+            self.ids_in_store = self.engine.with_store(|s| s.applied_ids()); // a game profile came or went
         }
         if self.items_rx.is_some() || self.states_rx.is_some() || self.work_rx.is_some() {
             ctx.request_repaint_after(Duration::from_millis(100));
@@ -403,7 +460,7 @@ impl App {
         self.sidebar(ctx, ctx.content_rect().top() + 44.0);
         let home = self.page == Page::Dashboard;
         th::backdrop(ctx, &ctx.layer_painter(egui::LayerId::background()), ctx.content_rect());
-        let base_w = self.anim_base.update(ctx, if home { 248.0 } else { 64.0 }, 0.22).round();
+        let base_w = th::spring(ctx, Id::new("base-w"), if home { 248.0 } else { 64.0 }, th::TRAVEL, 1.0).round();
         self.title_bar(root, base_w);
         // Leaving Home, the page takes its final width at once and the folding sidebar uncovers it:
         // laying the page out again for every width in between cost frames.
@@ -438,15 +495,17 @@ impl App {
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
                 egui::Frame::new().inner_margin(Margin { left: 36, right: 36, top: 28, bottom: 36 }).show(ui, |ui| {
                     ui.set_width(ui.available_width());
-                    if self.page != Page::Dashboard {
+                    {
                         let settings = matches!(self.page, Page::Settings | Page::Restore);
-                        // lined up with the text inside cards (card pad 3 + 10), user's choice
-                        egui::Frame::new().outer_margin(Margin { left: 13, ..Default::default() }).show(ui, |ui| ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 14.0;
-                            ui.label(th::ico(crate::nav::glyph_of(self.page), 38.0).color(th::p().accent));
-                            ui.label(dbd("\u{B7}", 30.0).color(text2()));
-                            ui.label(dbd(if settings { Page::Settings.label() } else { self.page.label() }, 30.0));
-                        }));
+                        // the page's name, lined up with the text inside cards (card pad 3 + 10), user's choice
+                        egui::Frame::new().outer_margin(Margin { left: 13, ..Default::default() }).show(ui, |ui| {
+                            let page = if settings { Page::Settings } else { self.page };
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 10.0;
+                                ui.label(ico(crate::nav::glyph_of(page), 22.0));
+                                ui.label(dsb(page.label(), 27.0));
+                            });
+                        });
                         ui.add_space(12.0);
                         if settings {
                             ui.horizontal(|ui| {
@@ -476,8 +535,6 @@ impl App {
                             crate::notice::post(ui.ctx(), msg, ok);
                         }
                         th::page_gap(ui);
-                    } else {
-                        ui.ctx().data_mut(|d| d.remove::<f32>(egui::Id::new("page-top")));
                     }
                     match self.page {
                         Page::Dashboard => self.home(ui),
@@ -489,8 +546,15 @@ impl App {
                         Page::Mouse => self.mouse.ui(ui),
                         Page::Sound => self.sound.ui(ui),
                         Page::Music => crate::nowplaying::page(ui),
-                        Page::Diagnostics => self.diagnostics.ui(ui),
+                        Page::Diagnostics => {
+                            th::section(ui, "PC check");
+                            self.pc_check(ui);
+                            self.diagnostics.ui(ui)
+                        }
                         Page::Display => self.display.ui(ui),
+                        Page::Vibrance => self.vibrance.ui(ui),
+                        Page::Games => self.games.ui(ui),
+                        Page::Bios => self.bios.ui(ui),
                         _ => th::card(ui, (10, 16, 16, 16), |ui| {
                             ui.label(rt("Not ported yet.", 14.0).color(text2()));
                         }),
@@ -501,8 +565,12 @@ impl App {
         if self.confirm_optimize {
             self.optimize_modal(ctx);
         }
+        if self.confirm_revert_all {
+            self.revert_all_modal(ctx);
+        }
         crate::notice::show(ctx, 44.0); // under the title bar
         crate::fade::end_frame(ctx);
+        crate::sharp::scan(ctx);
     }
 
     // ------------------------------------------------------------ chrome
@@ -524,8 +592,7 @@ impl App {
             // centred over the nav icons
             let cx = 32.0; // same column as the nav icons, open or folded
             let logo = Rect::from_center_size(pos2(bar.left() + cx, bar.center().y), vec2(18.0, 18.0));
-            ui.painter().rect_filled(logo, 6.0, pal.accent);
-            ui.painter().rect_stroke(logo, 6.0, Stroke::new(1.0, Color32::from_white_alpha(0x50)), StrokeKind::Inside);
+            ui.painter().rect_filled(logo, 5.0, pal.accent);
             let m = |x: f32, y: f32| logo.min + vec2(x, y) * (18.0 / 256.0);
             let pts: Vec<_> = [(65., 187.), (65., 69.), (90., 69.), (128., 123.), (166., 69.), (191., 69.), (191., 187.), (167., 187.), (167., 119.), (133., 157.), (123., 157.), (89., 119.), (89., 187.)]
                 .iter()
@@ -539,7 +606,7 @@ impl App {
             ui.painter().line_segment([m(77., 75.), m(128., 140.)], w);
             ui.painter().line_segment([m(179., 75.), m(128., 140.)], w);
             if base_w > 120.0 {
-                ui.painter().text(pos2(logo.right() + 12.0, bar.center().y), egui::Align2::LEFT_CENTER, "MyTune", FontId::proportional(12.0), pal.side_text.gamma_multiply(((base_w - 120.0) / 128.0).clamp(0.0, 1.0)));
+                ui.painter().text(pos2(logo.right() + 10.0, bar.center().y), egui::Align2::LEFT_CENTER, "MyTune", FontId::new(13.0, th::semibold()), pal.side_text.gamma_multiply(((base_w - 120.0) / 128.0).clamp(0.0, 1.0)));
             }
             // caption buttons 46x32, glyphs 10 px
             let right = bar.right();
@@ -551,10 +618,12 @@ impl App {
             for (i, (glyph, cmd, close)) in buttons.into_iter().enumerate() {
                 let r = Rect::from_min_size(pos2(right - 46.0 * (i as f32 + 1.0), bar.top()), vec2(46.0, 32.0));
                 let resp = ui.interact(r, Id::new(("cap", i)), Sense::click());
-                if resp.hovered() {
-                    th::capsule(ui.painter(), r.shrink2(vec2(5.0, 3.0)), if close { pal.block[1] } else { Color32::from_white_alpha(0x22) }, 0x26);
+                let hov = th::anim(&ctx, resp.id.with("hover"), resp.hovered(), th::HOVER);
+                if hov > 0.0 {
+                    let tint = if close { pal.block[1] } else { Color32::from_white_alpha(0x24) };
+                    ui.painter().rect_filled(r.shrink2(vec2(5.0, 3.0)), 8.0, tint.gamma_multiply(hov));
                 }
-                ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, glyph, FontId::new(10.0, th::icons()), if close && resp.hovered() { Color32::WHITE } else { pal.side_text });
+                ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, glyph, FontId::new(10.0, th::icons()), if close { pal.side_text.lerp_to_gamma(Color32::WHITE, hov) } else { pal.side_text });
                 if resp.clicked() {
                     ctx.send_viewport_cmd(cmd);
                 }
@@ -587,7 +656,9 @@ impl App {
         if resting && !hovered {
             ctx.request_repaint_after(HOVER_OPEN - waited);
         }
-        let w = self.anim_side.update(ctx, if home || hovered { 248.0 } else { 64.0 }, 0.22); // not rounded: 1 px steps stutter
+        // a spring: it can be turned round half way (pointer leaves while it opens) without a jump. Not rounded:
+        // 1 px steps stutter.
+        let w = th::spring(ctx, Id::new("side-w"), if home || hovered { 248.0 } else { 64.0 }, th::TRAVEL, 1.0);
         self.side_w = w;
         let rect = Rect::from_min_size(pos2(0.0, top), vec2(w, screen.height() - top));
         let fade = ((w - 64.0) / 184.0).clamp(0.0, 1.0);
@@ -606,15 +677,15 @@ impl App {
                     ui.set_width(inner.width());
                     // Same row in the rail and the full sidebar, so the icons below never move.
                     ui.add_space(2.0);
-                    let r = Rect::from_min_size(ui.cursor().min, vec2(inner.width(), 36.0));
-                    ui.allocate_space(vec2(inner.width(), 36.0));
+                    let r = Rect::from_min_size(ui.cursor().min, vec2(inner.width(), ROW));
+                    ui.allocate_space(vec2(inner.width(), ROW));
                     let focused = ui.memory(|m| m.has_focus(Id::new("search")));
-                    // same row as every nav item: ink fill, light edge, hover tint, icon in the same column
+                    // same row as every nav item: hover tint, icon in the same column; an accent edge while typing
                     if focused {
-                        ui.painter().rect_stroke(r, 18.0, Stroke::new(1.0, pal.accent), StrokeKind::Inside);
+                        ui.painter().rect_stroke(r, ROW_R, Stroke::new(1.0, pal.accent), StrokeKind::Inside);
                     }
                     if ui.rect_contains_pointer(r) {
-                        ui.painter().rect_filled(r, 18.0, Color32::from_white_alpha(26));
+                        ui.painter().rect_filled(r, ROW_R, Color32::from_white_alpha(22));
                     }
                     let gx = r.left() + 24.0; // fixed column: the icon never moves while the sidebar opens or folds
                     ui.painter().text(pos2(gx, r.center().y.round()), egui::Align2::CENTER_CENTER, "\u{E721}", FontId::new(16.0, th::icons()), pal.side_muted);
@@ -647,12 +718,17 @@ impl App {
                             continue;
                         }
                         if let Some(t) = g.title {
-                            ui.add_space(14.0);
+                            ui.add_space(12.0);
                             // painted, not a label: a label kept the sidebar layer ~117 px wide while folded,
                             // so its invisible part ate clicks meant for the chat page's server icons
-                            let (tr, _) = ui.allocate_exact_size(vec2(inner.width(), 14.0), Sense::hover());
-                            ui.painter().with_clip_rect(tr).text(pos2(tr.left() + 14.0, tr.center().y), egui::Align2::LEFT_CENTER, t, FontId::new(10.5, th::display_bold()), pal.side_muted.gamma_multiply(fade));
-                            ui.add_space(4.0);
+                            let (tr, _) = ui.allocate_exact_size(vec2(inner.width(), 16.0), Sense::hover());
+                            ui.painter().with_clip_rect(tr).text(pos2(tr.left() + 14.0, tr.center().y), egui::Align2::LEFT_CENTER, t, FontId::new(12.0, th::medium()), th::text3().gamma_multiply(fade));
+                            // folded, the names are gone: a short line keeps the groups apart
+                            if fade < 1.0 {
+                                let y = tr.center().y.round();
+                                ui.painter().line_segment([pos2(tr.left() + 16.0, y), pos2(tr.left() + 32.0, y)], Stroke::new(th::px(), Color32::from_white_alpha((36.0 * (1.0 - fade)) as u8)));
+                            }
+                            ui.add_space(2.0);
                         }
                         for i in items {
                             self.nav_item(ui, i, inner.width(), w);
@@ -671,35 +747,34 @@ impl App {
 
     fn nav_item(&mut self, ui: &mut Ui, item: &Item, width: f32, w: f32) {
         let pal = p();
-        ui.add_space(2.0);
-        let (rect, resp) = ui.allocate_exact_size(vec2(width, 36.0), Sense::click());
-        ui.add_space(2.0);
+        ui.add_space(1.0);
+        let (rect, resp) = ui.allocate_exact_size(vec2(width, ROW), Sense::click());
+        ui.add_space(1.0);
         let sel = self.page == item.page || (item.page == Page::Settings && self.page == Page::Restore); // Restore is a Settings tab
         let paint = ui.painter();
-        // Glass motion, same timings as `th::button`: the plate under the pointer fades in, sinks 4% while
-        // pressed and the selected plate grows in from 90%. Only the plate moves, icon and name stay put.
+        // Same springs as `th::button`: the plate under the pointer fades in, gives way 3% while pressed, and
+        // the selected plate grows in from 94%. Only the plate moves, icon and name stay put.
         let ctx = ui.ctx();
-        let ease = egui::emath::easing::cubic_out;
-        let hov = ctx.animate_bool_with_time_and_easing(resp.id.with("hover"), resp.hovered(), 0.14, ease);
-        let down = ctx.animate_bool_with_time_and_easing(resp.id.with("down"), resp.is_pointer_button_down_on(), 0.12, ease);
-        let on = ctx.animate_bool_with_time_and_easing(resp.id.with("sel"), sel, 0.22, ease);
+        let hov = th::anim(ctx, resp.id.with("hover"), resp.hovered(), th::HOVER);
+        let down = th::anim(ctx, resp.id.with("down"), resp.is_pointer_button_down_on(), th::PRESS);
+        let on = th::anim(ctx, resp.id.with("sel"), sel, 0.24);
         let plate = |k: f32| Rect::from_center_size(rect.center(), rect.size() * k);
         if on > 0.0 {
             // raised glass on the sidebar's base glass
-            th::capsule(paint, plate(0.9 + 0.1 * on - 0.04 * down), pal.side_selected.gamma_multiply(on), (38.0 * on) as u8);
+            th::plate(paint, plate(0.94 + 0.06 * on - 0.03 * down), ROW_R, pal.side_selected.gamma_multiply(on), (0x44 as f32 * on) as u8);
         }
         if sel {
             self.pill_y = rect.center().y;
         }
         if hov > 0.0 || down > 0.0 {
-            paint.rect_filled(plate(1.0 - 0.04 * down), 18.0, Color32::from_white_alpha((26.0 * hov + 22.0 * down) as u8));
+            paint.rect_filled(plate(1.0 - 0.03 * down), ROW_R, Color32::from_white_alpha((20.0 * hov * (1.0 - on) + 14.0 * down) as u8));
         }
         let glyph_col = if sel { Color32::WHITE } else { pal.side_muted };
         let text_col = if sel { Color32::WHITE } else { pal.side_text };
         let gx = rect.left() + 24.0; // fixed column: icon and name stay put, the sidebar edge uncovers the name
         paint.text(pos2(gx, rect.center().y.round()), egui::Align2::CENTER_CENTER, item.glyph, FontId::new(16.0, th::icons()), glyph_col);
         if w > 120.0 {
-            let font = if sel { FontId::new(14.0, th::semibold()) } else { FontId::proportional(14.0) };
+            let font = FontId::new(14.0, if sel { th::semibold() } else { th::medium() });
             paint.with_clip_rect(rect).text(pos2(rect.left() + 46.0, rect.center().y.round()), egui::Align2::LEFT_CENTER, item.label, font, text_col.gamma_multiply(((w - 120.0) / 128.0).clamp(0.0, 1.0)));
         }
         if resp.on_hover_text(item.tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -710,60 +785,82 @@ impl App {
 
     // ------------------------------------------------------------ Home
 
+    /// Two columns (one under the other in a narrow window): left what to do, right what the PC is doing now,
+    /// ending at the same height; this PC's parts across the full width below.
     fn home(&mut self, ui: &mut Ui) {
-        let pal = p();
-        // hero
-        let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 150.0), Sense::hover());
-        let paint = ui.painter();
-        paint.add(th::glass(rect, 24.0, pal.card_bg));
-        th::blob(paint, rect.right_center() - vec2(rect.height() * 0.62, 0.0), rect.height() * 0.5 - 2.0, pal.accent, 0.5);
-        let g1 = paint.layout_no_wrap("HOME".into(), FontId::new(11.0, th::display_bold()), pal.side_muted);
-        let g2 = paint.layout_no_wrap("Your PC, tuned.".into(), FontId::new(34.0, th::display_bold()), Color32::WHITE);
-        let g3 = paint.layout_no_wrap("See how it is doing and set it up for gaming with one click.".into(), FontId::proportional(13.0), pal.side_text);
-        let total = g1.size().y + 4.0 + g2.size().y + 4.0 + g3.size().y;
-        let mut y = rect.center().y - total / 2.0;
-        let x = rect.left() + 26.0;
-        for (g, gap) in [(g1, 4.0), (g2, 4.0), (g3, 0.0)] {
-            let h = g.size().y;
-            paint.galley(pos2(x, y), g, Color32::WHITE);
-            y += h + gap;
+        let (gap, full) = (16.0, ui.available_width());
+        if full < 720.0 {
+            self.home_main(ui);
+            self.home_side(ui, GRAPH_MIN, false);
+            self.home_pc(ui);
+            return;
         }
-        ui.add_space(8.0);
+        // the graphs take the left column's spare height, measured on the previous frame
+        let key = Id::new("home-cols");
+        let (left_h, right_h, graph_was) = ui.ctx().data(|d| d.get_temp::<(f32, f32, f32)>(key)).unwrap_or((0.0, 0.0, GRAPH_MIN));
+        let natural = right_h - 3.0 * (graph_was - GRAPH_MIN);
+        let graph = (GRAPH_MIN + (left_h - natural) / 3.0).max(GRAPH_MIN).round();
+        let side = ((full - gap) * 0.42).floor();
+        let mut heights = [0.0; 2];
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            for (i, width) in [full - gap - side, side].into_iter().enumerate() {
+                heights[i] = ui
+                    .allocate_ui_with_layout(vec2(width, 0.0), Layout::top_down(Align::Min), |ui| {
+                        ui.set_width(width);
+                        if i == 0 { self.home_main(ui) } else { self.home_side(ui, graph, true) }
+                    })
+                    .response
+                    .rect
+                    .height();
+            }
+        });
+        ui.ctx().data_mut(|d| d.insert_temp(key, (heights[0], heights[1], graph)));
+        if (graph - graph_was).abs() > 0.5 {
+            ui.ctx().request_repaint();
+        }
+        self.home_pc(ui);
+    }
 
-        // status card
+    /// Left column of Home: the recommended settings, what fills the system drive, where to go next.
+    fn home_main(&mut self, ui: &mut Ui) {
+        let pal = p();
         let (total, todo) = self.recommended_todo();
         let ready = self.states_loaded;
         let all_set = ready && todo.is_empty();
-        let mut optimize = false;
-        let mut see_all = false;
-        th::card(ui, (16, 20, 22, 20), |ui| {
+        let (mut optimize, mut see_all) = (false, false);
+        home_heading(ui, "Gaming setup", true);
+        th::card(ui, (13, 16, 16, 16), |ui| {
+            let title = if !ready { "Checking your settings\u{2026}".to_string() } else if all_set { "Your PC is set up for gaming".to_string() } else { format!("{} of {total} recommended settings are still off", todo.len()) };
+            ui.label(dsb(title, 19.0));
+            ui.add_space(3.0);
+            ui.label(rt(if !ready { "This takes a moment." } else if all_set { "Every recommended setting is on." } else { "Optimize now switches them on. You see the list first." }, 13.0).color(home_sub()));
+            // one tick per recommended setting, filled for each one that is on, outlined for each one still off
+            if total > 0 {
+                ui.add_space(14.0);
+                let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 8.0), Sense::hover());
+                let lit = if ready { total - todo.len() } else { 0 };
+                let w = (bar.width() - 3.0 * (total - 1) as f32) / total as f32;
+                for i in 0..total {
+                    let tick = Rect::from_min_size(pos2(bar.left() + i as f32 * (w + 3.0), bar.top()), vec2(w, 8.0));
+                    if i < lit {
+                        ui.painter().rect_filled(tick, 2.0, pal.accent);
+                    } else {
+                        ui.painter().rect_stroke(tick, 2.0, Stroke::new(1.0, Color32::from_white_alpha(0x40)), StrokeKind::Inside);
+                    }
+                }
+            }
+            ui.add_space(14.0);
             ui.horizontal(|ui| {
-                let (tile, _) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::hover());
-                ui.painter().rect_filled(tile, th::nested(th::R_PANEL, 8.0), if all_set { th::success_soft() } else { pal.accent_soft });
-                ui.painter().text(tile.center(), egui::Align2::CENTER_CENTER, if all_set { "\u{E73E}" } else { "\u{E945}" }, FontId::new(22.0, th::icons()), if all_set { th::SUCCESS } else { pal.accent });
-                ui.add_space(10.0);
-                let avail = ui.available_width();
-                ui.vertical(|ui| {
-                    ui.set_max_width((avail - 360.0).max(120.0));
-                    let title = if !ready { "Checking your settings\u{2026}".to_string() } else if all_set { "Your PC is set up for gaming".to_string() } else { format!("{} of {total} recommended settings are still off", todo.len()) };
-                    ui.label(dsb(title, 20.0));
-                    ui.add_space(4.0);
-                    ui.label(rt(if !ready { "This takes a moment." } else if all_set { "Every recommended setting is on." } else { "Optimize now switches them on. You see the list first." }, 12.0).color(text2()));
-                });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    if th::button(ui, "See all settings", false, (14.0, 8.0, 14.0, 9.0)).clicked() {
-                        see_all = true;
-                    }
-                    if ready && !all_set && th::button(ui, "Optimize now", true, (18.0, 8.0, 18.0, 9.0)).clicked() {
-                        optimize = true;
-                    }
-                });
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if ready && !all_set && th::button(ui, "Optimize now", true, th::BTN).clicked() {
+                    optimize = true;
+                }
+                if th::button(ui, "See all settings", false, th::BTN).clicked() {
+                    see_all = true;
+                }
             });
         });
-        if let Some((msg, ok)) = self.status.take() {
-            crate::notice::post(ui.ctx(), msg, ok);
-        }
         if optimize {
             self.confirm_optimize = true;
         }
@@ -771,132 +868,128 @@ impl App {
             self.page = Page::Optimize;
         }
 
-        th::section(ui, "Right now");
-        let ram = pccheck::memory_now();
-        let cpu = self.cpu_hist.last().copied();
-        let (ram_h, cpu_h, gpu_h) = (self.ram_hist.clone(), self.cpu_hist.clone(), self.gpu_hist.clone());
-        let gpu = self.gpu;
-        grid3(ui, |ui, i| {
-            th::card(ui, (12, 14, 18, 10), |ui| {
-                let (glyph, label) = [("\u{E950}", "Processor"), ("\u{E7F4}", "Graphics"), ("\u{E964}", "Memory")][i];
-                ui.horizontal(|ui| {
-                    ui.label(ico(glyph, 16.0).color(th::TEXT));
-                    ui.add_space(2.0);
-                    ui.label(rt(label, 12.0).color(text2()));
-                });
-                ui.add_space(6.0);
-                let dash = "\u{2014}".to_string();
-                let (value, l1, l2, hist): (String, String, String, &[f32]) = match i {
-                    0 => {
-                        let temp = gpu.and_then(|g| g.cpu_temp).map(|t| {
-                            let mut s = format!("{t:.0} °C");
-                            if let Some(p) = gpu.and_then(|g| g.cpu_power_w) {
-                                s.push_str(&format!(" · {p:.0} W"));
-                            }
-                            s
-                        });
-                        (cpu.map(|c| format!("{c:.0}%")).unwrap_or(dash), "Load across all cores".into(), temp.unwrap_or_else(|| "Temperature unavailable".into()), &cpu_h)
-                    }
-                    1 => match gpu.and_then(|g| g.gpu_load.map(|l| (g, l))) {
-                        Some((g, load)) => {
-                            let mut l1 = Vec::new();
-                            if let Some(t) = g.gpu_temp {
-                                l1.push(format!("{t:.0} °C"));
-                            }
-                            if let Some(c) = g.gpu_clock_mhz {
-                                l1.push(format!("{c:.0} MHz"));
-                            }
-                            if let Some(p) = g.gpu_power_w {
-                                l1.push(format!("{p:.0} W"));
-                            }
-                            let l2 = match (g.vram_used_mb, g.vram_total_mb) {
-                                (Some(u), Some(t)) => format!("{:.1} / {:.1} GB video memory", u / 1024.0, t / 1024.0),
-                                _ => String::new(),
-                            };
-                            (format!("{load:.0}%"), if l1.is_empty() { "Graphics load".into() } else { l1.join(" · ") }, l2, &gpu_h[..])
-                        }
-                        None => (dash, "Reading the graphics card…".into(), String::new(), &[]),
-                    },
-                    _ => match ram {
-                        Some((used, tot, free, load)) => (format!("{load}%"), format!("{used:.1} / {tot:.1} GB in use"), format!("{free:.1} GB free"), &ram_h),
-                        None => (dash, String::new(), String::new(), &[]),
-                    },
-                };
-                ui.label(dsb(value, 30.0));
-                ui.label(rt(l1, 12.0).color(text2()));
-                if !l2.is_empty() {
-                    ui.add_space(2.0);
-                    ui.label(rt(l2, 12.0).color(text3()));
-                }
-                ui.add_space(8.0);
-                th::spark(ui, hist, 34.0);
-            });
-        });
+        home_heading(ui, "Storage", false);
+        crate::storagecard::ui(ui, &self.engine, window_shown());
 
-        th::section(ui, "PC check");
-        self.pc_check(ui);
-
-        th::section(ui, "What next");
+        home_heading(ui, "What next", false);
         let mut go = None;
-        grid3(ui, |ui, i| {
-            let (glyph, title, sub, page) = [
+        th::group(ui, |ui| {
+            let rows = [
                 ("\u{E7FC}", "Add your games", "Per-game settings and the game booster", Page::Games),
                 ("\u{E839}", "Test your internet", "Speed, ping and connection repair", Page::Vpn),
                 ("\u{E74D}", "Free up space", "Junk cleaner and startup programs", Page::Tools),
-            ][i];
-            let r = ui.scope(|ui| {
-                th::card(ui, (10, 14, 16, 14), |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(ico(glyph, 20.0).color(th::TEXT));
-                        ui.add_space(6.0);
-                        ui.vertical(|ui| {
-                            ui.label(sb(title, 14.0));
-                            ui.label(rt(sub, 12.0).color(text2()));
+            ];
+            for (i, (glyph, title, sub, page)) in rows.into_iter().enumerate() {
+                let slot = ui.painter().add(egui::Shape::Noop); // the hover tint goes under the row's text
+                let r = ui.scope(|ui| {
+                    th::card(ui, (10, 11, 14, 11), |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(ico(glyph, 18.0).color(th::TEXT));
+                            ui.add_space(6.0);
+                            ui.vertical(|ui| {
+                                ui.label(th::md(title, 14.0));
+                                ui.add_space(1.0);
+                                ui.label(rt(sub, 13.0).color(home_sub()));
+                            });
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.label(ico("\u{E76C}", 11.0).color(text3())));
                         });
                     });
                 });
-            });
-            let resp = ui.interact(r.response.rect, Id::new(("tile", i)), Sense::click());
-            if resp.hovered() {
-                ui.painter().rect_filled(r.response.rect, 14.0, Color32::from_white_alpha(13));
-            }
-            if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                go = Some(page);
+                let resp = ui.interact(r.response.rect, Id::new(("tile", i)), Sense::click());
+                let hov = th::anim(ui.ctx(), resp.id.with("hover"), resp.hovered(), th::HOVER);
+                if hov > 0.0 {
+                    ui.painter().set(slot, egui::Shape::rect_filled(r.response.rect.shrink(3.0), th::nested(th::R_CARD, 3.0), Color32::from_white_alpha((16.0 * hov) as u8)));
+                }
+                if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    go = Some(page);
+                }
             }
         });
         if let Some(pg) = go {
             self.page = pg;
         }
+    }
 
-        th::section(ui, "This PC");
+    /// Right column of Home: the live readings on one plate, each with a history graph `graph` high.
+    fn home_side(&mut self, ui: &mut Ui, graph: f32, first: bool) {
+        home_heading(ui, "Right now", first);
+        let dash = || "\u{2014}".to_string();
+        let gpu = self.gpu;
+        // label, the big value, two lines under it, history
+        let mut rows: Vec<(&str, String, String, String, &[f32])> = Vec::with_capacity(3);
+        let glyphs = ["\u{E950}", "\u{F211}", "\u{E964}"]; // chip, graphics card, memory module
+        let temp = gpu.and_then(|g| g.cpu_temp).map(|t| match gpu.and_then(|g| g.cpu_power_w) {
+            Some(p) => format!("{t:.0} °C, {p:.0} W"),
+            None => format!("{t:.0} °C"),
+        });
+        rows.push(("Processor", self.cpu_hist.last().map_or_else(dash, |c| format!("{c:.0}%")), "Load across all cores".into(), temp.unwrap_or_else(|| "Temperature unavailable".into()), &self.cpu_hist));
+        rows.push(match gpu.and_then(|g| g.gpu_load.map(|l| (g, l))) {
+            Some((g, load)) => {
+                let parts: Vec<String> = [g.gpu_temp.map(|t| format!("{t:.0} °C")), g.gpu_clock_mhz.map(|c| format!("{c:.0} MHz")), g.gpu_power_w.map(|p| format!("{p:.0} W"))].into_iter().flatten().collect();
+                let memory = match (g.vram_used_mb, g.vram_total_mb) {
+                    (Some(u), Some(t)) => format!("{:.1} / {:.1} GB video memory", u / 1024.0, t / 1024.0),
+                    _ => String::new(),
+                };
+                ("Graphics", format!("{load:.0}%"), if parts.is_empty() { "Graphics load".into() } else { parts.join(", ") }, memory, &self.gpu_hist[..])
+            }
+            None => ("Graphics", dash(), "Reading the graphics card\u{2026}".into(), String::new(), &[]),
+        });
+        rows.push(match pccheck::memory_now() {
+            Some((used, tot, free, load)) => ("Memory", format!("{load}%"), format!("{used:.1} / {tot:.1} GB in use"), format!("{free:.1} GB free"), &self.ram_hist),
+            None => ("Memory", dash(), String::new(), String::new(), &[]),
+        });
+        th::group(ui, |ui| {
+            for ((label, value, l1, l2, hist), glyph) in rows.into_iter().zip(glyphs) {
+                th::card(ui, (10, 11, 14, 10), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(ico(glyph, 18.0).color(th::TEXT));
+                        ui.add_space(2.0);
+                        ui.label(th::md(label, 14.0).color(th::TEXT));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| ui.label(dsb(value, 24.0)));
+                    });
+                    for line in [l1, l2] {
+                        if !line.is_empty() {
+                            ui.label(rt(line, 13.0).color(home_sub()));
+                        }
+                    }
+                    ui.add_space(8.0);
+                    th::spark_filled(ui, hist, graph);
+                });
+            }
+        });
+    }
+
+    /// Full width under Home's columns: this PC's parts on one plate, three cells a row. Long names wrap.
+    fn home_pc(&mut self, ui: &mut Ui) {
+        home_heading(ui, "This PC", false);
         let pc = self.this_pc.clone().unwrap_or_default();
-        th::card(ui, (14, 16, 20, 6), |ui| {
-            let dash = |s: &str| if s.is_empty() { "\u{2026}".to_string() } else { s.to_string() };
-            let cols = [
-                [("Processor", dash(&pc.cpu)), ("Cores", dash(&pc.cores)), ("Graphics", dash(&pc.gpu))],
-                [("Memory", dash(&pc.memory)), ("Windows", dash(&pc.windows)), ("Power plan", dash(&pc.power_plan))],
-            ];
-            // Two equal halves, a 90 px key column and a value that takes the rest (XAML: Auto | * | Auto | *).
-            let half = ((ui.available_width() - 24.0) / 2.0).floor();
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = 24.0;
-                for col in cols {
-                    ui.allocate_ui_with_layout(vec2(half, 0.0), Layout::top_down(Align::Min), |ui| {
-                        ui.set_width(half);
-                        for (key, val) in col {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = 0.0;
-                                ui.allocate_ui_with_layout(vec2(90.0, 18.0), Layout::left_to_right(Align::Center), |ui| {
-                                    ui.set_min_width(90.0);
-                                    ui.label(rt(key, 12.0).color(text2()));
-                                });
-                                ui.add(egui::Label::new(rt(val, 14.0)).truncate());
+        let rows = [
+            [("Processor", short_part_name(&pc.cpu)), ("Cores", pc.cores), ("Memory", pc.memory)],
+            [("Graphics", short_part_name(&pc.gpu)), ("Windows", pc.windows), ("Power plan", pc.power_plan)],
+        ];
+        th::group(ui, |ui| {
+            for row in rows {
+                th::card(ui, (10, 12, 14, 12), |ui| {
+                    let (gap, full) = (24.0, ui.available_width());
+                    let cell = ((full - 2.0 * gap) / 3.0).floor();
+                    let r = ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = gap;
+                        for (key, val) in row {
+                            ui.allocate_ui_with_layout(vec2(cell, 0.0), Layout::top_down(Align::Min), |ui| {
+                                ui.set_width(cell);
+                                ui.label(rt(key, 13.0).color(home_sub()));
+                                ui.add_space(3.0);
+                                ui.add(egui::Label::new(rt(if val.is_empty() { "\u{2026}".into() } else { val }, 14.0)).wrap());
                             });
-                            ui.add_space(10.0);
                         }
                     });
-                }
-            });
+                    let rect = r.response.rect;
+                    for k in 1..3 {
+                        let x = rect.left() + k as f32 * (cell + gap) - gap / 2.0;
+                        ui.painter().line_segment([pos2(x, rect.top() - 4.0), pos2(x, rect.bottom() + 4.0)], Stroke::new(th::px(), Color32::from_white_alpha(0x1C)));
+                    }
+                });
+            }
         });
     }
 
@@ -904,42 +997,46 @@ impl App {
         let mut fix = None;
         let mut run = false;
         let busy = self.check_rx.is_some();
-        th::card(ui, (10, 16, 16, 16), |ui| {
-            ui.horizontal(|ui| {
+        // one plate: the summary with its button, then a row per finding
+        th::group(ui, |ui| {
+            th::card(ui, (10, 12, 14, 12), |ui| {
                 let summary = match (&self.checks, busy) {
                     (_, true) => "Checking\u{2026}".to_string(),
                     (Some(c), _) => pccheck::summary(c),
                     _ => "Checks power plan, refresh rate, memory, temperatures, drive space, startup programs, background load and your connection. Takes about ten seconds.".to_string(),
                 };
+                // the text is laid out first so the row knows its height and the button can sit centred beside it
                 let avail = ui.available_width();
-                ui.vertical(|ui| {
-                    ui.set_max_width((avail - 200.0).max(120.0));
-                    ui.label(rt(summary, 12.0).color(text2()));
-                });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if !busy && th::button(ui, "Run check", true, th::BTN).clicked() {
+                let btn = if busy { None } else { Some(th::BTN.0 + th::BTN.2 + ui.painter().layout_no_wrap("Run check".into(), FontId::new(14.0, th::medium()), th::TEXT).size().x) };
+                let text_w = avail - btn.map_or(0.0, |b| b + 16.0);
+                let galley = egui::WidgetText::from(rt(summary, 13.0).color(home_sub())).into_galley(ui, Some(egui::TextWrapMode::Wrap), text_w, egui::TextStyle::Body);
+                let row_h = galley.size().y.max(if busy { 0.0 } else { 34.0 });
+                ui.allocate_ui_with_layout(vec2(avail, row_h), Layout::right_to_left(Align::Center), |ui| {
+                    ui.set_min_height(row_h);
+                    if !busy && th::button(ui, "Run check", false, th::BTN).clicked() {
                         run = true;
                     }
+                    ui.with_layout(Layout::left_to_right(Align::Center), |ui| ui.label(galley));
                 });
             });
-            if let Some(list) = &self.checks {
-                ui.add_space(14.0);
-                for ch in list {
+            for ch in self.checks.iter().flatten() {
+                th::card(ui, (10, 12, 14, 12), |ui| {
                     ui.horizontal_top(|ui| {
                         let (txt, col, bg) = match ch.level {
                             Level::Ok => ("OK", th::SUCCESS, th::success_soft()),
                             Level::Tip => ("Tip", th::WARNING, th::warning_soft()),
                             Level::Warn => ("Check", th::WARNING, th::warning_soft()),
                         };
-                        let (chip, _) = ui.allocate_exact_size(vec2(56.0, 20.0), Sense::hover());
-                        ui.painter().rect_filled(chip, chip.height() / 2.0, bg);
+                        let (chip, _) = ui.allocate_exact_size(vec2(52.0, 20.0), Sense::hover());
+                        ui.painter().rect_filled(chip, 6.0, bg);
                         ui.painter().text(chip.center(), egui::Align2::CENTER_CENTER, txt, FontId::new(12.0, th::semibold()), col);
-                        ui.add_space(14.0);
+                        ui.add_space(12.0);
                         let avail = ui.available_width();
                         ui.vertical(|ui| {
                             ui.set_max_width((avail - 150.0).max(120.0));
-                            ui.label(sb(ch.title, 14.0));
-                            ui.label(rt(&ch.message, 12.0).color(text2()));
+                            ui.label(th::md(ch.title, 14.0));
+                            ui.add_space(2.0);
+                            ui.label(rt(&ch.message, 13.0).color(home_sub()));
                         });
                         if let Some(f) = ch.fix {
                             ui.with_layout(Layout::right_to_left(Align::Min), |ui| {
@@ -949,8 +1046,7 @@ impl App {
                             });
                         }
                     });
-                    ui.add_space(12.0);
-                }
+                });
             }
         });
         if let (Some(f), true) = (fix, self.work_rx.is_none()) {
@@ -1005,6 +1101,32 @@ impl App {
         }
     }
 
+    /// Every tweak MyTune has a backup for, in the order the Restore list shows them.
+    fn revert_all_modal(&mut self, ctx: &egui::Context) {
+        let idxs: Vec<usize> = self.ids_in_store.iter().filter_map(|id| self.tweaks.iter().position(|t| &t.id == id)).collect();
+        let m = egui::Modal::new(Id::new("revert_all")).show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.label(dsb("Revert all changes?", 20.0));
+            ui.add_space(4.0);
+            ui.label(rt(format!("{} tweaks go back to how they were before MyTune changed them.", idxs.len()), 12.0).color(text2()));
+            ui.add_space(10.0);
+            let mut go = false;
+            ui.horizontal(|ui| {
+                go = th::button(ui, "Revert all", true, (18.0, 8.0, 18.0, 9.0)).clicked();
+                if th::button(ui, "Cancel", false, (14.0, 8.0, 14.0, 9.0)).clicked() {
+                    ui.close();
+                }
+            });
+            go
+        });
+        if m.inner {
+            self.run_work(idxs, false);
+            self.confirm_revert_all = false;
+        } else if m.should_close() {
+            self.confirm_revert_all = false;
+        }
+    }
+
     // ------------------------------------------------------------ list pages
 
     fn tweak_list(&mut self, ui: &mut Ui) {
@@ -1019,51 +1141,56 @@ impl App {
         if self.page == Page::Customize && (q.is_empty() || "taskbar look clear tinted transparent".contains(&q)) {
             self.taskbar.ui(ui);
         }
-        let mut last_group = "";
+        if self.page == Page::Debloat && (q.is_empty() || "auto debloat remove uninstall preinstalled apps".contains(&q)) {
+            crate::debloatapps::ui(ui);
+        }
+        // the tweaks in display order, cut into sections: each section is one plate of rows
+        let mut sections: Vec<(&str, Vec<usize>)> = Vec::new();
         for cat in 0..3 {
-        let mut heading_done = false;
-        for &i in &order {
-            let t = &self.tweaks[i];
-            if t.removed || page_of(&t.id) != Some(self.page) {
-                continue;
-            }
-            if !q.is_empty() && !t.title.to_lowercase().contains(&q) && !t.description.to_lowercase().contains(&q) {
-                continue;
-            }
-            let c = if t.flags.has(TweakFlags::SECURITY_RISK) { 1 } else if t.flags.has(TweakFlags::EXPERIMENTAL) { 2 } else { 0 };
-            if (categorized && c != cat) || (!categorized && cat > 0) {
-                continue;
-            }
-            if categorized && !heading_done {
-                heading_done = true;
-                th::section_gap(ui, ["Normal tweaks", "Risky", "Experimental"][cat]);
-            }
-            if !categorized {
-                let g = mytune_core::layout::placement(&t.id).map_or("", |p| p.group);
-                if g != last_group {
-                    last_group = g;
-                    th::section_gap(ui, g);
+            for &i in &order {
+                let t = &self.tweaks[i];
+                if t.removed || page_of(&t.id) != Some(self.page) {
+                    continue;
+                }
+                if !q.is_empty() && !t.title.to_lowercase().contains(&q) && !t.description.to_lowercase().contains(&q) {
+                    continue;
+                }
+                let c = if t.flags.has(TweakFlags::SECURITY_RISK) { 1 } else if t.flags.has(TweakFlags::EXPERIMENTAL) { 2 } else { 0 };
+                if (categorized && c != cat) || (!categorized && cat > 0) {
+                    continue;
+                }
+                let heading = if categorized { ["Normal tweaks", "Risky", "Experimental"][cat] } else { mytune_core::layout::placement(&t.id).map_or("", |p| p.group) };
+                match sections.last_mut() {
+                    Some((h, rows)) if *h == heading => rows.push(i),
+                    _ => sections.push((heading, vec![i])),
                 }
             }
-            let on = self.applied.get(&t.id).copied().unwrap_or(false);
-            th::card(ui, (10, 16, 16, 16), |ui| {
-                ui.horizontal(|ui| {
-                    let avail = ui.available_width();
-                    ui.vertical(|ui| {
-                        ui.set_max_width((avail - 64.0).max(120.0));
-                        ui.label(sb(&t.title, 14.0));
-                        ui.label(rt(&t.description, 12.0).color(text2()));
-                        th::flag_chips(ui, t.flags);
-                    });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if th::switch(ui, on).on_hover_text(&t.details).clicked() {
-                            click = Some((i, !on));
-                        }
-                    });
-                });
-            });
-            ui.add_space(8.0);
         }
+        for (heading, rows) in sections {
+            th::section_gap(ui, heading);
+            th::group(ui, |ui| {
+                for i in rows {
+                    let t = &self.tweaks[i];
+                    let on = self.applied.get(&t.id).copied().unwrap_or(false);
+                    th::card(ui, (10, 13, 14, 13), |ui| {
+                        ui.horizontal(|ui| {
+                            let avail = ui.available_width();
+                            ui.vertical(|ui| {
+                                ui.set_max_width((avail - 64.0).max(120.0));
+                                ui.label(th::md(&t.title, 14.0));
+                                ui.add_space(2.0);
+                                ui.label(rt(&t.description, 12.5).color(text2()));
+                                th::flag_chips(ui, t.flags);
+                            });
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if th::switch(ui, on).on_hover_text(&t.details).clicked() {
+                                    click = Some((i, !on));
+                                }
+                            });
+                        });
+                    });
+                }
+            });
         }
         if let Some((i, on)) = click {
             self.set(i, on);
@@ -1077,29 +1204,52 @@ impl App {
             });
             return;
         }
-        let mut revert = None;
-        for id in &self.ids_in_store {
-            let idx = self.tweaks.iter().position(|t| &t.id == id);
-            th::card(ui, (10, 16, 16, 16), |ui| {
-                ui.horizontal(|ui| {
-                    ui.set_min_height(ROW_H);
-                    ui.label(sb(idx.map(|i| self.tweaks[i].title.as_str()).unwrap_or(id), 14.0));
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| match idx {
-                        Some(i) => {
-                            if th::button(ui, "Undo", false, th::BTN).clicked() {
-                                revert = Some(i);
-                            }
-                        }
-                        None => {
-                            ui.label(rt("not available in this UI yet", 12.0).color(text3()));
-                        }
-                    });
+        let (mut revert, mut game_undo) = (None, None);
+        th::card(ui, (10, 16, 16, 16), |ui| {
+            ui.horizontal(|ui| {
+                ui.set_min_height(ROW_H);
+                ui.label(sb(format!("{} changes by MyTune", self.ids_in_store.len()), 14.0));
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if th::button(ui, "Revert all", true, th::BTN).clicked() {
+                        self.confirm_revert_all = true;
+                    }
                 });
             });
-            ui.add_space(8.0);
-        }
+        });
+        ui.add_space(12.0);
+        th::group(ui, |ui| {
+            for id in &self.ids_in_store {
+                let idx = self.tweaks.iter().position(|t| &t.id == id);
+                // a Game Hub settings profile: not in the tweak list, its title is in the backup
+                let game = (id.starts_with("game:") && id.ends_with(":config")).then(|| self.engine.with_store(|s| s.get_backup(id).map(|b| b.title.clone()))).flatten();
+                th::card(ui, (10, 10, 14, 10), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.set_min_height(ROW_H);
+                        ui.label(th::md(idx.map(|i| self.tweaks[i].title.as_str()).or(game.as_deref()).unwrap_or(id), 14.0));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| match idx {
+                            Some(i) => {
+                                if th::button(ui, "Undo", false, th::BTN).clicked() {
+                                    revert = Some(i);
+                                }
+                            }
+                            None if game.is_some() => {
+                                if th::button(ui, "Undo", false, th::BTN).clicked() {
+                                    game_undo = Some((id.clone(), game.clone().unwrap_or_default()));
+                                }
+                            }
+                            None => {
+                                ui.label(rt("not available in this UI yet", 12.0).color(text3()));
+                            }
+                        });
+                    });
+                });
+            }
+        });
         if let Some(i) = revert {
             self.set(i, false);
+        }
+        if let Some((id, title)) = game_undo {
+            self.games.revert(id, title);
         }
     }
 }
@@ -1107,30 +1257,6 @@ impl App {
 /// Height of a `th::BTN` button. A row that starts with a title and ends with a button takes this height first:
 /// egui centres each item in the row as it stood when the item was added, so the title sat above the middle.
 const ROW_H: f32 = 30.0;
-
-/// UniformGrid with 3 columns and 8 px gaps; cells share the tallest height (kept from the last frame).
-fn grid3(ui: &mut Ui, mut f: impl FnMut(&mut Ui, usize)) {
-    let w = (ui.available_width() - 16.0) / 3.0;
-    let id = ui.id().with(("grid3", ui.next_auto_id()));
-    let stored: f32 = ui.data(|d| d.get_temp(id)).unwrap_or(0.0);
-    let mut tallest = 0.0f32;
-    ui.horizontal_top(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        for i in 0..3 {
-            th::set_min_card_height(stored);
-            let r = ui.allocate_ui_with_layout(vec2(w, 0.0), Layout::top_down(Align::Min), |ui| {
-                ui.set_width(w);
-                f(ui, i);
-            });
-            tallest = tallest.max(r.response.rect.height());
-        }
-    });
-    th::set_min_card_height(0.0);
-    if (tallest - stored).abs() > 0.5 {
-        ui.data_mut(|d| d.insert_temp(id, tallest));
-        ui.ctx().request_repaint();
-    }
-}
 
 /// Holds the frame rate at the display's refresh rate. With V-Sync forced off in the graphics driver (common
 /// on a gaming PC) every mouse move and every animation frame drew at once: 500 to 800 frames a second and
@@ -1212,5 +1338,62 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         FRAME_US.store((_frame.info().cpu_usage.unwrap_or(0.0) * 1e6) as u32, std::sync::atomic::Ordering::Relaxed);
         self.ui(ui);
+    }
+}
+
+/// Smallest height of a history graph on Home.
+const GRAPH_MIN: f32 = 40.0;
+
+/// Secondary text on Home: brighter than `text2` there, the page is read by people new to PCs.
+fn home_sub() -> Color32 { Color32::from_white_alpha(0xD9) }
+
+/// `th::heading` for Home: 13 px and as bright as `home_sub`.
+fn home_heading(ui: &mut Ui, text: &str, first: bool) {
+    // The headline text is no longer drawn (user's choice): only the gap between cards is left.
+    let _ = text;
+    if !first {
+        ui.add_space(16.0);
+    }
+}
+
+/// A processor or graphics card name without marks and filler: "13th Gen Intel(R) Core(TM) i5-13600KF" -> "Intel Core i5-13600KF".
+fn short_part_name(name: &str) -> String {
+    let mut s = name.split('@').next().unwrap_or("").to_string();
+    for mark in ["(R)", "(r)", "(TM)", "(tm)", "\u{AE}", "\u{2122}"] {
+        s = s.replace(mark, " ");
+    }
+    let words: Vec<&str> = s.split_whitespace().collect();
+    let ordinal = |w: &str| {
+        let digits = w.trim_end_matches(char::is_alphabetic);
+        !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) && ["st", "nd", "rd", "th"].contains(&&w[digits.len()..])
+    };
+    let mut out = Vec::with_capacity(words.len());
+    let mut i = 0;
+    while i < words.len() {
+        if ordinal(words[i]) && words.get(i + 1).is_some_and(|w| w.eq_ignore_ascii_case("gen")) {
+            i += 2;
+            continue;
+        }
+        out.push(words[i]);
+        i += 1;
+    }
+    if out.last().is_some_and(|w| w.eq_ignore_ascii_case("cpu")) {
+        out.pop();
+    }
+    out.join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::short_part_name;
+
+    #[test]
+    fn short_part_names() {
+        assert_eq!(short_part_name("13th Gen Intel(R) Core(TM) i5-13600KF"), "Intel Core i5-13600KF");
+        assert_eq!(short_part_name("Intel(R) Core(TM) i7-8700 CPU @ 3.20GHz"), "Intel Core i7-8700");
+        assert_eq!(short_part_name("NVIDIA GeForce RTX 3070 Ti"), "NVIDIA GeForce RTX 3070 Ti");
+        assert_eq!(short_part_name("AMD Ryzen 7 5800X3D 8-Core Processor  "), "AMD Ryzen 7 5800X3D 8-Core Processor");
+        assert_eq!(short_part_name("Intel(R) UHD Graphics 770"), "Intel UHD Graphics 770");
+        assert_eq!(short_part_name(""), "");
     }
 }

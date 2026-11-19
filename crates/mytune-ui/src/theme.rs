@@ -1,6 +1,7 @@
-//! Look of MyTune: palette derived from the accent exactly like `Services/Accent.cs`,
-//! fonts and sizes from `Themes/Fluent.xaml`. Glass look (since 2026-11-12): rounded, translucent panels with a
-//! thin bright rim over soft colour blobs (`backdrop`); the blobs take the accent's hue.
+//! Look of MyTune: palette derived from the accent exactly like `Services/Accent.cs`. Glass look: translucent
+//! panels over soft colour blobs (`backdrop`) that take the accent's hue. One system for the whole app: the type
+//! is Inter, corners come from one scale of radii and are all the same smooth curve, every plate has a one-pixel
+//! rim lit from above, and everything that moves rides a spring (`spring`).
 use eframe::egui::{self, Color32, CornerRadius, FontFamily, FontId, Margin, Pos2, Rect, RichText, Stroke, StrokeKind, Ui, Vec2, pos2, vec2};
 use std::sync::RwLock;
 
@@ -35,15 +36,6 @@ pub const DANGER: Color32 = Color32::from_rgb(0xFF, 0x7A, 0x6B);
 pub fn success_soft() -> Color32 { Color32::from_rgba_unmultiplied(0x6C, 0xCB, 0x5F, 0x26) }
 pub fn warning_soft() -> Color32 { Color32::from_rgba_unmultiplied(0xFF, 0xD4, 0x00, 0x26) }
 pub fn danger_soft() -> Color32 { Color32::from_rgba_unmultiplied(0xFF, 0x7A, 0x6B, 0x26) }
-
-thread_local! {
-    static MIN_H: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
-}
-
-/// Minimum outer height of the next cards (for UniformGrid rows).
-pub fn set_min_card_height(h: f32) {
-    MIN_H.with(|c| c.set(h));
-}
 
 static PAL: RwLock<Option<Palette>> = RwLock::new(None);
 
@@ -138,6 +130,8 @@ pub fn dot(p: &egui::Painter, c: Pos2, r: f32, color: Color32) {
 
 // ---------------------------------------------------------------- fonts
 
+/// Between regular and semibold: button and tab labels, titles of list rows.
+pub fn medium() -> FontFamily { FontFamily::Name("medium".into()) }
 pub fn semibold() -> FontFamily { FontFamily::Name("semibold".into()) }
 pub fn bold() -> FontFamily { FontFamily::Name("bold".into()) }
 pub fn display_semibold() -> FontFamily { FontFamily::Name("dsemibold".into()) }
@@ -146,8 +140,16 @@ pub fn display_bold() -> FontFamily { FontFamily::Name("dbold".into()) }
 pub fn on_light() -> FontFamily { FontFamily::Name("onlight".into()) }
 pub fn icons() -> FontFamily { FontFamily::Name("icons".into()) }
 
-/// "Segoe UI Variable" (Text and Display optical sizes, like the WPF font families) from the system font
-/// `SegUIVar.ttf`; falls back to the static Segoe UI files, then to egui's own font.
+/// Everything is drawn 15% larger than its points (user's choice): more pixels per letter and icon on a 100%
+/// scale screen, where egui's text has no ClearType. Ctrl+plus / Ctrl+minus still change it for the run.
+pub const UI_ZOOM: f32 = 1.15;
+
+/// Inter (variable, SIL Open Font License, `assets/fonts`): the app's typeface, in the exe.
+const INTER: &[u8] = include_bytes!("../assets/fonts/InterVariable.ttf");
+
+/// Inter first, in every weight the app uses (its text and display optical sizes). Behind it "Segoe UI Variable"
+/// from the system font `SegUIVar.ttf` (or the static Segoe UI files) for the scripts Inter lacks, then egui's
+/// own font.
 pub fn install_fonts(ctx: &egui::Context) {
     use egui::epaint::text::VariationCoords;
     let mut fonts = egui::FontDefinitions::default();
@@ -166,7 +168,7 @@ pub fn install_fonts(ctx: &egui::Context) {
     if let Some(bytes) = read("SegUIVar.ttf") {
         let blob = bytes;
         // (family, key, weight, optical size)
-        let variants = [("regular", 400.0, 10.5), ("semibold", 600.0, 10.5), ("bold", 700.0, 10.5), ("dsemibold", 600.0, 36.0), ("dbold", 700.0, 36.0), ("onlight", 560.0, 10.5)];
+        let variants = [("regular", 400.0, 10.5), ("medium", 500.0, 10.5), ("semibold", 600.0, 10.5), ("bold", 700.0, 10.5), ("dsemibold", 600.0, 36.0), ("dbold", 700.0, 36.0), ("onlight", 560.0, 10.5)];
         for (name, wght, opsz) in variants {
             let key = format!("segoe-var-{name}");
             let tweak = egui::FontTweak { coords: VariationCoords::new([(b"wght", wght), (b"opsz", opsz)]), ..Default::default() };
@@ -180,7 +182,7 @@ pub fn install_fonts(ctx: &egui::Context) {
             }
         }
     } else {
-        for (name, file) in [("regular", "segoeui.ttf"), ("semibold", "seguisb.ttf"), ("bold", "segoeuib.ttf"), ("dsemibold", "seguisb.ttf"), ("dbold", "segoeuib.ttf"), ("onlight", "seguisb.ttf")] {
+        for (name, file) in [("regular", "segoeui.ttf"), ("medium", "seguisb.ttf"), ("semibold", "seguisb.ttf"), ("bold", "segoeuib.ttf"), ("dsemibold", "seguisb.ttf"), ("dbold", "segoeuib.ttf"), ("onlight", "seguisb.ttf")] {
             let mut list = base.clone();
             if let Some(b) = read(file) {
                 let key = format!("segoe-static-{name}");
@@ -194,16 +196,29 @@ pub fn install_fonts(ctx: &egui::Context) {
             }
         }
     }
+    // Inter goes in front of each list. Weight and optical size per family; `scale` makes the same point size
+    // come out 6% smaller than Segoe did (Inter's letters are larger for their size), which is also what makes
+    // the whole app a little finer.
+    for (name, wght, opsz) in [("regular", 400.0, 14.0), ("medium", 510.0, 14.0), ("semibold", 600.0, 14.0), ("bold", 700.0, 14.0), ("dsemibold", 620.0, 32.0), ("dbold", 700.0, 32.0), ("onlight", 590.0, 14.0)] {
+        let key = format!("inter-{name}");
+        let tweak = egui::FontTweak { scale: 0.94, coords: VariationCoords::new([(b"wght", wght), (b"opsz", opsz)]), ..Default::default() };
+        add(&mut fonts, &key, egui::FontData::from_static(INTER).tweak(tweak));
+        let family = if name == "regular" { FontFamily::Proportional } else { FontFamily::Name(name.into()) };
+        fonts.families.entry(family).or_default().insert(0, key);
+    }
     let mut list = base;
     if let Some(b) = read("SegoeIcons.ttf") {
-        add(&mut fonts, "segoe-icons", egui::FontData::from_blob(b, 0));
+        // Segoe Fluent Icons are drawn for 16, 20 and 24 pixels: at the app's scale a 16-point icon came out
+        // 18.4 pixels, between two of its sizes, and looked soft. Scaled so that 16 points is 20 pixels.
+        let tweak = egui::FontTweak { scale: 20.0 / (16.0 * UI_ZOOM), ..Default::default() };
+        add(&mut fonts, "segoe-icons", egui::FontData::from_blob(b, 0).tweak(tweak));
         list.insert(0, "segoe-icons".into());
     }
     fonts.families.insert(FontFamily::Name("icons".into()), list);
     // Chat names and messages hold symbols Segoe UI lacks (e.g. U+271E): last-resort fallback, ~1 MB.
     if let Some(b) = read("seguisym.ttf") {
         add(&mut fonts, "segoe-symbols", egui::FontData::from_blob(b, 0));
-        for fam in [FontFamily::Proportional, FontFamily::Name("semibold".into()), FontFamily::Name("bold".into())] {
+        for fam in [FontFamily::Proportional, FontFamily::Name("medium".into()), FontFamily::Name("semibold".into()), FontFamily::Name("bold".into())] {
             if let Some(l) = fonts.families.get_mut(&fam) {
                 l.push("segoe-symbols".into());
             }
@@ -212,7 +227,7 @@ pub fn install_fonts(ctx: &egui::Context) {
     // Emoji in reactions, names and messages: Segoe UI Emoji's outlines (egui draws them one colour). ~12 MB.
     if let Some(b) = read("seguiemj.ttf") {
         add(&mut fonts, "segoe-emoji", egui::FontData::from_blob(b, 0));
-        for fam in [FontFamily::Proportional, FontFamily::Name("semibold".into()), FontFamily::Name("bold".into())] {
+        for fam in [FontFamily::Proportional, FontFamily::Name("medium".into()), FontFamily::Name("semibold".into()), FontFamily::Name("bold".into())] {
             if let Some(l) = fonts.families.get_mut(&fam) {
                 l.push("segoe-emoji".into());
             }
@@ -222,6 +237,7 @@ pub fn install_fonts(ctx: &egui::Context) {
 }
 
 pub fn rt(s: impl Into<String>, size: f32) -> RichText { RichText::new(s).size(size) }
+pub fn md(s: impl Into<String>, size: f32) -> RichText { RichText::new(s).size(size).family(medium()) }
 pub fn sb(s: impl Into<String>, size: f32) -> RichText { RichText::new(s).size(size).family(semibold()) }
 pub fn bd(s: impl Into<String>, size: f32) -> RichText { RichText::new(s).size(size).family(bold()) }
 /// Display optical size (PageTitle, hero, section titles, nav headers, big numbers).
@@ -451,11 +467,64 @@ fn p_accent_hsv() -> (f32, f32) {
     if s < 0.1 { (0.6, 0.55) } else { (h, 1.0) }
 }
 
+// ---------------------------------------------------------------- motion
+
+/// A value that follows `target` like a damped spring, in Apple's two numbers: `response` (seconds, how quick)
+/// and `damping` (1 = settles without passing the target, less = swings past it). It sets off from where it is
+/// and keeps its speed when the target changes, so a motion can be turned round at any moment without a jump.
+/// The first call for an `id` starts at the target (nothing moves when a control first shows).
+pub fn spring(ctx: &egui::Context, id: egui::Id, target: f32, response: f32, damping: f32) -> f32 {
+    let now = ctx.input(|i| i.time);
+    let (x, v, t) = ctx.data(|d| d.get_temp::<(f32, f32, f64)>(id)).unwrap_or((target, 0.0, now));
+    let (x, v) = spring_step(x, v, target, ((now - t) as f32).clamp(0.0, 0.05), response, damping);
+    let rest = (x - target).abs() < 0.0005 && v.abs() < 0.01;
+    if !rest {
+        ctx.request_repaint();
+    }
+    ctx.data_mut(|d| d.insert_temp(id, if rest { (target, 0.0, now) } else { (x, v, now) }));
+    if rest { target } else { x }
+}
+
+/// Place and speed of a spring `dt` seconds on.
+fn spring_step(mut x: f32, mut v: f32, target: f32, dt: f32, response: f32, damping: f32) -> (f32, f32) {
+    let w = std::f32::consts::TAU / response.max(0.01);
+    const STEPS: usize = 8;
+    let h = dt / STEPS as f32;
+    for _ in 0..STEPS {
+        v += (-w * w * (x - target) - 2.0 * damping * w * v) * h;
+        x += v * h;
+    }
+    (x, v)
+}
+
+/// Puts a spring at `x`, at rest (a control that is being dragged holds its spring where the pointer is).
+pub fn spring_set(ctx: &egui::Context, id: egui::Id, x: f32) {
+    let now = ctx.input(|i| i.time);
+    ctx.data_mut(|d| d.insert_temp(id, (x, 0.0f32, now)));
+}
+
+/// Where a spring is now, without moving it on.
+pub fn spring_now(ctx: &egui::Context, id: egui::Id) -> Option<f32> {
+    ctx.data(|d| d.get_temp::<(f32, f32, f64)>(id)).map(|s| s.0)
+}
+
+/// 0..1 for a state that is off or on (hovered, pressed, open): a spring without overshoot.
+pub fn anim(ctx: &egui::Context, id: egui::Id, on: bool, response: f32) -> f32 {
+    spring(ctx, id, if on { 1.0 } else { 0.0 }, response, 1.0).clamp(0.0, 1.0)
+}
+
+/// Response times of the springs: pointer over a control, pointer down on it, a thing that travels (tab thumb,
+/// sidebar).
+pub const HOVER: f32 = 0.16;
+pub const PRESS: f32 = 0.11;
+pub const TRAVEL: f32 = 0.34;
+
 // ---------------------------------------------------------------- glass material
 
 /// The three glass levels, lowest first: a panel on the page, a control on a panel, and what floats over both
-/// (menus, popovers, dialogs). Each is a translucent fill with a bright top-left rim, light from the top inside,
-/// a darker bottom edge and a soft shadow; a higher level is lighter and its shadow reaches further.
+/// (menus, popovers, dialogs). Each is a translucent fill with a one-pixel rim that is brightest along its top
+/// (light falls from above, the same on every plate), a little light inside at the top and a soft shadow; a
+/// higher level is lighter and its shadow reaches further.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Glass {
     Base,
@@ -463,42 +532,46 @@ pub enum Glass {
     Float,
 }
 
-/// Corner radii: panels and cards, dialogs, menus and popovers. Controls are capsules (half their height).
-pub const R_PANEL: f32 = 22.0;
-pub const R_FLOAT: f32 = 22.0;
-pub const R_MENU: f32 = 16.0;
+/// Corner radii, one scale for the whole app: page panels (sidebar, chat), cards and grouped lists, dialogs,
+/// menus and popovers, controls (buttons, fields, tabs, rows). Every corner is the smooth curve of the patched
+/// `epaint` (`rounded_rectangle` in `vendor-src`). Knobs, thumbs and avatars stay round.
+pub const R_PANEL: f32 = 18.0;
+pub const R_CARD: f32 = 14.0;
+pub const R_FLOAT: f32 = 16.0;
+pub const R_MENU: f32 = 12.0;
+pub const R_CTL: f32 = 9.0;
 
 /// Radius of a shape that sits `gap` px inside one of radius `outer`, so both curves share a centre.
 pub fn nested(outer: f32, gap: f32) -> f32 {
-    (outer - gap).max(6.0)
+    (outer - gap).max(4.0)
 }
 
 impl Glass {
     pub fn fill(self) -> Color32 {
         match self {
-            Glass::Base => Color32::from_white_alpha(0x0D),
-            Glass::Raised => Color32::from_white_alpha(0x18),
+            Glass::Base => Color32::from_white_alpha(0x0F),
+            Glass::Raised => Color32::from_white_alpha(0x1A),
             // egui cannot blur what is behind, so what floats is solid: at 85% the text under a menu showed
             // through its rows and neither could be read
-            Glass::Float => tone(0.1),
+            Glass::Float => tone(0.105),
         }
     }
 
     pub fn shadow(self) -> egui::Shadow {
         let (y, blur, a) = match self {
-            Glass::Base => (10, 36, 84),
-            Glass::Raised => (3, 12, 70),
-            Glass::Float => (18, 56, 150),
+            Glass::Base => (6, 20, 60),
+            Glass::Raised => (2, 6, 64),
+            Glass::Float => (16, 48, 140),
         };
         egui::Shadow { offset: [0, y], blur, spread: 0, color: Color32::from_black_alpha(a) }
     }
 
-    /// Opacity of the rim, of the top-left highlight and of the light inside at the top.
+    /// Opacity of the rim at the sides and bottom, of the rim along the top and of the light inside at the top.
     fn light(self) -> (u8, u8, u8) {
         match self {
-            Glass::Base => (0x2A, 0x78, 0x12),
-            Glass::Raised => (0x36, 0x88, 0x18),
-            Glass::Float => (0x3C, 0x88, 0x0E),
+            Glass::Base => (0x1C, 0x40, 0x0C),
+            Glass::Raised => (0x24, 0x4C, 0x18),
+            Glass::Float => (0x26, 0x48, 0x0C),
         }
     }
 }
@@ -506,7 +579,7 @@ impl Glass {
 /// A glass plate of `level`: shadow, `fill` and the light on it (`sheen`).
 pub fn material(rect: Rect, radius: f32, level: Glass, fill: Color32) -> egui::Shape {
     let r = radius.min(rect.height() / 2.0).min(rect.width() / 2.0);
-    let mut shapes = Vec::with_capacity(8);
+    let mut shapes = Vec::with_capacity(4);
     shapes.push(level.shadow().as_shape(rect, CornerRadius::from(r)).into());
     shapes.push(egui::Shape::rect_filled(rect, r, fill));
     sheen_into(&mut shapes, rect, r, level.light(), false);
@@ -520,143 +593,157 @@ pub fn glass(rect: Rect, radius: f32, fill: Color32) -> egui::Shape {
 
 /// Only the light on a glass plate, for a frame egui filled itself (windows, modals): painted over its edge.
 pub fn sheen(p: &egui::Painter, rect: Rect, radius: f32, level: Glass) {
-    let mut shapes = Vec::with_capacity(6);
+    let mut shapes = Vec::with_capacity(2);
     sheen_into(&mut shapes, rect, radius.min(rect.height() / 2.0).min(rect.width() / 2.0), level.light(), true);
     p.add(egui::Shape::Vec(shapes));
 }
 
+/// One physical pixel in points (the scale `backdrop` saw this frame).
+pub fn px() -> f32 {
+    GLOW.with(|g| 1.0 / g.borrow().0.max(0.5))
+}
+
+/// The outline of a rounded rectangle exactly as the tessellator draws it (smooth corners), clockwise.
+fn outline(rect: Rect, r: f32) -> Vec<Pos2> {
+    let mut pts = Vec::new();
+    egui::epaint::tessellator::path::rounded_rectangle(&mut pts, egui::epaint::RoundedRect::new(rect, egui::epaint::CornerRadiusF32::same(r.max(0.0))));
+    pts
+}
+
+/// The light on a plate: a soft glow inside that is strongest at the top, and a rim one pixel wide that is `hi`
+/// strong along the top and falls to `rim` by the middle of the sides. Both follow the plate's own outline.
 fn sheen_into(out: &mut Vec<egui::Shape>, rect: Rect, r: f32, (rim, hi, glow): (u8, u8, u8), over: bool) {
-    use std::f32::consts::{FRAC_PI_2, PI};
-    let white = Color32::from_white_alpha;
-    // light from above inside the plate: one fan over the rounded outline, fading to nothing at the bottom
-    let inner = rect.shrink(1.0);
-    // a plate thinner than its corners (window being minimised, a panel closing): `clamp` below panicked and closed the app
-    if !(inner.width() > 0.0 && inner.height() > 0.0) {
+    // a plate thinner than its rim (window being minimised, a panel closing): nothing to light, and the maths
+    // below once panicked on such a plate and closed the app
+    let (ppp, tex) = GLOW.with(|g| (g.borrow().0.max(0.5), g.borrow().1.iter().find(|(s, _)| *s == glow).map(|(_, t)| *t)));
+    let px = 1.0 / ppp;
+    if !(rect.width() > 4.0 * px && rect.height() > 4.0 * px) {
         return;
     }
-    let ri = (r - 1.0).max(0.0).min(inner.width() / 2.0).min(inner.height() / 2.0);
-    const SEG: usize = 16; // per corner: fine enough that no corner shows its straight pieces
-    let shade = |y: f32| white((glow as f32 * (1.0 - (y - inner.top()) / inner.height().max(1.0))) as u8);
-    let mut m = egui::Mesh::default();
-    m.colored_vertex(inner.center(), shade(inner.center().y));
-    for (cx, cy, a0) in [(inner.left() + ri, inner.top() + ri, PI), (inner.right() - ri, inner.top() + ri, 1.5 * PI), (inner.right() - ri, inner.bottom() - ri, 0.0), (inner.left() + ri, inner.bottom() - ri, FRAC_PI_2)] {
-        for k in 0..=SEG {
-            let a = a0 + k as f32 / SEG as f32 * FRAC_PI_2;
-            let q = pos2(cx + ri * a.cos(), cy + ri * a.sin());
+    // on whole pixels, like the fill the tessellator draws under it
+    let snap = |v: f32| (v * ppp).round() / ppp;
+    let rect = Rect::from_min_max(pos2(snap(rect.left()), snap(rect.top())), pos2(snap(rect.right()), snap(rect.bottom())));
+    let centre = rect.center();
+    // `q` moved `by` towards the inside, square to the outline at point `i` of `pts`
+    let inward = |pts: &[Pos2], i: usize, by: f32| {
+        let n = pts.len();
+        let d = pts[(i + 1) % n] - pts[(i + n - 1) % n];
+        if d.length() < 0.001 {
+            return pts[i];
+        }
+        let nrm = d.normalized().rot90();
+        pts[i] + if nrm.dot(centre - pts[i]) >= 0.0 { nrm } else { -nrm } * by
+    };
+    let inner = rect.shrink(px);
+    let ring = outline(inner, r - px);
+    let n = ring.len();
+    if glow > 0 && n >= 3 {
+        let shade = |y: f32| Color32::from_white_alpha((glow as f32 * (1.0 - (y - inner.top()) / inner.height())).clamp(0.0, 255.0) as u8);
+        let mut m = egui::Mesh::default();
+        m.colored_vertex(centre, shade(centre.y));
+        for q in &ring {
+            m.colored_vertex(*q, Color32::TRANSPARENT); // the clear outer edge
+        }
+        for i in 0..n {
+            let q = inward(&ring, i, 1.5 * px); // full strength from here in
             m.colored_vertex(q, shade(q.y));
         }
-    }
-    let n = 4 * (SEG as u32 + 1);
-    for i in 0..n {
-        m.add_triangle(0, 1 + i, 1 + (i + 1) % n);
-    }
-    let ring: Vec<Pos2> = m.vertices[1..].iter().map(|v| v.pos).collect();
-    for q in &ring {
-        // 1.5 px further in, at full strength; the vertices above become the clear outer edge
-        let c = pos2(q.x.clamp(inner.left() + ri, inner.right() - ri), q.y.clamp(inner.top() + ri, inner.bottom() - ri));
-        let d = *q - c;
-        let q2 = if d.length() > 1.5 { *q - d.normalized() * 1.5 } else { *q };
-        m.colored_vertex(q2, shade(q2.y));
-    }
-    m.indices.clear();
-    for i in 0..n {
-        let j = (i + 1) % n;
-        m.add_triangle(0, 1 + n + i, 1 + n + j); // the fan, on the inner ring
-        m.add_triangle(1 + i, 1 + j, 1 + n + i); // the feather between the rings
-        m.add_triangle(1 + j, 1 + n + j, 1 + n + i);
-    }
-    for v in &mut m.vertices[1..=n as usize] {
-        v.color = Color32::TRANSPARENT;
-    }
-    // with the dithered picture at hand, it carries the fade: the vertices only place it and feather its edge
-    let (ppp, tex) = GLOW.with(|g| (g.borrow().0, g.borrow().1.iter().find(|(s, _)| *s == glow).map(|(_, t)| *t)));
-    if let Some(tex) = tex {
-        for (i, v) in m.vertices.iter_mut().enumerate() {
-            v.uv = pos2(v.pos.x * ppp / GLOW_W as f32 + if over { 0.5 } else { 0.0 }, (v.pos.y - inner.top()) / inner.height().max(1.0));
-            if !(1..=n as usize).contains(&i) {
-                v.color = Color32::WHITE;
-            }
+        let n = n as u32;
+        for i in 0..n {
+            let j = (i + 1) % n;
+            m.add_triangle(0, 1 + n + i, 1 + n + j); // the fan, on the inner ring
+            m.add_triangle(1 + i, 1 + j, 1 + n + i); // the feather between the rings
+            m.add_triangle(1 + j, 1 + n + j, 1 + n + i);
         }
-        m.texture_id = tex;
+        // with the dithered picture at hand, it carries the fade: the vertices only place it and feather its edge
+        if let Some(tex) = tex {
+            for (i, v) in m.vertices.iter_mut().enumerate() {
+                v.uv = pos2(v.pos.x * ppp / GLOW_W as f32 + if over { 0.5 } else { 0.0 }, (v.pos.y - inner.top()) / inner.height());
+                if !(1..=n as usize).contains(&i) {
+                    v.color = Color32::WHITE;
+                }
+            }
+            m.texture_id = tex;
+        }
+        out.push(egui::Shape::mesh(m));
     }
-    out.push(egui::Shape::mesh(m));
-    out.push(egui::Shape::rect_stroke(rect, r, Stroke::new(1.0, white(rim)), StrokeKind::Inside));
-    let ra = (r - 1.0).max(0.0);
-    let steps = ((r * 0.8) as usize).clamp(6, 32);
-    let arc = |cx: f32, cy: f32, a0: f32| (0..=steps).map(move |k| a0 + k as f32 / steps as f32 * FRAC_PI_2).map(move |a| (pos2(cx + ra * a.cos(), cy + ra * a.sin()), 1.0));
-    let side = (rect.height() * 0.45).max(r);
-    // bright rim: fades in up the left edge, full round the top-left corner, then a specular streak that dies
-    // out along the top edge
-    let (l, t) = (rect.left() + 1.0, rect.top() + 1.0);
-    let (x0, x1) = (rect.left() + r, rect.right() - r);
-    let mut pts = Vec::with_capacity(steps + 5);
-    pts.push((pos2(l, rect.top() + side), 0.0));
-    pts.extend(arc(rect.left() + r, rect.top() + r, PI));
-    for (f, a) in [(0.25, 0.5), (0.6, 0.2), (1.0, 0.0)] {
-        pts.push((pos2(x0 + (x1 - x0) * f, t), a));
-    }
-    ribbon(out, &pts, true, hi);
-    // darker edge: fades in down the right side, full round the bottom-right corner, fades out along the bottom
-    let (rr, b) = (rect.right() - 1.0, rect.bottom() - 1.0);
-    pts.clear();
-    pts.push((pos2(rr, rect.bottom() - side), 0.0));
-    pts.extend(arc(rect.right() - r, rect.bottom() - r, 0.0));
-    pts.push((pos2((rr - r - rect.width() * 0.55).max(rect.left() + r), b), 0.0));
-    ribbon(out, &pts, false, 0x80);
+    // the rim sits half a pixel inside the plate's edge, so its middle lies on the outermost pixel row
+    let edge = rect.shrink(px * 0.5);
+    let pts: Vec<(Pos2, f32)> = outline(edge, r - px * 0.5)
+        .into_iter()
+        .map(|q| {
+            // 1 along the top edge, 0 from half way down
+            let k = 1.0 - ((q.y - edge.top()) / edge.height() * 2.0).clamp(0.0, 1.0);
+            (q, rim as f32 + (hi as f32 - rim as f32) * k * k * (3.0 - 2.0 * k))
+        })
+        .collect();
+    ribbon(out, &pts, px);
 }
 
-/// A soft line through `pts` (place, strength 0..1) that fades along its length: a strip that has the colour on
-/// its middle and nothing 1.7 px to either side, so curves and slopes come out smooth (a plain 1 px line shows
-/// its pixels on a bright rim).
-fn ribbon(out: &mut Vec<egui::Shape>, pts: &[(Pos2, f32)], white: bool, alpha: u8) {
-    const HALF: f32 = 1.7;
+/// A white closed line through `pts` (place, opacity 0..=255) whose strength changes along it: the colour is on
+/// its middle and gone `half` to either side, so it is one pixel of light when `half` is a pixel, and curves
+/// and slopes come out smooth (a plain 1 px stroke shows its pixels on a bright rim).
+fn ribbon(out: &mut Vec<egui::Shape>, pts: &[(Pos2, f32)], half: f32) {
+    let n = pts.len();
+    if n < 3 {
+        return;
+    }
     let mut m = egui::Mesh::default();
-    let mut rows = 0u32;
-    for (i, &(q, k)) in pts.iter().enumerate() {
-        let (prev, next) = (pts[i.saturating_sub(1)].0, pts[(i + 1).min(pts.len() - 1)].0);
-        let d = next - prev;
-        if d.length() < 0.01 {
-            continue;
+    for i in 0..n {
+        let d = pts[(i + 1) % n].0 - pts[(i + n - 1) % n].0;
+        let nrm = if d.length() < 0.001 { Vec2::ZERO } else { d.normalized().rot90() * half };
+        let (q, a) = pts[i];
+        m.colored_vertex(q - nrm, Color32::TRANSPARENT);
+        m.colored_vertex(q, Color32::from_white_alpha(a.clamp(0.0, 255.0) as u8));
+        m.colored_vertex(q + nrm, Color32::TRANSPARENT);
+    }
+    let n = n as u32;
+    for i in 0..n {
+        let (v, w) = (i * 3, (i + 1) % n * 3);
+        for (a, b, c) in [(v, v + 1, w), (v + 1, w + 1, w), (v + 1, v + 2, w + 1), (v + 2, w + 2, w + 1)] {
+            m.add_triangle(a, b, c);
         }
-        let n = d.normalized().rot90() * HALF;
-        let a = (alpha as f32 * k) as u8;
-        let col = if white { Color32::from_white_alpha(a) } else { Color32::from_black_alpha(a) };
-        m.colored_vertex(q - n, Color32::TRANSPARENT);
-        m.colored_vertex(q, col);
-        m.colored_vertex(q + n, Color32::TRANSPARENT);
-        if rows > 0 {
-            let v = (rows - 1) * 3;
-            for (a, b, c) in [(0, 1, 3), (1, 4, 3), (1, 2, 4), (2, 5, 4)] {
-                m.add_triangle(v + a, v + b, v + c);
-            }
-        }
-        rows += 1;
     }
     out.push(egui::Shape::mesh(m));
 }
 
-/// A raised glass capsule for a control (button, thumb, knob): fill and the same light as a glass plate, so its
-/// rim follows the curve (a straight highlight line on top read as a white bar). `rim` sets how strong.
-pub fn capsule(p: &egui::Painter, rect: Rect, fill: Color32, rim: u8) {
-    let r = (rect.height() / 2.0).min(rect.width() / 2.0);
-    let mut shapes = Vec::with_capacity(6);
+/// A raised glass plate for a control (button, field, chip) with corner radius `r`: fill and the same light as
+/// any plate. `rim` is how bright its top edge is.
+pub fn plate(p: &egui::Painter, rect: Rect, r: f32, fill: Color32, rim: u8) {
+    let r = r.min(rect.height() / 2.0).min(rect.width() / 2.0);
+    let mut shapes = Vec::with_capacity(3);
     shapes.push(egui::Shape::rect_filled(rect, r, fill));
-    sheen_into(&mut shapes, rect, r, (rim, (rim as u16 * 2).min(0x90) as u8, 0x18), false);
+    sheen_into(&mut shapes, rect, r, (rim / 2, rim, 0x18), false);
     p.add(egui::Shape::Vec(shapes));
 }
 
-/// A floating glass panel (menu, popover, picker) around `add`: the top level, `margin` px of padding.
+/// A fully round glass plate (knob, thumb, round button).
+pub fn capsule(p: &egui::Painter, rect: Rect, fill: Color32, rim: u8) {
+    plate(p, rect, rect.height() / 2.0, fill, rim);
+}
+
+/// A floating glass panel (menu, popover, picker) around `add`: the top level, `margin` px of padding. Frosted:
+/// what is behind shows through blurred (the lens), under a film of the floating level's colour. Where the
+/// lens does not run the panel is solid, since unblurred text behind a menu made both unreadable.
 pub fn float<R>(ui: &mut Ui, radius: f32, margin: i8, add: impl FnOnce(&mut Ui) -> R) -> R {
     let slot = ui.painter().add(egui::Shape::Noop);
     let out = egui::Frame::new().inner_margin(Margin::same(margin)).show(ui, add);
-    ui.painter().set(slot, material(out.response.rect, radius, Glass::Float, Glass::Float.fill()));
+    let rect = out.response.rect;
+    let r = radius.min(rect.height() / 2.0).min(rect.width() / 2.0);
+    let fill = if crate::lens::works() { Glass::Float.fill().gamma_multiply(0.76) } else { Glass::Float.fill() };
+    let mut shapes = Vec::with_capacity(5);
+    shapes.push(Glass::Float.shadow().as_shape(rect, CornerRadius::from(r)).into());
+    shapes.push(crate::lens::shape(rect, crate::lens::Lens { radius: r, rim: 12.0, bend: 6.0, zoom: 1.0, blur: 14.0, split: 0.0 }));
+    shapes.push(egui::Shape::rect_filled(rect, r, fill));
+    sheen_into(&mut shapes, rect, r, Glass::Float.light(), false);
+    ui.painter().set(slot, egui::Shape::Vec(shapes));
     out.inner
 }
 
 pub fn apply_visuals(ctx: &egui::Context) {
     let pal = p();
     let mut v = egui::Visuals::dark();
-    let zero = CornerRadius::same(12);
+    let zero = CornerRadius::same(R_CTL as u8);
     v.override_text_color = Some(TEXT);
     v.panel_fill = pal.layer_bg;
     v.window_fill = Glass::Float.fill();
@@ -667,7 +754,7 @@ pub fn apply_visuals(ctx: &egui::Context) {
     v.menu_corner_radius = CornerRadius::same(R_MENU as u8);
     v.window_shadow = soft;
     v.popup_shadow = soft;
-    v.window_stroke = Stroke::new(1.0, Color32::from_white_alpha(0x3C));
+    v.window_stroke = Stroke::new(1.0, Color32::from_white_alpha(0x22));
     v.selection.bg_fill = pal.accent_dark;
     v.selection.stroke = Stroke::new(1.0, TEXT);
     let w = &mut v.widgets;
@@ -701,22 +788,55 @@ pub fn card<R>(ui: &mut Ui, pad: (i8, i8, i8, i8), add: impl FnOnce(&mut Ui) -> 
     card_fill(ui, pad, p().card_bg, add)
 }
 
+thread_local! {
+    /// Inside `group`: whether the next card is the group's first row.
+    static GROUP: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Rows that belong together: every `card` drawn straight inside becomes a row of one glass plate, with a
+/// hairline between rows (from the text's left edge to the plate's right edge) instead of a plate of its own.
+pub fn group<R>(ui: &mut Ui, add: impl FnOnce(&mut Ui) -> R) -> R {
+    let slot = ui.painter().add(egui::Shape::Noop);
+    let outer = GROUP.replace(Some(true));
+    let out = egui::Frame::new().show(ui, |ui| {
+        ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
+        ui.set_width(ui.available_width());
+        add(ui)
+    });
+    GROUP.set(outer);
+    let rect = out.response.rect;
+    if rect.height() > 1.0 && ui.is_rect_visible(rect.expand(40.0)) {
+        ui.painter().set(slot, glass(rect, R_CARD, p().card_bg));
+    }
+    out.inner
+}
+
 pub fn card_fill<R>(ui: &mut Ui, pad: (i8, i8, i8, i8), fill: Color32, add: impl FnOnce(&mut Ui) -> R) -> R {
+    if let Some(first) = GROUP.get() {
+        if !first {
+            let y = ui.cursor().top();
+            ui.painter().line_segment([pos2(ui.max_rect().left() + 3.0 + pad.0 as f32, y), pos2(ui.max_rect().right(), y)], Stroke::new(px(), Color32::from_white_alpha(0x1C)));
+        }
+        GROUP.set(None); // what the row holds is not the group's: a card in it is a card again
+        let out = egui::Frame::new().inner_margin(Margin { left: 3 + pad.0, top: pad.1, right: pad.2, bottom: pad.3 }).show(ui, |ui| {
+            ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
+            ui.set_width(ui.available_width());
+            add(ui)
+        });
+        GROUP.set(Some(false));
+        return out.inner;
+    }
     let slot = ui.painter().add(egui::Shape::Noop);
     let out = egui::Frame::new()
         .inner_margin(Margin { left: 3 + pad.0, top: pad.1, right: pad.2, bottom: pad.3 })
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing = vec2(8.0, 0.0);
             ui.set_width(ui.available_width());
-            let min = MIN_H.with(|c| c.get()) - (pad.1 + pad.3) as f32;
-            if min > 0.0 {
-                ui.set_min_height(min);
-            }
             add(ui)
         });
     if ui.is_rect_visible(out.response.rect.expand(40.0)) {
         // rows scrolled out of view get no plate (the margin keeps their shadow while they are just outside)
-        ui.painter().set(slot, glass(out.response.rect, R_PANEL, fill));
+        ui.painter().set(slot, glass(out.response.rect, R_CARD, fill));
     }
     out.inner
 }
@@ -726,23 +846,31 @@ pub fn section(ui: &mut Ui, text: &str) {
     section_gap(ui, text);
 }
 
+/// A small visible label over a plate or a group of rows (Home's parts). `first`: the first thing in its column,
+/// so no space above it.
+pub fn heading(ui: &mut Ui, text: &str, first: bool) {
+    if !first {
+        ui.add_space(22.0);
+    }
+    ui.horizontal(|ui| {
+        ui.add_space(4.0);
+        ui.label(md(text, 12.5).color(text3()));
+    });
+    ui.add_space(7.0);
+}
+
 /// Same space as `section`, without the visible heading. Right under the page title (see `page_gap`)
 /// it adds nothing, so every page has the same title-to-content distance.
-pub fn section_gap(ui: &mut Ui, text: &str) {
+pub fn section_gap(ui: &mut Ui, _heading: &str) {
     if at_page_top(ui) {
         return;
     }
-    ui.add_space(24.0);
-    ui.add_visible(false, egui::Label::new(dsb(text, 13.0)));
-    ui.add_space(8.0);
+    ui.add_space(28.0);
 }
 
-/// The space under every page title (what a hidden section heading takes), remembered so the page's
-/// first `section_gap` does not add it twice.
+/// The space under every page title, remembered so the page's first `section_gap` does not add to it.
 pub fn page_gap(ui: &mut Ui) {
-    ui.add_space(24.0);
-    ui.add_visible(false, egui::Label::new(dsb(" ", 13.0)));
-    ui.add_space(8.0);
+    ui.add_space(20.0);
     let y = ui.cursor().top();
     ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("page-top"), y));
 }
@@ -753,84 +881,127 @@ pub fn at_page_top(ui: &Ui) -> bool {
     ui.ctx().data(|d| d.get_temp::<f32>(egui::Id::new("page-top"))).is_some_and(|t| (t - y).abs() < 0.5)
 }
 
-/// XAML button: default (ControlBg + 1px border) or accent (filled, bold OnAccent text).
+/// How far a held control gives way to a pull of `raw` px: follows the pointer at first, never past `PULL_MAX`.
+const PULL_MAX: f32 = 14.0;
+
+fn rubber(raw: Vec2) -> Vec2 {
+    raw * (PULL_MAX / (raw.length() + PULL_MAX))
+}
+
+/// Apple-style pull for a control allocated with `Sense::click_and_drag()`: while the pointer is held on it, returns
+/// how far the control is pulled (rubber-banded); let go, it springs back. Letting go over the control after a pull
+/// or a long hold counts as a click (`resp.clicked()` turns true), letting go beside it cancels.
+pub fn pull(ui: &Ui, resp: &mut egui::Response) -> Vec2 {
+    let ctx = ui.ctx();
+    let key = resp.id.with("pull");
+    let now = ctx.input(|i| i.time);
+    if resp.drag_stopped() {
+        let over = ctx.input(|i| i.pointer.button_released(egui::PointerButton::Primary) && i.pointer.interact_pos().is_some_and(|p| resp.rect.expand(8.0).contains(p)));
+        if over {
+            resp.flags |= egui::response::Flags::FAKE_PRIMARY_CLICKED;
+        }
+    }
+    if resp.is_pointer_button_down_on() {
+        let raw = ctx.input(|i| match (i.pointer.press_origin(), i.pointer.latest_pos()) {
+            (Some(a), Some(b)) => b - a,
+            _ => Vec2::ZERO,
+        });
+        let off = rubber(raw);
+        ctx.data_mut(|d| d.insert_temp(key, (off, now)));
+        return off;
+    }
+    let Some((off, t)) = ctx.data(|d| d.get_temp::<(Vec2, f64)>(key)) else { return Vec2::ZERO };
+    let dt = (now - t) as f32;
+    if dt > 0.5 || off == Vec2::ZERO {
+        return Vec2::ZERO;
+    }
+    ctx.request_repaint();
+    off * (-dt * 9.0).exp() * (dt * 24.0).cos()
+}
+
+/// `rect` pulled by `off`: the edge on the pointer's side follows it, the other edge stays, so the plate stretches.
+pub fn pulled(rect: Rect, off: Vec2) -> Rect {
+    Rect::from_center_size(rect.center() + off / 2.0, rect.size() + off.abs())
+}
+
+/// Button: a glass plate with a light rim, or (accent) filled with the accent colour and dark-on-light text.
 pub fn button(ui: &mut Ui, text: &str, accent: bool, pad: (f32, f32, f32, f32)) -> egui::Response {
     button_tint(ui, text, accent, None, pad)
 }
 
-/// Like `button`, with a solid `tint` fill (e.g. DANGER) and white text instead of the accent.
+/// Like `button`, with a solid `tint` fill (e.g. DANGER) and black text instead of the accent.
 pub fn button_tint(ui: &mut Ui, text: &str, accent: bool, tint: Option<Color32>, pad: (f32, f32, f32, f32)) -> egui::Response {
     let pal = p();
     let accent = accent || tint.is_some();
-    let family = if accent { on_light() } else { FontFamily::Proportional };
+    let family = if accent { on_light() } else { medium() };
     let color = if tint.is_some() { Color32::BLACK } else if accent { pal.on_accent } else { TEXT };
     let size = {
         let g = ui.painter().layout_no_wrap(text.to_string(), FontId::new(14.0, family.clone()), color);
         vec2(g.size().x + pad.0 + pad.2, g.size().y + pad.1 + pad.3)
     };
-    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-    // pill that grows 5% under the pointer and shrinks 4% while pressed (text grows with it)
+    let (rect, mut resp) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+    let off = pull(ui, &mut resp);
+    // answers on the press, not the release: it lightens under the pointer and gives way 3% while held
     let ctx = ui.ctx().clone();
-    let ease = egui::emath::easing::cubic_out;
-    let hov = ctx.animate_bool_with_time_and_easing(resp.id.with("hover"), resp.hovered(), 0.14, ease);
-    let down = ctx.animate_bool_with_time_and_easing(resp.id.with("down"), resp.is_pointer_button_down_on(), 0.12, ease);
-    let s = 1.0 + 0.05 * hov - 0.09 * down;
-    let plate = Rect::from_center_size(rect.center(), rect.size() * s);
+    let hov = anim(&ctx, resp.id.with("hover"), resp.hovered(), HOVER);
+    let down = anim(&ctx, resp.id.with("down"), resp.is_pointer_button_down_on(), PRESS);
+    let s = 1.0 - 0.03 * down;
+    let plate_rect = pulled(Rect::from_center_size(rect.center(), rect.size() * s), off);
     let paint = ui.painter();
     if accent {
-        capsule(paint, plate, tint.unwrap_or(pal.accent).lerp_to_gamma(Color32::WHITE, 0.12 * hov), 0x68);
+        let fill = tint.unwrap_or(pal.accent).lerp_to_gamma(Color32::WHITE, 0.10 * hov).lerp_to_gamma(Color32::BLACK, 0.10 * down);
+        paint.add(egui::Shadow { offset: [0, 1], blur: 4, spread: 0, color: Color32::from_black_alpha(70) }.as_shape(plate_rect, CornerRadius::from(R_CTL)));
+        plate(paint, plate_rect, R_CTL, fill, 0x70);
     } else {
-        capsule(paint, plate, Color32::from_white_alpha(0x18 + (16.0 * hov) as u8), 0x38 + (16.0 * hov) as u8);
+        plate(paint, plate_rect, R_CTL, Color32::from_white_alpha((0x1A as f32 + 14.0 * hov - 8.0 * down) as u8), 0x38 + (16.0 * hov) as u8);
     }
     let galley = paint.layout_no_wrap(text.to_string(), FontId::new(14.0 * s, family), color);
-    paint.galley(pos2(plate.left() + pad.0 * s, plate.top() + pad.1 * s), galley, color);
+    paint.galley(plate_rect.center() - rect.size() * s / 2.0 + vec2(pad.0, pad.1) * s, galley, color);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-pub const BTN: (f32, f32, f32, f32) = (15.0, 5.0, 15.0, 6.0);
+pub const BTN: (f32, f32, f32, f32) = (14.0, 7.0, 14.0, 7.0);
 
-/// iOS-style switch: 46x26 pill track, 24x20 pill knob. Pressed, the knob swells and turns glassy; a click slides it
-/// over, overshoots a few px and wobbles left and right twice before it settles (about 0.6 s). The whole switch grows
-/// 5% under the pointer.
+/// Switch: a 40x24 track and a round knob. The knob rides a spring: a click sends it over, it runs a little
+/// past and settles; held, it stretches towards the middle; pulled, it follows the pointer and takes the nearer
+/// side when let go (that is the click the caller sees).
 pub fn switch(ui: &mut Ui, on: bool) -> egui::Response {
     let pal = p();
-    let (slot, resp) = ui.allocate_exact_size(vec2(46.0, 26.0), egui::Sense::click());
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(40.0, 24.0), egui::Sense::click_and_drag());
     let ctx = ui.ctx().clone();
-    let now = ctx.input(|i| i.time);
-    let key = resp.id.with("flip");
-    if resp.clicked() {
-        // direction the knob is about to travel: right when turning on
-        ctx.data_mut(|d| d.insert_temp(key, (now, if on { -1.0f32 } else { 1.0 })));
-    }
-    let (since, dir) = ctx.data(|d| d.get_temp::<(f64, f32)>(key)).unwrap_or((-10.0, 1.0));
-    let dt = (now - since) as f32;
-    let wobble = if dt < 0.8 {
-        ctx.request_repaint();
-        dir * 3.5 * (-dt * 6.5).exp() * (dt * 20.0).sin()
-    } else {
-        0.0
+    let pos = resp.id.with("pos");
+    const KNOB: f32 = 20.0;
+    let pulled_to = ctx.input(|i| i.pointer.latest_pos()).filter(|_| resp.dragged() || resp.drag_stopped()).map(|p| ((p.x - rect.left() - rect.height() / 2.0) / (rect.width() - rect.height())).clamp(0.0, 1.0));
+    let t = match pulled_to {
+        Some(v) => {
+            if resp.drag_stopped() && (v > 0.5) != on {
+                resp.flags |= egui::response::Flags::FAKE_PRIMARY_CLICKED;
+            }
+            spring_set(&ctx, pos, v);
+            v
+        }
+        // runs up to 2 px past its end and comes back
+        None => spring(&ctx, pos, if on { 1.0 } else { 0.0 }, 0.3, 0.55).clamp(-0.12, 1.12),
     };
-    let t = ctx.animate_bool_with_time_and_easing(resp.id, on, 0.2, egui::emath::easing::cubic_out);
-    let hov = ctx.animate_bool_with_time(resp.id.with("hover"), resp.hovered(), 0.12);
-    let held = ctx.animate_bool_with_time(resp.id.with("held"), resp.is_pointer_button_down_on(), 0.12);
-    let rect = slot.scale_from_center(1.0 + 0.05 * hov);
+    let k = t.clamp(0.0, 1.0);
+    let hov = anim(&ctx, resp.id.with("hover"), resp.hovered(), HOVER);
+    let held = anim(&ctx, resp.id.with("held"), resp.is_pointer_button_down_on(), PRESS);
     let paint = ui.painter();
-    let off_bg = Color32::from_white_alpha(0x24 + (10.0 * hov) as u8);
-    // the track is a well: shade under its top edge, light on its bottom one
     let rad = rect.height() / 2.0;
-    paint.rect_filled(rect, rad, off_bg.lerp_to_gamma(pal.accent, t));
-    paint.rect_stroke(rect, rad, Stroke::new(1.0, Color32::from_white_alpha(0x30)), StrokeKind::Inside);
-    paint.line_segment([pos2(rect.left() + rad * 0.7, rect.top() + 1.5), pos2(rect.right() - rad * 0.7, rect.top() + 1.5)], Stroke::new(1.0, Color32::from_black_alpha(0x30)));
-    // glass knob: stretches sideways while pressed
-    let kw = 24.0 + 10.0 * held;
-    let kh = 20.0 + 3.0 * held;
-    let half = kw / 2.0 + 3.0;
-    let cx = egui::lerp((rect.left() + half)..=(rect.right() - half), t) + wobble;
-    let knob = Rect::from_center_size(pos2(cx, rect.center().y), vec2(kw, kh));
-    let off_knob = Color32::WHITE;
-    let fill = off_knob.lerp_to_gamma(pal.on_accent, t);
-    paint.add(egui::Shadow { offset: [0, 2], blur: 6, spread: 0, color: Color32::from_black_alpha(70) }.as_shape(knob, CornerRadius::from(kh / 2.0)));
-    capsule(paint, knob, fill.gamma_multiply(1.0 - 0.7 * held), (0x50 as f32 + 0x2F as f32 * held) as u8);
+    let off_bg = Color32::from_white_alpha(0x26 + (10.0 * hov) as u8);
+    paint.rect_filled(rect, rad, off_bg.lerp_to_gamma(pal.accent, k));
+    paint.rect_stroke(rect, rad, Stroke::new(px(), Color32::from_white_alpha(0x20)), StrokeKind::Inside);
+    // the knob keeps 2 px from the track's edge; held, it grows 6 px towards the other side
+    let stretch = 6.0 * held;
+    let left = rect.left() + 2.0 + (rect.width() - 4.0 - KNOB) * t - stretch * k;
+    let knob = Rect::from_min_size(pos2(left, rect.top() + 2.0), vec2(KNOB + stretch, KNOB));
+    let fill = Color32::WHITE.lerp_to_gamma(pal.on_accent, k);
+    paint.add(egui::Shadow { offset: [0, 1], blur: 4, spread: 0, color: Color32::from_black_alpha(90) }.as_shape(knob, CornerRadius::from(KNOB / 2.0)));
+    // held, the knob turns to clear glass: the track under it shows through, magnified and bent at the rim
+    if held > 0.01 {
+        paint.add(crate::lens::shape(knob, crate::lens::Lens { radius: KNOB / 2.0, rim: KNOB * 0.45, bend: 5.0 * held, zoom: 1.0 + 0.2 * held, blur: 0.0, split: 0.3 }));
+    }
+    capsule(paint, knob, fill.gamma_multiply(1.0 - 0.8 * held), 0x60);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -843,19 +1014,25 @@ struct TabRow {
     /// Top left of the first tab; the thumb is kept relative to it, so scrolling does not animate it.
     origin: Pos2,
     right: f32,
-    /// Thumb travel: from, to (both relative to `origin`) and when it set off.
-    from: Rect,
+    /// The selected tab, relative to `origin`: where the thumb is heading.
     to: Rect,
-    t0: f64,
+    /// Row width last frame (the thumb's limit while it is pulled).
+    span: f32,
+    /// Centre of the thumb while it is pulled, relative to `origin`.
+    drag: Option<f32>,
+    /// Where a pulled thumb was let go and in which pass: the tab there takes it as a click.
+    drop: Option<(f32, u64)>,
+    /// Where the thumb is this pass, and the shape it was last drawn into: it is glass over the tab names, so
+    /// each tab draws it again after its own name and clears the one before.
+    thumb: Rect,
+    over: Option<egui::layers::ShapeIdx>,
 }
 
-const TAB_SLIDE: f32 = 0.3;
-
-fn tab_plate(ui: &Ui, rect: Rect, selected: bool) {
+fn tab_plate(ui: &Ui, rect: Rect, selected: bool, resp: &mut egui::Response) {
     let ctx = ui.ctx();
     let id = ui.id().with("tab_row");
+    let (left_id, width_id) = (id.with("left"), id.with("width"));
     let pass = ctx.cumulative_pass_nr();
-    let now = ctx.input(|i| i.time);
     let old = ctx.data(|d| d.get_temp::<TabRow>(id));
     let mut row = match old {
         Some(mut r) if r.pass == pass => {
@@ -864,46 +1041,91 @@ fn tab_plate(ui: &Ui, rect: Rect, selected: bool) {
         }
         _ => {
             let slot = ui.painter().add(egui::Shape::Noop);
-            let (from, to, t0) = old.map_or((Rect::NOTHING, Rect::NOTHING, 0.0), |r| (r.from, r.to, r.t0));
-            TabRow { pass, slot, origin: rect.min, right: rect.right(), from, to, t0 }
+            let span = old.map_or(0.0, |r| r.right - r.origin.x);
+            let drop = old.and_then(|r| r.drop).filter(|d| d.1 + 1 >= pass);
+            TabRow { pass, slot, origin: rect.min, right: rect.right(), to: old.map_or(Rect::NOTHING, |r| r.to), span, drag: old.and_then(|r| r.drag).filter(|_| ctx.input(|i| i.pointer.any_down() || i.pointer.any_released())), drop, thumb: Rect::NOTHING, over: None }
         }
     };
-    if selected {
-        let rel = rect.translate(-row.origin.to_vec2());
-        if row.to == Rect::NOTHING {
-            (row.from, row.to) = (rel, rel); // first time on screen: no travel
-        } else if (rel.min - row.to.min).length() > 0.5 || (rel.width() - row.to.width()).abs() > 0.5 {
-            row.from = thumb_at(&row, now);
-            row.to = rel;
-            row.t0 = now;
+    if row.to != Rect::NOTHING && (resp.dragged() || resp.drag_stopped()) {
+        let width = spring_now(ctx, width_id).unwrap_or(row.to.width());
+        let half = width / 2.0;
+        let (px, dt) = ctx.input(|i| (i.pointer.latest_pos().map_or(rect.center().x, |p| p.x), i.stable_dt));
+        let target = (px - row.origin.x).clamp(half, (row.span - half).max(half));
+        let cx = row.drag.unwrap_or(spring_now(ctx, left_id).unwrap_or(row.to.left()) + half);
+        let cx = cx + (target - cx) * (1.0 - (-dt * 30.0).exp());
+        ctx.request_repaint();
+        if resp.drag_stopped() {
+            // the thumb sets off from where it was let go; the tab under it becomes the selected one next
+            spring_set(ctx, left_id, cx - half);
+            row.drag = None;
+            row.drop = Some((cx, pass));
+        } else {
+            row.drag = Some(cx);
         }
     }
-    let mut shapes = Vec::with_capacity(8);
-    let track = Rect::from_min_max(row.origin, pos2(row.right, rect.bottom())).expand(3.0);
-    shapes.push(egui::Shape::rect_filled(track, track.height() / 2.0, Color32::from_black_alpha(0x38)));
-    shapes.push(egui::Shape::rect_stroke(track, track.height() / 2.0, Stroke::new(1.0, Color32::from_white_alpha(0x16)), StrokeKind::Inside));
-    if row.to != Rect::NOTHING {
-        let thumb = thumb_at(&row, now).translate(row.origin.to_vec2());
-        shapes.push(material(thumb, thumb.height() / 2.0, Glass::Raised, Color32::from_white_alpha(0x34)));
-        if (now - row.t0) < TAB_SLIDE as f64 {
-            ctx.request_repaint();
+    if let Some((x, _)) = row.drop {
+        let at = row.origin.x + x;
+        if rect.left() - 4.0 <= at && at < rect.right() + 4.0 {
+            row.drop = None;
+            if !selected {
+                resp.flags |= egui::response::Flags::FAKE_PRIMARY_CLICKED;
+            }
         }
+    }
+    if selected {
+        row.to = rect.translate(-row.origin.to_vec2());
+    }
+    let mut shapes = Vec::with_capacity(4);
+    let track = Rect::from_min_max(row.origin, pos2(row.right, rect.bottom())).expand(3.0);
+    let radius = R_CTL + 2.0;
+    shapes.push(egui::Shape::rect_filled(track, radius, Color32::from_black_alpha(0x44)));
+    shapes.push(egui::Shape::rect_stroke(track, radius, Stroke::new(px(), Color32::from_white_alpha(0x18)), StrokeKind::Inside));
+    if row.to != Rect::NOTHING {
+        // it eases into the selected tab and never passes it (user's choice: no overshoot here)
+        let left = spring(ctx, left_id, row.to.left(), TRAVEL, 1.0);
+        let width = spring(ctx, width_id, row.to.width(), TRAVEL, 1.0);
+        let mut thumb = Rect::from_min_size(pos2(left, row.to.top()), vec2(width, row.to.height())).translate(row.origin.to_vec2());
+        if let Some(cx) = row.drag {
+            thumb = thumb.translate(vec2(row.origin.x + cx - thumb.center().x, 0.0)).expand(1.5); // lifted while pulled
+        }
+        // only its shadow lies under the names; the glass itself goes over them (`tab_thumb`)
+        shapes.push(Glass::Raised.shadow().as_shape(thumb, CornerRadius::from(nested(radius, 3.0))).into());
+        row.thumb = thumb;
     }
     ui.painter().set(row.slot, egui::Shape::Vec(shapes));
     ctx.data_mut(|d| d.insert_temp(id, row));
 }
 
-/// Where the thumb is now: it eases into its target and never passes it (user choice: no spring).
-fn thumb_at(row: &TabRow, now: f64) -> Rect {
-    slide(row.from, row.to, ((now - row.t0) as f32) / TAB_SLIDE)
-}
-
-fn slide(from: Rect, to: Rect, t: f32) -> Rect {
-    let k = egui::emath::easing::cubic_out(t.clamp(0.0, 1.0));
-    Rect::from_min_size(from.min + (to.min - from.min) * k, from.size() + (to.size() - from.size()) * k)
+/// The tab row's thumb, drawn over the names painted so far: a glass plate that bends what is under its rim and,
+/// while it is pulled, magnifies the names it passes over.
+fn tab_thumb(ui: &Ui) {
+    let id = ui.id().with("tab_row");
+    let Some(mut row) = ui.ctx().data(|d| d.get_temp::<TabRow>(id)) else { return };
+    if let Some(before) = row.over.take() {
+        ui.painter().set(before, egui::Shape::Noop);
+    }
+    if row.thumb != Rect::NOTHING {
+        let r = nested(R_CTL + 2.0, 3.0);
+        let pulled = if row.drag.is_some() { 1.0 } else { 0.0 };
+        let mut shapes = Vec::with_capacity(4);
+        shapes.push(crate::lens::shape(row.thumb, crate::lens::Lens { radius: r, rim: 7.0, bend: 1.5 + 3.5 * pulled, zoom: 1.0 + 0.1 * pulled, blur: 0.0, split: 0.3 }));
+        shapes.push(egui::Shape::rect_filled(row.thumb, r, Color32::from_white_alpha(0x2A)));
+        sheen_into(&mut shapes, row.thumb, r, Glass::Raised.light(), false);
+        row.over = Some(ui.painter().add(egui::Shape::Vec(shapes)));
+    }
+    ui.ctx().data_mut(|d| d.insert_temp(id, row));
 }
 
 pub fn spark(ui: &mut Ui, values: &[f32], height: f32) {
+    spark_with(ui, values, height, false);
+}
+
+/// `spark` with a flat, faint fill under the line.
+pub fn spark_filled(ui: &mut Ui, values: &[f32], height: f32) {
+    spark_with(ui, values, height, true);
+}
+
+fn spark_with(ui: &mut Ui, values: &[f32], height: f32, fill: bool) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), height), egui::Sense::hover());
     if values.len() < 2 {
         return;
@@ -913,19 +1135,34 @@ pub fn spark(ui: &mut Ui, values: &[f32], height: f32) {
         .enumerate()
         .map(|(i, v)| pos2(rect.left() + rect.width() * i as f32 / (values.len() - 1) as f32, rect.bottom() - 2.0 - (rect.height() - 4.0) * (v / 100.0).clamp(0.0, 1.0)))
         .collect();
+    if fill {
+        // a strip of quads down to the baseline: the area under a line graph is not convex, so no polygon fill
+        let mut mesh = egui::Mesh::default();
+        let col = p().accent.gamma_multiply(0.14);
+        for (i, pt) in pts.iter().enumerate() {
+            mesh.colored_vertex(*pt, col);
+            mesh.colored_vertex(pos2(pt.x, rect.bottom()), col);
+            if i > 0 {
+                let b = 2 * i as u32;
+                mesh.add_triangle(b - 2, b - 1, b);
+                mesh.add_triangle(b - 1, b + 1, b);
+            }
+        }
+        ui.painter().add(mesh);
+    }
     ui.painter().add(egui::Shape::line(pts, Stroke::new(1.5, p().accent)));
 }
 
 pub fn v2(x: f32, y: f32) -> Vec2 { vec2(x, y) }
 
-/// `ChipTemplate`: 11 semibold text on a tinted square, padding 8,1,8,2, margin 0,6,6,0.
+/// A small label on a tinted plate: 11 semibold, padding 7,2, margin 0,6,6,0.
 pub fn chip(ui: &mut Ui, text: &str, fg: Color32, bg: Color32) {
     let galley = ui.painter().layout_no_wrap(text.to_string(), FontId::new(11.0, semibold()), fg);
-    let size = vec2(galley.size().x + 16.0, galley.size().y + 3.0);
+    let size = vec2(galley.size().x + 14.0, galley.size().y + 4.0);
     let (rect, _) = ui.allocate_exact_size(size + vec2(6.0, 6.0), egui::Sense::hover());
     let chip = Rect::from_min_size(rect.min + vec2(0.0, 6.0), size);
-    ui.painter().rect_filled(chip, chip.height() / 2.0, bg);
-    ui.painter().galley(pos2(chip.left() + 8.0, chip.top() + 1.0), galley, fg);
+    ui.painter().rect_filled(chip, 6.0, bg);
+    ui.painter().galley(pos2(chip.left() + 7.0, chip.top() + 2.0), galley, fg);
 }
 
 /// Chips under a tweak, in the same order and wording as `TweakVM`.
@@ -962,56 +1199,62 @@ pub fn flag_chips(ui: &mut Ui, flags: mytune_core::catalog::TweakFlags) {
     });
 }
 
-/// `SubtleButton`: transparent, 7% white on hover.
-pub fn subtle_button(ui: &mut Ui, text: &str, pad: (f32, f32, f32, f32)) -> egui::Response {
-    let galley = ui.painter().layout_no_wrap(text.to_string(), FontId::proportional(14.0), TEXT);
-    let size = vec2(galley.size().x + pad.0 + pad.2, galley.size().y + pad.1 + pad.3);
-    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, rect.height() / 2.0, Color32::from_white_alpha(18));
+/// The plate a text-only button shows under the pointer and while it is pulled.
+fn subtle_plate(ui: &Ui, resp: &egui::Response, rect: Rect, off: Vec2) {
+    let hov = anim(ui.ctx(), resp.id.with("hover"), resp.hovered() || off != Vec2::ZERO, HOVER);
+    if hov > 0.0 {
+        ui.painter().rect_filled(pulled(rect, off), R_CTL, Color32::from_white_alpha((20.0 * hov) as u8));
     }
-    ui.painter().galley(pos2(rect.left() + pad.0, rect.top() + pad.1), galley, TEXT);
+}
+
+/// A text-only button: no plate until the pointer is on it.
+pub fn subtle_button(ui: &mut Ui, text: &str, pad: (f32, f32, f32, f32)) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(text.to_string(), FontId::new(14.0, medium()), TEXT);
+    let size = vec2(galley.size().x + pad.0 + pad.2, galley.size().y + pad.1 + pad.3);
+    let (rect, mut resp) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+    let off = pull(ui, &mut resp);
+    subtle_plate(ui, &resp, rect, off);
+    ui.painter().galley(pos2(rect.left() + pad.0, rect.top() + pad.1) + off / 2.0, galley, TEXT);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
-/// `ProgressBar`: 6 px, #29FFFFFF track, accent fill.
+/// Progress bar: 4 px, accent fill on a faint track.
 pub fn progress(ui: &mut Ui, fraction: f32) {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 6.0), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 3.0, Color32::from_white_alpha(0x29));
-    let fill = Rect::from_min_size(rect.min, vec2(rect.width() * fraction.clamp(0.0, 1.0), 6.0));
-    ui.painter().rect_filled(fill, 3.0, p().accent);
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 4.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 2.0, Color32::from_white_alpha(0x29));
+    let fill = Rect::from_min_size(rect.min, vec2(rect.width() * fraction.clamp(0.0, 1.0), 4.0));
+    ui.painter().rect_filled(fill, 2.0, p().accent);
 }
 
-/// `SubtleButton` with a negative left margin (`Margin="-8,..."`): the plate reaches `bleed` px left of the layout
-/// position, so the text lines up with the content above.
+/// `subtle_button` whose plate reaches `bleed` px left of the layout position, so the text lines up with the
+/// content above.
 pub fn subtle_button_bleed(ui: &mut Ui, text: &str, pad: (f32, f32, f32, f32), bleed: f32) -> egui::Response {
-    let galley = ui.painter().layout_no_wrap(text.to_string(), FontId::proportional(14.0), TEXT);
+    let galley = ui.painter().layout_no_wrap(text.to_string(), FontId::new(14.0, medium()), TEXT);
     let size = vec2(galley.size().x + pad.0 + pad.2, galley.size().y + pad.1 + pad.3);
     let (slot, _) = ui.allocate_exact_size(size - vec2(bleed, 0.0), egui::Sense::hover());
     let rect = Rect::from_min_size(slot.min - vec2(bleed, 0.0), size);
-    let resp = ui.interact(rect, ui.id().with(text), egui::Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, rect.height() / 2.0, Color32::from_white_alpha(18));
-    }
-    ui.painter().galley(pos2(rect.left() + pad.0, rect.top() + pad.1), galley, TEXT);
+    let mut resp = ui.interact(rect, ui.id().with(text), egui::Sense::click_and_drag());
+    let off = pull(ui, &mut resp);
+    subtle_plate(ui, &resp, rect, off);
+    ui.painter().galley(pos2(rect.left() + pad.0, rect.top() + pad.1) + off / 2.0, galley, TEXT);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// One tab of a segmented row (call it for each tab inside one `ui.horizontal`): the row has a dark track and a
-/// glass thumb that slides to the selected tab. Padding 15,6,15,7.
+/// glass thumb that travels to the selected tab. Padding 13,6.
 pub fn tab(ui: &mut Ui, text: &str, selected: bool) -> egui::Response {
-    let font = if selected { FontId::new(14.0, semibold()) } else { FontId::proportional(14.0) };
     let fg = if selected { TEXT } else { text2() };
-    let galley = ui.painter().layout_no_wrap(text.to_string(), font, fg);
-    let size = vec2(galley.size().x + 30.0, galley.size().y + 13.0);
-    let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-    tab_plate(ui, rect, selected);
+    let galley = ui.painter().layout_no_wrap(text.to_string(), FontId::new(14.0, medium()), fg);
+    let size = vec2(galley.size().x + 26.0, galley.size().y + 12.0);
+    let (rect, mut resp) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+    tab_plate(ui, rect, selected, &mut resp);
+    let hov = anim(ui.ctx(), resp.id.with("hover"), resp.hovered() && !selected, HOVER);
     let paint = ui.painter();
-    if !selected && resp.hovered() {
-        paint.rect_filled(rect, rect.height() / 2.0, Color32::from_white_alpha(0x14));
+    if hov > 0.0 {
+        paint.rect_filled(rect, nested(R_CTL + 2.0, 3.0), Color32::from_white_alpha((16.0 * hov) as u8));
     }
-    let col = if !selected && resp.hovered() { TEXT } else { fg };
-    paint.galley(pos2(rect.left() + 15.0, rect.top() + 6.0), galley, col);
+    paint.galley(pos2(rect.left() + 13.0, rect.top() + 6.0), galley, fg.lerp_to_gamma(TEXT, hov));
+    tab_thumb(ui);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -1049,12 +1292,13 @@ impl egui::Widget for Choice {
         let family = if self.on { on_light() } else { semibold() };
         let galley = ui.painter().layout_no_wrap(self.text, FontId::new(13.0, family), fg);
         let size = vec2((galley.size().x + 26.0).max(self.min.x), (galley.size().y + 10.0).max(self.min.y));
-        let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click());
-        let hov = ui.ctx().animate_bool_with_time_and_easing(resp.id.with("hover"), resp.hovered(), 0.14, egui::emath::easing::cubic_out);
+        let (rect, mut resp) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+        let rect = pulled(rect, pull(ui, &mut resp));
+        let hov = anim(ui.ctx(), resp.id.with("hover"), resp.hovered(), HOVER);
         if self.on {
-            capsule(ui.painter(), rect, pal.accent.lerp_to_gamma(Color32::WHITE, 0.12 * hov), 0x68);
+            plate(ui.painter(), rect, R_CTL, pal.accent.lerp_to_gamma(Color32::WHITE, 0.10 * hov), 0x70);
         } else {
-            capsule(ui.painter(), rect, Color32::from_white_alpha(0x18 + (16.0 * hov) as u8), 0x30);
+            plate(ui.painter(), rect, R_CTL, Color32::from_white_alpha(0x1A + (14.0 * hov) as u8), 0x34);
         }
         let at = rect.center() - galley.size() / 2.0;
         ui.painter().galley(at, galley, fg);
@@ -1078,16 +1322,63 @@ mod tests {
         (x.max(y) + 0.05) / (x.min(y) + 0.05)
     }
 
-    /// The tab thumb never passes its target, however far it slides.
+    /// A spring with damping 1 (tab thumb, hover, press) reaches its target and never passes it; one with less
+    /// damping (the switch knob) passes it once, by less than its travel, and still comes to rest there.
     #[test]
-    fn tab_thumb_stays_near_target() {
-        let from = Rect::from_min_size(pos2(0.0, 0.0), vec2(80.0, 30.0));
-        let to = Rect::from_min_size(pos2(250.0, 0.0), vec2(150.0, 30.0));
-        for i in 0..=100 {
-            let r = slide(from, to, i as f32 / 100.0);
-            assert!(r.left() <= to.left() + 0.01 && r.right() <= to.right() + 0.01, "{r:?}");
+    fn spring_settles_on_target() {
+        for (damping, may_pass) in [(1.0, 0.0005), (0.55, 0.2)] {
+            let (mut x, mut v, mut most) = (0.0f32, 0.0f32, 0.0f32);
+            for _ in 0..240 {
+                (x, v) = spring_step(x, v, 1.0, 1.0 / 120.0, 0.3, damping);
+                most = most.max(x);
+            }
+            assert!(most <= 1.0 + may_pass, "damping {damping}: went to {most}");
+            assert!((x - 1.0).abs() < 0.001 && v.abs() < 0.01, "damping {damping}: ended at {x}, speed {v}");
         }
-        assert_eq!(slide(from, to, 1.0), to);
+    }
+
+    /// Every corner is the smooth curve: it starts 1.5 radii from the corner where there is room, cuts the corner
+    /// exactly as deep as a circle of that radius, and a circle or a pill end stays a true circle.
+    #[test]
+    fn corners_are_smooth_and_circles_stay_round() {
+        let at = |rect: Rect, r: f32| outline(rect, r);
+        // a wide plate, radius 10: the top edge's straight part ends 15 px from the corner
+        let pts = at(Rect::from_min_size(pos2(0.0, 0.0), vec2(200.0, 100.0)), 10.0);
+        let top: Vec<f32> = pts.iter().filter(|q| q.y.abs() < 0.001).map(|q| q.x).collect();
+        assert!(top.iter().any(|x| (x - 15.0).abs() < 0.01) && top.iter().any(|x| (x - 185.0).abs() < 0.01), "{top:?}");
+        // on the diagonal the curve is where the circle of radius 10 is: 10 * (1 - 1/sqrt 2) from both edges
+        let want = 10.0 * (1.0 - std::f32::consts::FRAC_1_SQRT_2);
+        let near = pts.iter().map(|q| ((q.x - want).powi(2) + (q.y - want).powi(2)).sqrt()).fold(f32::MAX, f32::min);
+        assert!(near < 0.6, "nearest outline point is {near} px from the circle's diagonal point");
+        // a circle and a pill: every point of the left end is 10 px from the end's centre
+        for w in [20.0, 80.0] {
+            for q in at(Rect::from_min_size(pos2(0.0, 0.0), vec2(w, 20.0)), 10.0) {
+                if q.x <= 10.0 {
+                    let d = ((q.x - 10.0).powi(2) + (q.y - 10.0).powi(2)).sqrt();
+                    assert!((d - 10.0).abs() < 0.01, "width {w}: point {q:?} is {d} from the centre");
+                }
+            }
+        }
+        // no point repeats its neighbour (a repeat drew a line to the centre)
+        for (w, h, r) in [(20.0, 20.0, 10.0), (80.0, 20.0, 10.0), (200.0, 100.0, 10.0), (30.0, 30.0, 9.0), (7.0, 40.0, 3.5)] {
+            let pts = at(Rect::from_min_size(pos2(3.3, 7.7), vec2(w, h)), r);
+            for i in 0..pts.len() {
+                assert!((pts[i] - pts[(i + 1) % pts.len()]).length() >= 0.01, "{w}x{h} r{r}: point {i} repeats");
+            }
+        }
+    }
+
+    /// A pull follows the pointer at first and never gives more than `PULL_MAX`.
+    #[test]
+    fn pull_is_rubber_banded() {
+        assert!((rubber(vec2(1.0, 0.0)).x - 1.0).abs() < 0.1);
+        let mut last = 0.0;
+        for i in 1..400 {
+            let x = rubber(vec2(i as f32 * 5.0, 0.0)).x;
+            assert!(x > last && x < PULL_MAX, "{x}");
+            last = x;
+        }
+        assert_eq!(pulled(Rect::from_min_size(pos2(0.0, 0.0), vec2(40.0, 20.0)), vec2(6.0, 0.0)), Rect::from_min_max(pos2(0.0, 0.0), pos2(46.0, 20.0)));
     }
 
     /// The accent is one global: tests that set it run one at a time.

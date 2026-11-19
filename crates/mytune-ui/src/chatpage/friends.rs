@@ -110,7 +110,8 @@ fn message_requests(ui: &mut Ui, s: &AppState, tex: &mut HashMap<String, Texture
 }
 
 pub(super) fn icon_btn(ui: &mut Ui, g: &str, tip: &str, danger: bool) -> bool {
-    let (r, resp) = ui.allocate_exact_size(vec2(34.0, 34.0), Sense::click());
+    let (r, mut resp) = ui.allocate_exact_size(vec2(34.0, 34.0), Sense::click_and_drag());
+    let r = crate::theme::pulled(r, crate::theme::pull(ui, &mut resp));
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), voice::QUICK);
     ui.painter().circle_filled(r.center(), 17.0 + t, k_raised().lerp_to_gamma(k_hover(), t)); // grows a little on hover
     let col = if danger && resp.hovered() { DANGER } else if resp.hovered() { TEXT } else { SECONDARY };
@@ -121,9 +122,10 @@ pub(super) fn icon_btn(ui: &mut Ui, g: &str, tip: &str, danger: bool) -> bool {
 fn chip(ui: &mut Ui, text: &str, on: bool, accent: bool) -> bool {
     let pal = p();
     let g = ui.painter().layout_no_wrap(text.to_owned(), egui::FontId::new(13.5, th::semibold()), TEXT);
-    let (r, resp) = ui.allocate_exact_size(vec2(g.size().x + 26.0, 30.0), Sense::click());
+    let (r, mut resp) = ui.allocate_exact_size(vec2(g.size().x + 26.0, 30.0), Sense::click_and_drag());
+    let r = crate::theme::pulled(r, crate::theme::pull(ui, &mut resp));
     let fill = if accent { pal.accent } else if on { k_active() } else if resp.hovered() { k_hover() } else { Color32::TRANSPARENT };
-    ui.painter().rect_filled(r, 14.0, fill);
+    ui.painter().rect_filled(r, crate::theme::R_CTL, fill);
     let fg = if accent { pal.on_accent } else if on { TEXT } else { SECONDARY };
     ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::new(13.5, th::semibold()), fg);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()

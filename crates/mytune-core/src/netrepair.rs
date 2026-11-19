@@ -183,7 +183,7 @@ mod tests {
     fn net_tweaks_come_from_catalog() {
         let t = net_tweaks(crate::tweaks::system_cmd()).unwrap();
         let ids: Vec<&str> = t.iter().map(|n| n.tweak.id()).collect();
-        assert_eq!(ids, ["net.adapterpower", "net.adapteradvanced", "net.bindings"]);
+        assert_eq!(ids, ["net.adapterpower", "net.adapteradvanced", "net.buffers", "net.bindings"]);
         assert!(t[1].flags.has(TweakFlags::EXPERIMENTAL) && !t[2].description.is_empty());
     }
 }

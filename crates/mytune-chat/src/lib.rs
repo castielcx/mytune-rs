@@ -3,6 +3,7 @@
 //! backend pumps events into it. The reference driver is `vendor-src/yapfast/src/ui.rs` (`execute`).
 //! Skipped on purpose: desktop toasts (Yapfast has none on Windows either), camera preview in calls.
 
+mod lastcall;
 pub mod ptt;
 pub mod settings;
 pub use settings::{ChatLayout, InputMode, Keybind, Settings};
@@ -133,8 +134,10 @@ impl Chat {
         use yapfast_core::volume::{self, Kind};
         let now = (volume::get(Kind::Voice, person), volume::muted(person), volume::soundboard_muted(person));
         let plain = now == (Kind::Voice.default_gain(), false, false);
+        let stream = settings::stream_sound(person);
         let mut s = lock(&self.0.settings);
-        let changed = if plain { s.person_sound.remove(person).is_some() } else { s.person_sound.insert(person.to_owned(), now) != Some(now) };
+        let mut changed = if plain { s.person_sound.remove(person).is_some() } else { s.person_sound.insert(person.to_owned(), now) != Some(now) };
+        changed |= if stream == (Kind::Stream.default_gain(), false) { s.person_stream.remove(person).is_some() } else { s.person_stream.insert(person.to_owned(), stream) != Some(stream) };
         if changed {
             s.save();
         }
@@ -144,7 +147,9 @@ impl Chat {
     pub fn set_settings(&self, mut new: Settings, save: bool) {
         if save {
             // the settings screen edits an older copy: people's volumes are changed only in the call menu
-            new.person_sound = lock(&self.0.settings).person_sound.clone();
+            let s = lock(&self.0.settings);
+            new.person_sound = s.person_sound.clone();
+            new.person_stream = s.person_stream.clone();
         }
         let old = std::mem::replace(&mut *lock(&self.0.settings), new.clone());
         new.apply();
@@ -411,6 +416,12 @@ impl Chat {
                     }
                     if let (Some(before), Some(after)) = (before, in_call(&app.state.voice)) {
                         lines = narration(&before, &after);
+                    }
+                    // the call left by a crash is joined again once Discord is back
+                    let v = &app.state.voice;
+                    let room = v.room.clone().filter(|_| v.active());
+                    if let Some(again) = lastcall::track(room.as_deref(), |again| !v.active() && app.state.can_join_voice(again)) {
+                        effects.extend(app.dispatch(Action::Voice(yapfast_core::voice::Command::Join(again))));
                     }
                 }
                 if !lines.is_empty() {

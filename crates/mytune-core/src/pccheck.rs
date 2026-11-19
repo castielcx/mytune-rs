@@ -1,5 +1,5 @@
 //! PC check (port of C# `Services/PcCheck.cs`, first batch). Checks only read; `run_fix` writes.
-//! Not ported yet: monitor refresh rate, G-SYNC, graphics notes, memory channels/speed, game drive,
+//! Not ported yet: monitor refresh rate, G-SYNC, graphics notes, game drive,
 //! connection type, temperatures, startup programs, timer resolution, background load.
 
 use crate::engine::Engine;
@@ -44,7 +44,7 @@ fn c(title: &'static str, level: Level, message: impl Into<String>, fix: Option<
 
 /// Runs every check (the internet one pings for about 8 s: call from a worker thread).
 pub fn run_all() -> Vec<Check> {
-    let mut v: Vec<Check> = [power_plan(), battery(), game_mode(), mouse_accel(), memory(), system_drive(), resizable_bar(), internet()]
+    let mut v: Vec<Check> = [power_plan(), battery(), game_mode(), mouse_accel(), memory(), ram_speed(), amd_windows(), system_drive(), resizable_bar(), internet()]
         .into_iter()
         .flatten()
         .collect();
@@ -129,6 +129,56 @@ fn memory() -> Option<Check> {
     })
 }
 
+/// `mods`: (ConfiguredClockSpeed, SMBIOSMemoryType) per stick. Types: 24 DDR3, 26 DDR4, 34 DDR5.
+pub(crate) fn ram_verdict(mods: &[(u32, u32)], laptop: bool) -> Option<Check> {
+    let &(_, kind) = mods.first()?;
+    if mods.len() == 1 && !laptop {
+        return Some(c("Memory channels", Level::Warn, "Only one RAM stick is installed, so memory runs single-channel. That can cost 10 to 20% fps in CPU-bound games. Two matching sticks fix it.", None));
+    }
+    let clock = mods.iter().map(|m| m.0).filter(|&s| s > 0).min()?;
+    // At or below the standard's base speed: XMP/EXPO is most likely off.
+    let base = matches!((kind, clock), (26, ..=2666) | (34, ..=4800) | (24, ..=1333));
+    Some(if base {
+        c("Memory speed", Level::Tip, format!("RAM runs at {clock} MT/s, the default speed. If your kit is sold as faster, turn on XMP/EXPO in the BIOS. It is free performance, most noticeable on AMD Ryzen."), None)
+    } else {
+        c("Memory speed", Level::Ok, format!("RAM runs at {clock} MT/s."), None)
+    })
+}
+
+fn ram_speed() -> Option<Check> {
+    let out = run("powershell.exe", &["-NoProfile", "-Command", "Get-CimInstance Win32_PhysicalMemory | ForEach-Object { \"$($_.ConfiguredClockSpeed) $($_.SMBIOSMemoryType)\" }"]).ok()?.output;
+    ram_verdict(&parse_mods(&out), on_battery_capable())
+}
+
+/// Lines of "ConfiguredClockSpeed SMBIOSMemoryType"; other lines are skipped.
+pub(crate) fn parse_mods(out: &str) -> Vec<(u32, u32)> {
+    out.lines()
+        .filter_map(|l| {
+            let mut p = l.split_whitespace();
+            Some((p.next()?.parse().ok()?, p.next()?.parse().ok()?))
+        })
+        .collect()
+}
+
+/// Ryzen got about 10% in games from the branch-prediction change in Windows 11 24H2
+/// (build 26100), backported to 22H2/23H2 as KB5041587 (revision 4112).
+fn amd_needs_update(cpu: &str, build: u32, ubr: u32) -> bool {
+    cpu.contains("Ryzen") && build < 26100 && !(matches!(build, 22621 | 22631) && ubr >= 4112)
+}
+
+fn amd_windows() -> Option<Check> {
+    let cpu = reg_str(Hive::Hklm, r"HARDWARE\DESCRIPTION\System\CentralProcessor\0", "ProcessorNameString")?;
+    let cv = r"SOFTWARE\Microsoft\Windows NT\CurrentVersion";
+    let build = reg_str(Hive::Hklm, cv, "CurrentBuildNumber")?.parse().ok()?;
+    let ubr = match reg::get(Hive::Hklm, cv, "UBR").ok()? {
+        Some(RegValue::Dword(n)) => n,
+        _ => 0,
+    };
+    amd_needs_update(&cpu, build, ubr).then(|| {
+        c("Windows version", Level::Tip, "Your Windows is older than the update that made Ryzen processors faster in games. Install the latest Windows updates.", None)
+    })
+}
+
 fn system_drive() -> Option<Check> {
     use windows::core::w;
     use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
@@ -149,7 +199,7 @@ fn smi_total(text: &str, section: &str) -> Option<u64> {
     line.split(':').nth(1)?.split_whitespace().next()?.parse().ok()
 }
 
-fn resizable_bar() -> Option<Check> {
+pub(crate) fn resizable_bar() -> Option<Check> {
     let mem = run("nvidia-smi", &["-q", "-d", "MEMORY"]).ok().filter(|r| r.exit_code == 0)?.output;
     let fb = smi_total(&mem, "FB Memory Usage")?;
     let bar = smi_total(&mem, "BAR1 Memory Usage")?;
@@ -212,6 +262,24 @@ mod tests {
     }
 
     #[test]
+    fn ram_and_amd() {
+        assert_eq!(ram_verdict(&[(3200, 26), (3200, 26)], false).unwrap().level, Level::Ok);
+        assert_eq!(ram_verdict(&[(4800, 34), (4800, 34)], false).unwrap().level, Level::Tip);
+        assert_eq!(ram_verdict(&[(6000, 34)], false).unwrap().level, Level::Warn);
+        assert_eq!(ram_verdict(&[(2133, 26)], true).unwrap().level, Level::Tip);
+        assert!(ram_verdict(&[], false).is_none());
+        assert!(amd_needs_update("AMD Ryzen 7 7800X3D", 22631, 3000));
+        assert!(!amd_needs_update("AMD Ryzen 7 7800X3D", 22631, 4112));
+        assert!(!amd_needs_update("AMD Ryzen 7 7800X3D", 26100, 0));
+        assert!(!amd_needs_update("13th Gen Intel(R) Core(TM) i5-13600K", 19045, 0));
+    }
+
+    #[test]
+    fn real_ram() {
+        println!("{:?}", ram_speed());
+    }
+
+    #[test]
     fn summary_text() {
         assert_eq!(summary(&[]), "Everything looks fine.");
     }
@@ -249,7 +317,7 @@ pub struct ThisPc {
     pub power_plan: String,
 }
 
-fn reg_str(hive: Hive, path: &str, name: &str) -> Option<String> {
+pub(crate) fn reg_str(hive: Hive, path: &str, name: &str) -> Option<String> {
     match reg::get(hive, path, name).ok()? {
         Some(RegValue::String(s)) | Some(RegValue::ExpandString(s)) => Some(s),
         _ => None,

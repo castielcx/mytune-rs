@@ -1,0 +1,85 @@
+diff --git a/src/tessellator.rs b/src/tessellator.rs
+index 22ba5c8..6d8bb54 100644
+--- a/src/tessellator.rs
++++ b/src/tessellator.rs
+@@ -571,33 +571,58 @@ pub mod path {
+             path.push(pos2(max.x, max.y)); // right bottom
+             path.push(pos2(min.x, max.y)); // left bottom
+         } else {
+-            // We need to avoid duplicated vertices, because that leads to visual artifacts later.
+-            // Duplicated vertices can happen when one side is all rounding, with no straight edge between.
+-            let eps = f32::EPSILON * rect.size().max_elem();
+-
+-            add_circle_quadrant(path, pos2(max.x - cr.se, max.y - cr.se), cr.se, 0.0); // south east
+-
+-            if rect.width() <= cr.se + cr.sw + eps {
+-                path.pop(); // avoid duplicated vertex
+-            }
+-
+-            add_circle_quadrant(path, pos2(min.x + cr.sw, max.y - cr.sw), cr.sw, 1.0); // south west
+-
+-            if rect.height() <= cr.sw + cr.nw + eps {
+-                path.pop(); // avoid duplicated vertex
++            // MyTune edit: every rounded corner is a smooth one (a superellipse quarter, the "squircle" curve):
++            // it leaves the straight edge gradually over up to 1.5 radii instead of snapping into a circle arc,
++            // and cuts the corner exactly as deep as the circle of that radius would. Where the sides leave no
++            // room for the longer run-in it falls back towards the circle, so circles and pills stay what they
++            // were. One place, so every rectangle, stroke and shadow in the app has the same corner.
++            let (w, h) = (rect.width(), rect.height());
++            // how far a corner may reach along a side it shares with the corner of radius `other`
++            let reach = |r: f32, other: f32, side: f32| if r <= 0.0 { 0.0 } else { (side * r / (r + other)).min(r * 1.5) };
++            let corners = [
++                (pos2(max.x, max.y), cr.se, reach(cr.se, cr.sw, w).min(reach(cr.se, cr.ne, h)), 0.0), // south east
++                (pos2(min.x, max.y), cr.sw, reach(cr.sw, cr.se, w).min(reach(cr.sw, cr.nw, h)), 1.0), // south west
++                (pos2(min.x, min.y), cr.nw, reach(cr.nw, cr.ne, w).min(reach(cr.nw, cr.sw, h)), 2.0), // north west
++                (pos2(max.x, min.y), cr.ne, reach(cr.ne, cr.nw, w).min(reach(cr.ne, cr.se, h)), 3.0), // north east
++            ];
++            for (corner, r, a, quadrant) in corners {
++                add_smooth_quadrant(path, corner, r, a.max(r), quadrant);
+             }
+-
+-            add_circle_quadrant(path, pos2(min.x + cr.nw, min.y + cr.nw), cr.nw, 2.0); // north west
+-
+-            if rect.width() <= cr.nw + cr.ne + eps {
+-                path.pop(); // avoid duplicated vertex
++            // Duplicated vertices lead to visual artifacts later (a line drawn to the centre): `add_smooth_quadrant`
++            // drops a point that repeats the one before it; the last may still repeat the first.
++            if path.len() > 1 && (path[0] - path[path.len() - 1]).length() < DUPLICATE {
++                path.pop();
+             }
++        }
++    }
+ 
+-            add_circle_quadrant(path, pos2(max.x - cr.ne, min.y + cr.ne), cr.ne, 3.0); // north east
++    /// Two path points closer than this count as one. Was `f32::EPSILON * size`: at a fractional scale (1.15)
++    /// the two arc ends of a circle or pill differ by float rounding (~1e-4) and passed as distinct.
++    const DUPLICATE: f32 = 0.01;
+ 
+-            if rect.height() <= cr.ne + cr.se + eps {
+-                path.pop(); // avoid duplicated vertex
++    /// One smooth corner of a rectangle: `corner` is the rectangle's own corner point, `r` the corner radius and
++    /// `a >= r` how far along each side the curve reaches. Quadrants as in `add_circle_quadrant`.
++    fn add_smooth_quadrant(path: &mut Vec<Pos2>, corner: Pos2, r: f32, a: f32, quadrant: f32) {
++        let mut push = |p: Pos2| {
++            if path.last().is_none_or(|last| (*last - p).length() >= DUPLICATE) {
++                path.push(p);
+             }
++        };
++        if r <= 0.0 || a <= 0.0 {
++            return push(corner);
++        }
++        // exponent that makes the curve pass where the circle of radius `r` would, on the diagonal:
++        // 2 (a circle) when the reach is the radius, about 3.2 at the full reach of 1.5 radii
++        let n = -1.0 / (1.0 - 0.292_893_2 * r / a).log2();
++        let e = 2.0 / n;
++        // the curve is the quarter of a superellipse centred `a` inside both edges
++        let sign = [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)][quadrant as usize];
++        let centre = pos2(corner.x - sign.0 * a, corner.y - sign.1 * a);
++        let steps = ((a * 0.75).ceil() as usize).clamp(4, 32);
++        for i in 0..=steps {
++            let t = (quadrant + i as f32 / steps as f32) * std::f32::consts::FRAC_PI_2;
++            let (s, c) = t.sin_cos();
++            push(pos2(centre.x + a * c.signum() * c.abs().powf(e), centre.y + a * s.signum() * s.abs().powf(e)));
+         }
+     }
+ 

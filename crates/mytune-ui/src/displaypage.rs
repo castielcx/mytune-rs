@@ -1,13 +1,13 @@
 //! Display page, laid out like `Views/DisplayPage.xaml`: monitor pill track, resolution + refresh pick lists
-//! with one Apply (keep-or-revert dialog), colour calibration sliders, NVIDIA vibrance.
+//! with one Apply (keep-or-revert dialog). Colours and NVIDIA vibrance are on the Vibrance page.
 //! Display calls are quick, so they run on the UI thread like the C# page.
 
 use crate::theme::{self as th, bd, rt, text2};
 use crate::widgets::{self as w, caption, caption3};
 use eframe::egui::{self, Id, Layout, Align, Ui};
-use mytune_core::display::{self, DisplayMode, DisplayProfile, Monitor};
+use mytune_core::customres;
+use mytune_core::display::{self, DisplayMode, Monitor};
 use mytune_core::engine::Engine;
-use mytune_core::vibrance::VibranceRange;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -18,49 +18,41 @@ struct Trial {
     old: DisplayMode,
     new: DisplayMode,
     since: Instant,
+    /// A custom resolution on driver trial (not a mode Windows lists).
+    custom: bool,
 }
 
 pub struct DisplayPage {
     engine: Arc<Engine>,
+    /// Typed width and height of a new custom resolution.
+    custom_w: String,
+    custom_h: String,
+    /// The chosen display's own resolution at its highest refresh rate.
+    native: Option<DisplayMode>,
     monitors: Vec<Monitor>,
     sel: usize,
     now: Option<DisplayMode>,
     modes: Vec<DisplayMode>,
     pick_res: (u32, u32),
     pick_hz: u32,
-    profile: DisplayProfile,
-    vib: Option<VibranceRange>,
-    vib_pct: f64,
     loaded: bool,
     pub(crate) status: Option<(String, bool)>,
     trial: Option<Trial>,
-}
-
-/// C# number formats: "0.00", "+0;-0;0" and "0", plus the unit.
-fn fmt_gamma(v: f64) -> String {
-    format!("{v:.2}")
-}
-fn fmt_signed(v: f64) -> String {
-    let r = v.round_ties_even() as i64;
-    if r > 0 { format!("+{r}%") } else { format!("{r}%") }
-}
-fn fmt_pct(v: f64) -> String {
-    format!("{}%", v.round_ties_even() as i64)
 }
 
 impl DisplayPage {
     pub fn new(engine: Arc<Engine>) -> DisplayPage {
         DisplayPage {
             engine,
+            custom_w: String::new(),
+            custom_h: String::new(),
+            native: None,
             monitors: vec![],
             sel: 0,
             now: None,
             modes: vec![],
             pick_res: (0, 0),
             pick_hz: 0,
-            profile: DisplayProfile::default(),
-            vib: None,
-            vib_pct: 50.0,
             loaded: false,
             status: None,
             trial: None,
@@ -88,11 +80,7 @@ impl DisplayPage {
             self.now = None;
             self.modes.clear();
         }
-        self.profile = self.engine.with_store(|s| display::get_profile(s, &dev));
-        self.vib = display::get_vibrance(&dev);
-        if let Some(r) = self.vib {
-            self.vib_pct = self.profile.vibrance.unwrap_or_else(|| r.percent_for());
-        }
+        self.native = customres::native(&dev, &self.modes);
     }
 
     fn rates(&self) -> Vec<u32> {
@@ -118,13 +106,95 @@ impl DisplayPage {
             return;
         }
         match display::set_mode(&dev, new, false) {
-            Ok(()) => self.trial = Some(Trial { dev, old, new, since: Instant::now() }),
+            Ok(()) => self.trial = Some(Trial { dev, old, new, since: Instant::now(), custom: false }),
             Err(e) => self.status = Some((e.to_string(), false)),
         }
     }
 
+    /// Test: the typed size on driver trial, then the keep-or-revert dialog.
+    fn test_custom(&mut self) {
+        let (Some(dev), Some(old)) = (self.dev(), self.now) else { return };
+        let (Ok(w), Ok(h)) = (self.custom_w.trim().parse::<u32>(), self.custom_h.trim().parse::<u32>()) else {
+            self.status = Some(("Type a width and a height in pixels.".into(), false));
+            return;
+        };
+        match customres::validate(w, h, self.native, &self.modes).map_err(|e| e.to_string()).and_then(|new| customres::try_mode(&dev, new).map(|()| new).map_err(|e| format!("The graphics driver refused {w} x {h}: {e}"))) {
+            Ok(new) => self.trial = Some(Trial { dev, old, new, since: Instant::now(), custom: true }),
+            Err(e) => self.status = Some((e, false)),
+        }
+    }
+
+    /// Keep: the driver saves the mode on trial, it becomes the display's mode, the display is set to stretch
+    /// and the mode joins the saved list. Otherwise the trial ends.
+    fn finish_custom(&mut self, t: Trial, keep: bool) {
+        let size = t.new.label();
+        self.status = Some(if !keep {
+            match customres::revert(&t.dev) {
+                Ok(()) => ("Switched back to the old mode.".into(), true),
+                Err(e) => (format!("Couldn't switch back: {e}. A restart restores the old mode."), false),
+            }
+        } else if let Err(e) = customres::save(&t.dev) {
+            let _ = customres::revert(&t.dev);
+            (format!("Couldn't save {size}: {e}"), false)
+        } else {
+            let stored = self.engine.with_store(|s| {
+                customres::register(s, &t.dev, t.new, true);
+                s.save()
+            });
+            // the trial was never written to Windows' settings: make it the display's saved mode
+            let _ = display::set_mode(&t.dev, t.new, true);
+            match (customres::stretch(&t.dev), stored) {
+                (Ok(()), Ok(())) => (format!("{size} saved. This display now stretches every resolution to fill the screen."), true),
+                (Err(e), _) => (format!("{size} saved, but stretching couldn't be turned on: {e}"), false),
+                (_, Err(e)) => (format!("{size} saved in the driver, but MyTune couldn't note it: {e}"), false),
+            }
+        });
+        self.custom_w.clear();
+        self.custom_h.clear();
+        self.choose();
+    }
+
+    /// Apply on a saved row: the normal switch with the keep-or-revert dialog.
+    fn apply_custom(&mut self, m: DisplayMode) {
+        if !self.modes.contains(&m) {
+            self.status = Some((format!("Windows no longer lists {}. Remove it and add it again.", m.label()), false));
+            return;
+        }
+        self.pick_res = (m.width, m.height);
+        self.pick_hz = m.hz;
+        self.apply();
+    }
+
+    /// Remove: off the mode first when the display runs it, then out of the driver and the saved list.
+    fn remove_custom(&mut self, m: DisplayMode) {
+        let Some(dev) = self.dev() else { return };
+        if self.now == Some(m) {
+            if let Some(Err(e)) = self.native.map(|n| display::set_mode(&dev, n, true)) {
+                self.status = Some((format!("Couldn't leave {}: {e}", m.label()), false));
+                return;
+            }
+        }
+        self.status = Some(match customres::delete(&dev, m) {
+            Ok(()) => {
+                let stored = self.engine.with_store(|s| {
+                    customres::register(s, &dev, m, false);
+                    s.save()
+                });
+                match stored {
+                    Ok(()) => (format!("{} removed.", m.label()), true),
+                    Err(e) => (format!("{} removed from the driver, but MyTune couldn't note it: {e}", m.label()), false),
+                }
+            }
+            Err(e) => (format!("Couldn't remove {}: {e}", m.label()), false),
+        });
+        self.choose();
+    }
+
     fn finish_trial(&mut self, keep: bool) {
         let Some(t) = self.trial.take() else { return };
+        if t.custom {
+            return self.finish_custom(t, keep);
+        }
         let r = display::set_mode(&t.dev, if keep { t.new } else { t.old }, keep);
         self.status = Some(match (r, keep) {
             (Ok(()), true) => ("Display mode saved.".into(), true),
@@ -185,9 +255,66 @@ impl DisplayPage {
             self.monitor_track(ui);
         }
         self.mode_card(ui);
-        self.color_cards(ui);
-        ui.add_space(14.0);
-        caption3(ui, "Windows clears the color curve after a restart. This version does not re-apply your values by itself: press Apply saved colors. Games, f.lux or NVIDIA Control Panel color settings can override them.");
+        self.custom_card(ui);
+    }
+
+    /// Custom resolutions (NVIDIA only): one plate with the add row and a row per saved resolution.
+    fn custom_card(&mut self, ui: &mut Ui) {
+        th::section(ui, "Custom resolutions");
+        if !mytune_core::nvapi::available() {
+            th::card(ui, (12, 16, 18, 16), |ui| {
+                ui.label(th::sb("Custom resolutions", 14.0));
+                ui.add_space(4.0);
+                caption(ui, "Custom resolutions need an NVIDIA graphics card.");
+            });
+            return;
+        }
+        let saved = self.dev().map(|d| self.engine.with_store(|s| customres::saved(s, &d))).unwrap_or_default();
+        let hz = self.native.map(|n| n.hz).unwrap_or(0);
+        let (mut test, mut apply, mut remove) = (false, None, None);
+        th::group(ui, |ui| {
+            th::card(ui, (12, 16, 18, 16), |ui| {
+                ui.label(th::sb("Custom resolutions", 14.0));
+                ui.add_space(4.0);
+                caption(ui, "Add a resolution Windows does not list. Always stretched to fill the screen.");
+                ui.add_space(14.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 10.0;
+                    for (label, value) in [("Width", &mut self.custom_w), ("Height", &mut self.custom_h)] {
+                        ui.label(rt(label, 12.0).color(text2()));
+                        ui.add(egui::TextEdit::singleline(value).desired_width(64.0).char_limit(5));
+                    }
+                    ui.label(rt(format!("{hz} Hz (highest)"), 12.0).color(text2()));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        test = th::button(ui, "Test", true, (22.0, 7.0, 22.0, 8.0)).on_hover_text("Shows the resolution. You are asked to keep it; without an answer it switches back after 15 seconds.").clicked();
+                    });
+                });
+            });
+            for m in &saved {
+                th::card(ui, (12, 10, 18, 10), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(rt(format!("{}   {} Hz", m.label(), m.hz), 14.0));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if th::subtle_button(ui, "Remove", th::BTN).on_hover_text("Deletes this resolution from the graphics driver. Stretching stays on.").clicked() {
+                                remove = Some(*m);
+                            }
+                            if th::button(ui, "Apply", false, th::BTN).clicked() {
+                                apply = Some(*m);
+                            }
+                        });
+                    });
+                });
+            }
+        });
+        if test {
+            self.test_custom();
+        }
+        if let Some(m) = apply {
+            self.apply_custom(m);
+        }
+        if let Some(m) = remove {
+            self.remove_custom(m);
+        }
     }
 
     /// One pill track (ControlBg, padding 3); the chosen monitor is an AccentButton, the others SubtleButtons.
@@ -265,118 +392,6 @@ impl DisplayPage {
         }
         if apply {
             self.apply();
-        }
-    }
-
-    fn color_cards(&mut self, ui: &mut Ui) {
-        let Some(dev) = self.dev() else { return };
-        let (mut changed, mut vib_changed, mut released) = (false, false, false);
-        let (mut reset, mut all, mut reapply) = (false, false, false);
-
-        // header: section title left, the section's own actions right
-        ui.add_space(24.0);
-        {
-            // Reset has margin 0,0,-12,0 in the XAML: its text lines up with the card edge. Drawn in a child
-            // that reaches 12 px past the row, so the page layout itself is not widened.
-            let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::hover());
-            let wide = egui::Rect::from_min_max(row.min, egui::pos2(row.max.x + 12.0, row.max.y));
-            let mut ui = ui.new_child(egui::UiBuilder::new().max_rect(wide).layout(Layout::right_to_left(Align::Center)));
-            let ui = &mut ui;
-            {
-                if w::subtle_button(ui, "Reset", 12.0, (12.0, 4.0, 12.0, 5.0)).on_hover_text("Puts this display's colors and vibrance back to normal").clicked() {
-                    reset = true;
-                }
-                if self.monitors.len() > 1 && w::subtle_button(ui, "Apply to all displays", 12.0, (12.0, 4.0, 12.0, 5.0)).clicked() {
-                    all = true;
-                }
-                if w::subtle_button(ui, "Apply saved colors", 12.0, (12.0, 4.0, 12.0, 5.0)).on_hover_text("Windows clears the color curve after a restart; this puts your saved values back").clicked() {
-                    reapply = true;
-                }
-            }
-        }
-        ui.add_space(8.0);
-        th::card(ui, (12, 18, 18, 4), |ui| {
-            let p = &mut self.profile;
-            let rows: [(&str, &mut f64, f64, f64, String); 6] = [
-                ("Gamma", &mut p.gamma, 0.30, 2.80, String::new()),
-                ("Brightness", &mut p.brightness, -50.0, 50.0, String::new()),
-                ("Contrast", &mut p.contrast, 50.0, 150.0, String::new()),
-                ("Red balance", &mut p.red, 50.0, 100.0, String::new()),
-                ("Green balance", &mut p.green, 50.0, 100.0, String::new()),
-                ("Blue balance", &mut p.blue, 50.0, 100.0, String::new()),
-            ];
-            for (label, v, min, max, _) in rows {
-                let f: &dyn Fn(f64) -> String = match label {
-                    "Gamma" => &fmt_gamma,
-                    "Brightness" => &fmt_signed,
-                    _ => &fmt_pct,
-                };
-                let o = w::slider_row(ui, label, v, min, max, f, true);
-                changed |= o.changed;
-                released |= o.released;
-            }
-        });
-
-        th::section(ui, "NVIDIA");
-        th::card(ui, (12, 18, 18, 4), |ui| {
-            let on = self.vib.is_some();
-            let o = w::slider_row(ui, "Digital vibrance", &mut self.vib_pct, 0.0, 100.0, &fmt_pct, on);
-            vib_changed |= o.changed;
-            released |= o.released;
-            if !on {
-                ui.add_space(-6.0);
-                caption(ui, "Digital vibrance needs an NVIDIA GPU driving this display.");
-                ui.add_space(12.0);
-            }
-        });
-
-        if reapply {
-            changed = true;
-            vib_changed = self.profile.vibrance.is_some();
-            if let Some(v) = self.profile.vibrance {
-                self.vib_pct = v;
-            }
-        }
-        if changed || vib_changed {
-            let mut err = None;
-            if changed {
-                if let Err(e) = display::apply_ramp(&dev, &self.profile) {
-                    err = Some(e.to_string());
-                }
-            }
-            if vib_changed {
-                self.profile.vibrance = Some(self.vib_pct);
-                if let Err(e) = display::apply_vibrance(&dev, &mut self.profile) {
-                    err = Some(e.to_string());
-                }
-            }
-            let p = self.profile.clone();
-            self.engine.with_store(|s| display::register(s, &dev, Some(&p)));
-            self.status = err.map(|e| (e, false));
-        }
-        if released || reapply {
-            if let Err(e) = self.engine.with_store(|s| s.save()) {
-                self.status = Some((e.to_string(), false));
-            }
-        }
-        if reset {
-            let r = self.engine.with_store(|s| display::reset(s, &dev));
-            self.status = Some(match r {
-                Ok(()) => ("Colors reset.".into(), true),
-                Err(e) => (e.to_string(), false),
-            });
-            self.choose();
-        }
-        if all {
-            let p = self.profile.clone();
-            let others: Vec<String> = self.monitors.iter().map(|m| m.device.clone()).filter(|d| *d != dev).collect();
-            let mut err = None;
-            for o in &others {
-                if let Err(e) = self.engine.with_store(|s| display::copy_to(s, &p, o)) {
-                    err = Some(format!("{o}: {e}"));
-                }
-            }
-            self.status = Some(err.map(|e| (e, false)).unwrap_or(("Applied to all displays.".into(), true)));
         }
     }
 }

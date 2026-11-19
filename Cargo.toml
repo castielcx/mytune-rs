@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/mytune-core", "crates/mytune-ui", "crates/mytune-sensors", "crates/mytune-chat"]
+members = ["crates/mytune-core", "crates/mytune-ui", "crates/mytune-sensors", "crates/mytune-chat", "crates/mytune-keys"]
 exclude = ["vendor-src"]
 
 [workspace.package]
@@ -12,6 +12,13 @@ edition = "2021"
 webrtc-sys = { path = "vendor-src/yapfast/vendor/webrtc-sys" }
 davey = { path = "vendor-src/yapfast/vendor/davey" }
 tungstenite = { path = "vendor-src/yapfast/vendor/tungstenite" }
+# epaint 0.37.0 with `rounded_rectangle` changed (patches/epaint-0.37.0-mytune.patch): every rounded corner is the
+# smooth superellipse curve, and a path point that repeats its neighbour is dropped (circles and pills drew a stray
+# line at 1.15 scale).
+epaint = { path = "vendor-src/epaint" }
+# eframe 0.37.0 with one edit (`native/epi_integration.rs` `post_rendering`): upstream shows the window after the
+# first frame even with `with_visible(false)`, so `--minimized` opened it on screen.
+eframe = { path = "vendor-src/eframe" }
 const_panic = { git = "https://github.com/jplatte/const_panic", rev = "e0b317a9a7bde2d48a7d15b6a60d70e4a41d3b5f" }
 
 # The app that is run every day is the dev build: unoptimised, opening a chat room took a 386 ms frame.

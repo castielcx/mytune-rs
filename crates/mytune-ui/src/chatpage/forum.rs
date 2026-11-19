@@ -74,7 +74,7 @@ fn chip(ui: &mut Ui, s: &AppState, e: Option<&ShownEmoji>, text: &str, on: bool,
     let r = egui::Frame::new()
         .fill(if on { p().accent.gamma_multiply(0.25) } else { k_raised() })
         .stroke(Stroke::new(1.0, if on { p().accent } else { k_line() }))
-        .corner_radius(h / 2.0)
+        .corner_radius(if small { 6.0 } else { crate::theme::R_CTL })
         .inner_margin(egui::Margin::symmetric(if small { 8 } else { 12 }, 0))
         .show(ui, |ui| {
             ui.set_height(h);

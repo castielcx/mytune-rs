@@ -353,6 +353,10 @@ pub fn show(ctx: &egui::Context, app: &Application, acts: &mut Vec<Action>) {
                         }
                     }
                     MenuChoice::LeaveGroup => {
+                        if row(ui, "\u{E70F}", "Edit Group", false, false, None) {
+                            super::dialogs::open_group(ui.ctx(), &id);
+                            done = true;
+                        }
                         if row(ui, "\u{E7E8}", "Leave Group", true, false, None) {
                             acts.push(Action::AskLeaveGroup(id.clone()));
                             done = true;

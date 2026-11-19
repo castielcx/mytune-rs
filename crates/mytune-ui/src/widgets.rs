@@ -12,12 +12,14 @@ fn white(a: u8) -> Color32 {
 pub fn subtle_button(ui: &mut Ui, text: &str, size: f32, pad: (f32, f32, f32, f32)) -> egui::Response {
     let galley = ui.painter().layout_no_wrap(text.to_string(), FontId::proportional(size), TEXT);
     let dim = vec2(galley.size().x + pad.0 + pad.2, galley.size().y + pad.1 + pad.3);
-    let (rect, resp) = ui.allocate_exact_size(dim, Sense::click());
-    if resp.hovered() {
-        ui.painter().rect_filled(rect, rect.height() / 2.0, white(18)); // 0.07 * 255
+    let (rect, mut resp) = ui.allocate_exact_size(dim, Sense::click_and_drag());
+    let off = th::pull(ui, &mut resp);
+    let hov = th::anim(ui.ctx(), resp.id.with("hover"), resp.hovered() || off != egui::Vec2::ZERO, th::HOVER);
+    if hov > 0.0 {
+        ui.painter().rect_filled(th::pulled(rect, off), th::R_CTL, white((20.0 * hov) as u8));
     }
     let col = if resp.is_pointer_button_down_on() { text2() } else { TEXT };
-    ui.painter().galley(pos2(rect.left() + pad.0, rect.top() + pad.1), galley, col);
+    ui.painter().galley(pos2(rect.left() + pad.0, rect.top() + pad.1) + off / 2.0, galley, col);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -53,9 +55,10 @@ fn dropdown_styled(ui: &mut Ui, id: &str, width: f32, value: &str, rows: &[(Stri
     let up = rect.bottom() + 4.0 + list_h > screen.bottom() && rect.top() - screen.top() > screen.bottom() - rect.bottom();
     let paint = ui.painter();
     if !bare {
-        th::capsule(paint, rect, if resp.hovered() { white(0x2C) } else { th::Glass::Raised.fill() }, 0x26);
+        let hov = th::anim(&ctx, key.with("hover"), resp.hovered() || open, th::HOVER);
+        th::plate(paint, rect, th::R_CTL, white(0x1A + (14.0 * hov) as u8), 0x34);
         if open {
-            paint.rect_stroke(rect, rect.height() / 2.0, Stroke::new(1.0, pal.accent), StrokeKind::Inside);
+            paint.rect_stroke(rect, th::R_CTL, Stroke::new(1.0, pal.accent), StrokeKind::Inside);
         }
     }
     let ink = if !bare || open || resp.hovered() { TEXT } else { text2() };
@@ -117,18 +120,21 @@ pub struct SliderOut {
     pub released: bool,
 }
 
-/// `Slider` style: 6 px square track (accent left of the thumb, white 16 % right), 10x20 accent thumb with a
-/// 2 px Ink outline that grows to 1.2x on hover, a click moves the thumb to the pointer. Disabled = 40 % opacity.
+/// Slider: a 4 px track (accent left of the thumb, white 16 % right) and a round 18 px thumb that grows a
+/// little under the pointer and more while held; a click moves the thumb to the pointer. Disabled = 40 % opacity.
 pub fn slider(ui: &mut Ui, id: Id, value: &mut f64, min: f64, max: f64, width: f32, enabled: bool) -> SliderOut {
     slider_sized(ui, id, value, min, max, width, enabled, false)
 }
 
-/// `slider`; `thin` is the volume flyout's: a 3 px track and a round 14 px thumb.
+/// `slider`; `thin` is the volume flyout's: a 3 px track and a round 12 px thumb.
 pub fn slider_sized(ui: &mut Ui, id: Id, value: &mut f64, min: f64, max: f64, width: f32, enabled: bool, thin: bool) -> SliderOut {
-    // half the thumb's width (its centre travels over the track minus the thumb), track height, thumb size
-    let (half, track_h, thumb_w, thumb_h, swell) = if thin { (5.0, 3.0, 10.0, 10.0, 2.0) } else { (11.0, 6.0, 22.0, 16.0, 8.0) };
+    // half the thumb's width (its centre travels over the track minus the thumb), track height, thumb size and
+    // how much it grows while held
+    let (half, track_h, thumb_d, swell) = if thin { (6.0, 3.0, 12.0, 2.0) } else { (9.0, 4.0, 18.0, 4.0) };
     let pal = th::p();
-    let (rect, resp) = ui.allocate_exact_size(vec2(width, 20.0), if enabled { Sense::click_and_drag() } else { Sense::hover() });
+    // never narrower than its thumb: egui stops the app on a negative size, and a caller with no room left
+    // would ask for one
+    let (rect, resp) = ui.allocate_exact_size(vec2(width.max(2.0 * half), 20.0), if enabled { Sense::click_and_drag() } else { Sense::hover() });
     let mut changed = false;
     if enabled && resp.is_pointer_button_down_on() {
         if let Some(p) = resp.interact_pointer_pos() {
@@ -143,18 +149,23 @@ pub fn slider_sized(ui: &mut Ui, id: Id, value: &mut f64, min: f64, max: f64, wi
     }
     let t = if max > min { ((*value - min) / (max - min)).clamp(0.0, 1.0) as f32 } else { 0.0 };
     let cx = rect.left() + half + t * (rect.width() - 2.0 * half);
-    let ease = egui::emath::easing::cubic_out;
-    let k = ui.ctx().animate_bool_with_time_and_easing(id, enabled && resp.hovered(), 0.14, ease);
-    let held = ui.ctx().animate_bool_with_time_and_easing(id.with("held"), enabled && resp.is_pointer_button_down_on(), 0.12, ease);
+    let k = th::anim(ui.ctx(), id.with("hover"), enabled && resp.hovered(), th::HOVER);
+    // held, the thumb swells on a spring that runs a little past and settles
+    let held = th::spring(ui.ctx(), id.with("held"), if enabled && resp.is_pointer_button_down_on() { 1.0 } else { 0.0 }, 0.26, 0.6);
     let op = if enabled { 1.0 } else { 0.4 };
     let fade = |c: Color32| c.gamma_multiply(op);
     let paint = ui.painter();
     let track = Rect::from_center_size(rect.center(), vec2(rect.width(), track_h));
     paint.rect_filled(track, track_h / 2.0, fade(white(0x29)));
     paint.rect_filled(Rect::from_min_max(track.min, pos2(cx, track.max.y)), track_h / 2.0, fade(pal.accent));
-    let thumb = Rect::from_center_size(pos2(cx, rect.center().y), vec2(thumb_w + 2.0 * k + swell * held, thumb_h + 2.0 * k));
-    paint.add(egui::Shadow { offset: [0, 2], blur: 6, spread: 0, color: fade(Color32::from_black_alpha(70)) }.as_shape(thumb, egui::CornerRadius::from(thumb.height() / 2.0)));
-    th::capsule(paint, thumb, fade(Color32::WHITE.gamma_multiply(1.0 - 0.6 * held)), 0x60);
+    let thumb = Rect::from_center_size(pos2(cx, rect.center().y), egui::Vec2::splat(thumb_d + 1.0 * k + swell * held));
+    paint.add(egui::Shadow { offset: [0, 1], blur: 5, spread: 0, color: fade(Color32::from_black_alpha(96)) }.as_shape(thumb, egui::CornerRadius::from(thumb.height() / 2.0)));
+    // held, the thumb turns to clear glass: the track under it shows through, magnified and bent at the rim
+    let glass = held.clamp(0.0, 1.0);
+    if glass > 0.01 {
+        paint.add(crate::lens::shape(thumb, crate::lens::Lens { radius: thumb.height() / 2.0, rim: thumb.height() * 0.45, bend: 5.0 * glass, zoom: 1.0 + 0.25 * glass, blur: 0.0, split: 0.3 }));
+    }
+    th::capsule(paint, thumb, fade(Color32::WHITE.gamma_multiply(1.0 - 0.8 * glass)), 0x60);
     SliderOut { changed, released: enabled && (resp.drag_stopped() || resp.clicked()) }
 }
 
@@ -204,9 +215,9 @@ pub fn checkbox(ui: &mut Ui, id: Id, checked: &mut bool, label: impl FnOnce(&mut
         let (rect, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
         let hover = ui.rect_contains_pointer(rect);
         let fade = if hover { 0.85 } else { 1.0 };
-        let (fill, stroke) = if *checked { (pal.accent, pal.accent) } else { (white(0x08), white(0x9A)) };
-        ui.painter().rect_filled(rect, 7.0, fill.gamma_multiply(fade));
-        ui.painter().rect_stroke(rect, 7.0, Stroke::new(1.0, stroke.gamma_multiply(fade)), StrokeKind::Inside);
+        let (fill, stroke) = if *checked { (pal.accent, pal.accent) } else { (white(0x10), white(0x70)) };
+        ui.painter().rect_filled(rect, 6.0, fill.gamma_multiply(fade));
+        ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, stroke.gamma_multiply(fade)), StrokeKind::Inside);
         if *checked {
             ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "\u{E73E}", FontId::new(12.0, th::icons()), pal.on_accent);
         }

@@ -24,7 +24,30 @@ Rust port of MyTune 2: a Windows gaming-tuning app with a glass-style egui UI an
    ```
 3. `.cargo/config.toml` points `LK_CUSTOM_WEBRTC` at a local copy of libwebrtc (`vendor-src/webrtc`). Delete that
    line to let the build download it instead.
-4. `.\build.ps1 build --release -p mytune-ui`, then run `target\release\MyTune.exe` from an elevated terminal.
+4. Get epaint 0.37.0 (egui's drawing library) into `vendor-src/epaint` and apply the MyTune change to it (the
+   smooth corner curve). The source is the `epaint-0.37.0` folder cargo keeps under
+   `%USERPROFILE%\.cargo\registry\src\`:
+   ```
+   git -C vendor-src/epaint init
+   git -C vendor-src/epaint apply ../../patches/epaint-0.37.0-mytune.patch
+   ```
+5. `.\build.ps1 build --release -p mytune-ui`, then run `target\release\MyTune.exe` from an elevated terminal.
+
+## The look, and the copy for comparing (2026-11-19)
+- One system in `crates/mytune-ui/src/theme.rs`: Inter as the typeface (in the exe, `assets/fonts`), one scale of
+  corner radii (`R_PANEL` 18, `R_CARD` 14, `R_FLOAT` 16, `R_MENU` 12, `R_CTL` 9), the same smooth corner on every
+  shape (the epaint change above), a one-pixel rim lit from above on every plate, and springs for everything that
+  moves (`spring`, `anim`). Rows that belong together share one plate (`group`).
+- `src/lens.rs` is real glass: an OpenGL pass that copies the frame so far and draws it back bent at a shape's
+  rim, magnified, or blurred. Used by the switch knob and slider thumb while held, the tab thumb, and floating
+  panels (`theme::float`, frosted). The headless screenshot tests draw with wgpu and skip it; see it with
+  `.\build.ps1 run -p mytune-ui --example lens_demo --features local-stickers,preview --target-dir target`
+  (opens a window, saves a picture to `LENS_OUT`, closes).
+- Feature `preview` of `mytune-ui` builds a copy that runs beside the installed MyTune: window title
+  "MyTune Redesign", its own single-instance name, no Win+Y, no speaker tray icon, no call rejoin. Never with
+  `taskbar-look`. Run it under another file name (`MyTuneRedesign.exe`): scripts that stop `MyTune` then leave it
+  alone. Both copies write one `state.json`; `Store::save` merges with what the other wrote, but a MyTune built
+  before that change still overwrites the file whole.
 
 ## Toolchain
 Rustup stable (`x86_64-pc-windows-msvc`) + Visual Studio Build Tools (C++ workload). In a new shell:

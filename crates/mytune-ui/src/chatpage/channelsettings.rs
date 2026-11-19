@@ -152,6 +152,36 @@ fn overview(ui: &mut Ui, cs: &ChannelSettingsScreen, acts: &mut Vec<Action>) {
             }
         });
     }
+    if cs.kind == ChannelKind::Voice {
+        use mytune_chat::yapfast_core::chat::{BITRATES, VOICE_REGIONS};
+        ui.add_space(10.0);
+        small(ui, "Bitrate");
+        ui.label(rt("Higher sounds better and uses more data. Above 96 kbps needs server boosts.", 12.0).color(MUTED));
+        ui.horizontal_wrapped(|ui| {
+            for &bits in BITRATES.iter() {
+                let b = crate::theme::Choice::new(&format!("{} kbps", bits / 1000), bits == draft.bitrate).min_size(vec2(0.0, 28.0));
+                if ui.add(b).clicked() {
+                    input(acts, ChannelInput::Bitrate(bits));
+                }
+            }
+        });
+        ui.add_space(10.0);
+        small(ui, "User limit");
+        let mut people = f64::from(draft.user_limit);
+        let fmt = |v: f64| if v < 0.5 { "No limit".to_owned() } else { format!("{} users", v.round() as u32) };
+        if crate::widgets::slider_row(ui, "voice_user_limit", &mut people, 0.0, 99.0, &fmt, true).changed && people.round() as u32 != draft.user_limit {
+            input(acts, ChannelInput::UserLimit(people.round() as u32));
+        }
+        ui.add_space(10.0);
+        small(ui, "Region");
+        let rows: Vec<(String, bool)> = VOICE_REGIONS.iter().map(|(id, name)| (name.to_string(), *id == draft.region)).collect();
+        // a region this list does not know shows by its id
+        let value = VOICE_REGIONS.iter().find(|(id, _)| *id == draft.region).map_or(draft.region.as_str(), |(_, name)| name);
+        if let Some(i) = crate::widgets::dropdown(ui, "voice_region", 220.0, value, &rows) {
+            input(acts, ChannelInput::Region(VOICE_REGIONS[i].0.to_owned()));
+        }
+        return;
+    }
     ui.add_space(10.0);
     let mut nsfw = draft.nsfw;
     if ui.checkbox(&mut nsfw, rt("Age-restricted channel", 13.5).color(TEXT)).changed() {

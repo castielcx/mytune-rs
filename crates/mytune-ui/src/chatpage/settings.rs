@@ -97,8 +97,10 @@ fn choices<T: PartialEq + Copy>(ui: &mut Ui, options: &[(T, &str)], value: &mut 
     let mut changed = false;
     let w = ui.available_width();
     let (outer, _) = ui.allocate_exact_size(vec2(w, 36.0), Sense::hover());
-    ui.painter().rect_filled(outer, 18.0, Color32::from_black_alpha(0x38));
-    ui.painter().rect_stroke(outer, 18.0, Stroke::new(1.0, Color32::from_white_alpha(0x16)), egui::StrokeKind::Inside);
+    // the same track and thumb as `th::tab`
+    let radius = th::R_CTL + 2.0;
+    ui.painter().rect_filled(outer, radius, Color32::from_black_alpha(0x44));
+    ui.painter().rect_stroke(outer, radius, Stroke::new(th::px(), Color32::from_white_alpha(0x18)), egui::StrokeKind::Inside);
     let n = options.len().max(1) as f32;
     let seg = (outer.width() - 6.0) / n;
     for (i, (v, name)) in options.iter().enumerate() {
@@ -108,7 +110,7 @@ fn choices<T: PartialEq + Copy>(ui: &mut Ui, options: &[(T, &str)], value: &mut 
         let t = ui.ctx().animate_bool_with_time(resp.id, on, QUICK);
         let h = ui.ctx().animate_bool_with_time(resp.id.with("h"), resp.hovered(), QUICK);
         if t > 0.0 || h > 0.0 {
-            th::capsule(ui.painter(), r, Color32::from_white_alpha((0x14 as f32 * h * (1.0 - t) + 0x34 as f32 * t) as u8), (0x36 as f32 * t) as u8);
+            th::plate(ui.painter(), r, th::nested(radius, 3.0), Color32::from_white_alpha((0x14 as f32 * h * (1.0 - t) + 0x2A as f32 * t) as u8), (0x4C as f32 * t) as u8);
         }
         ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, *name, egui::FontId::new(13.0, th::semibold()), SECONDARY.lerp_to_gamma(TEXT, h.max(t)));
         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() && !on {
@@ -139,13 +141,18 @@ fn track(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>) -> 
     let t = ((*value - lo) / (hi - lo)).clamp(0.0, 1.0);
     let x = inner.left() + inner.width() * t;
     let cy = rect.center().y;
-    ui.painter().rect_filled(Rect::from_min_max(pos2(inner.left(), cy - 2.5), pos2(inner.right(), cy + 2.5)), 2.5, k_raised());
-    ui.painter().rect_filled(Rect::from_min_max(pos2(inner.left(), cy - 2.5), pos2(x, cy + 2.5)), 2.5, p().accent);
-    let h = ui.ctx().animate_bool_with_time(resp.id, resp.hovered() || resp.dragged(), QUICK);
-    let held = ui.ctx().animate_bool_with_time(resp.id.with("held"), resp.is_pointer_button_down_on(), QUICK);
-    let thumb = Rect::from_center_size(pos2(x, cy), vec2(22.0 + 2.0 * h + 8.0 * held, 16.0 + 2.0 * h));
-    ui.painter().add(egui::Shadow { offset: [0, 2], blur: 6, spread: 0, color: Color32::from_black_alpha(70) }.as_shape(thumb, egui::CornerRadius::from(thumb.height() / 2.0)));
-    th::capsule(ui.painter(), thumb, Color32::WHITE.gamma_multiply(1.0 - 0.6 * held), 0x60);
+    // the same track and thumb as `widgets::slider`: 4 px, a round 18 px thumb that turns to clear glass while held
+    ui.painter().rect_filled(Rect::from_min_max(pos2(inner.left(), cy - 2.0), pos2(inner.right(), cy + 2.0)), 2.0, Color32::from_white_alpha(0x29));
+    ui.painter().rect_filled(Rect::from_min_max(pos2(inner.left(), cy - 2.0), pos2(x, cy + 2.0)), 2.0, p().accent);
+    let h = th::anim(ui.ctx(), resp.id.with("hover"), resp.hovered() || resp.dragged(), th::HOVER);
+    let held = th::spring(ui.ctx(), resp.id.with("held"), if resp.is_pointer_button_down_on() { 1.0 } else { 0.0 }, 0.26, 0.6);
+    let glass = held.clamp(0.0, 1.0);
+    let thumb = Rect::from_center_size(pos2(x, cy), egui::Vec2::splat(18.0 + h + 4.0 * held));
+    ui.painter().add(egui::Shadow { offset: [0, 1], blur: 5, spread: 0, color: Color32::from_black_alpha(96) }.as_shape(thumb, egui::CornerRadius::from(thumb.height() / 2.0)));
+    if glass > 0.01 {
+        ui.painter().add(crate::lens::shape(thumb, crate::lens::Lens { radius: thumb.height() / 2.0, rim: thumb.height() * 0.45, bend: 5.0 * glass, zoom: 1.0 + 0.25 * glass, blur: 0.0, split: 0.3 }));
+    }
+    th::capsule(ui.painter(), thumb, Color32::WHITE.gamma_multiply(1.0 - 0.8 * glass), 0x60);
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     (changed, resp.drag_stopped() || resp.clicked())
 }

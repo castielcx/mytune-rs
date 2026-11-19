@@ -460,6 +460,39 @@ pub fn voice_switch(ctx: &egui::Context, s: &AppState, acts: &mut Vec<Action>) {
     });
 }
 
+/// Temp-data key: the voice channel a click in the channel list wants to join.
+pub const JOIN_ASK: &str = "join_voice_ask";
+
+/// A click on a voice channel asks before joining and says who is in it.
+pub fn voice_join(ctx: &egui::Context, s: &AppState, acts: &mut Vec<Action>) {
+    let key = egui::Id::new(JOIN_ASK);
+    let Some(room) = ctx.data(|d| d.get_temp::<String>(key)) else { return };
+    let Some(r) = s.rooms.iter().find(|r| r.id == room) else {
+        ctx.data_mut(|d| d.remove::<String>(key));
+        return;
+    };
+    // the clicked row and when: the popover sits beside the row, and the opening click must not close it
+    let now = ctx.input(|i| i.time);
+    let (row, opened) = ctx.data(|d| d.get_temp::<(egui::Rect, f64)>(key.with("at"))).unwrap_or((egui::Rect::ZERO, now));
+    let mut join = false;
+    let area = egui::Area::new(egui::Id::new("join_voice_pop")).order(egui::Order::Foreground).fixed_pos(row.right_top() + egui::vec2(8.0, 0.0)).show(ctx, |ui| {
+        crate::theme::float(ui, crate::theme::R_MENU, 8, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(rt("Join voice?", 13.0).color(SECONDARY));
+                join = pill(ui, "Join", true).clicked();
+            });
+        });
+    });
+    if join {
+        // the channel's text chat under the call, as a DM call shows (plain Open when it has none)
+        acts.push(Action::OpenChat(room.clone()));
+        acts.push(Action::RequestJoinVoice(room.clone()));
+    }
+    if join || (opened != now && area.response.clicked_elsewhere()) || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        ctx.data_mut(|d| d.remove::<String>(key));
+    }
+}
+
 /// A channel dragged into a category: keep its own permissions or take the category's.
 pub fn move_sync(ctx: &egui::Context, s: &AppState, acts: &mut Vec<Action>) {
     let Some(m) = &s.move_sync else { return };

@@ -44,11 +44,13 @@ pub const ANISO_LEVEL: u32 = 0x101E61A9;
 pub const AA_TRANSPARENCY_MULTISAMPLE: u32 = 0x10FC2D9C;
 pub const AA_TRANSPARENCY_SUPERSAMPLE: u32 = 0x10D48A85;
 pub const OGL_GDI_COMPATIBILITY: u32 = 0x2072C5A3;
+/// "Texture filtering - Negative LOD bias": 0 = allow, 1 = clamp.
+pub const NEGATIVE_LOD_BIAS: u32 = 0x0019BB68;
 
 pub type Setting = (u32, u32, &'static str);
 
 /// Global low-latency settings (Base Profile).
-pub const GLOBAL_SETTINGS: [Setting; 17] = [
+pub const GLOBAL_SETTINGS: [Setting; 19] = [
     (POWER_MANAGEMENT_MODE, 1, "Power management: prefer maximum performance"),
     (MAX_PRE_RENDERED_FRAMES, 1, "Low latency mode: on (1 pre-rendered frame)"),
     (VERTICAL_SYNC, VSYNC_FORCE_OFF, "Vertical sync: off"),
@@ -70,13 +72,14 @@ pub const GLOBAL_SETTINGS: [Setting; 17] = [
     (AA_TRANSPARENCY_MULTISAMPLE, 0, "Antialiasing transparency: off"),
     (AA_TRANSPARENCY_SUPERSAMPLE, 0, "Antialiasing transparency supersampling: off"),
     (OGL_GDI_COMPATIBILITY, 0, "OpenGL GDI compatibility: prefer performance"),
+    // Rust only (not in the C# app). The C# app set threaded optimization per game only.
+    (THREADED_OPTIMIZATION, 1, "Threaded optimization: on"),
+    (NEGATIVE_LOD_BIAS, 1, "Texture filtering negative LOD bias: clamp"),
 ];
 
-/// Per-game settings: the global ones plus threaded optimization.
+/// Per-game settings: the same as the global ones.
 pub fn game_settings() -> Vec<Setting> {
-    let mut v = GLOBAL_SETTINGS.to_vec();
-    v.push((THREADED_OPTIMIZATION, 1, "Threaded optimization: on"));
-    v
+    GLOBAL_SETTINGS.to_vec()
 }
 
 /// Driver-level G-SYNC / variable refresh switches (0 = off, default on).
@@ -390,7 +393,9 @@ mod tests {
 
     #[test]
     fn tables_match_csharp() {
-        assert_eq!(game_settings().len(), GLOBAL_SETTINGS.len() + 1);
+        assert_eq!(game_settings(), GLOBAL_SETTINGS.to_vec());
+        assert!(GLOBAL_SETTINGS.contains(&(THREADED_OPTIMIZATION, 1, "Threaded optimization: on")));
+        assert_eq!(GLOBAL_SETTINGS[18], (0x0019BB68, 1, "Texture filtering negative LOD bias: clamp"));
         assert_eq!(GLOBAL_SETTINGS[2], (11041231, 0x08416747, "Vertical sync: off"));
         assert_eq!(GLOBAL_SETTINGS[9].1, u32::MAX);
         assert_eq!(GSYNC_IDS, [0x1194F158, 0x1094F157, 0x1094F1F7]);

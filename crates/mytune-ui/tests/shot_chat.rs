@@ -9,7 +9,9 @@ fn chat_page() {
     let mut app = App::with_store(mytune_core::store::Store::load(&dir));
     app.goto(Page::Chat);
     let mut first = true;
-    let mut h = Harness::builder().with_size(vec2(1180.0, 900.0)).build_ui(move |ui| {
+    // env PPP: pixels per point, 1.15 is the real app's scale (`UI_ZOOM`)
+    let ppp = std::env::var("PPP").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+    let mut h = Harness::builder().with_size(vec2(1180.0, 900.0)).with_pixels_per_point(ppp).build_ui(move |ui| {
         if first {
             mytune_ui::theme::install_fonts(ui.ctx());
             mytune_ui::theme::apply_visuals(ui.ctx());

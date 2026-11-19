@@ -19,6 +19,64 @@ pub struct DialogsUi {
     /// The server profile editor's texts (nickname, pronouns, about me) and whether they were filled from it.
     pe: [String; 3],
     pe_open: bool,
+    /// The Edit Group dialog: the group DM's room id and the name being typed.
+    group: Option<(String, String)>,
+}
+
+/// Opens the Edit Group dialog for a group DM (its menu's Edit Group).
+pub fn open_group(ctx: &egui::Context, room: &str) {
+    ctx.data_mut(|d| d.insert_temp(egui::Id::new("group_edit"), room.to_owned()));
+}
+
+/// The group DM whose icon is to be picked from a file, once: the file dialog runs on its own thread.
+pub fn take_group_icon(ctx: &egui::Context) -> Option<String> {
+    ctx.data_mut(|d| d.remove_temp::<String>(egui::Id::new("group_icon_pick")))
+}
+
+/// A group DM's name and icon (the DM menu's Edit Group). Discord shows the change once it confirms it.
+pub fn group(ctx: &egui::Context, du: &mut DialogsUi, s: &AppState, acts: &mut Vec<Action>) {
+    use mytune_chat::yapfast_core::chat::GroupChange;
+    if let Some(room) = ctx.data_mut(|d| d.remove_temp::<String>(egui::Id::new("group_edit"))) {
+        let name = s.rooms.iter().find(|r| r.id == room).map(|r| r.name.clone()).unwrap_or_default();
+        du.group = Some((room, name));
+    }
+    let Some((room, name)) = &mut du.group else { return };
+    let Some(r) = s.rooms.iter().find(|r| r.id == *room) else {
+        du.group = None;
+        return;
+    };
+    let mut close = false;
+    let modal = egui::Modal::new(egui::Id::new("group_dlg")).show(ctx, |ui| {
+        ui.set_width(400.0);
+        ui.label(sb("Edit Group", 17.0).color(TEXT));
+        ui.add_space(8.0);
+        ui.label(rt("Group name", 12.0).color(MUTED));
+        ui.add(egui::TextEdit::singleline(name).desired_width(f32::INFINITY).char_limit(100));
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if plain_button(ui, "Change Icon\u{2026}") {
+                ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new("group_icon_pick"), room.clone()));
+            }
+            if r.avatar.is_some() && plain_button(ui, "Remove Icon") {
+                acts.push(Action::ChangeGroup { room: room.clone(), change: GroupChange::Icon(None) });
+            }
+        });
+        ui.add_space(14.0);
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if pill(ui, "Save", true).clicked() {
+                if name.trim() != r.name {
+                    acts.push(Action::ChangeGroup { room: room.clone(), change: GroupChange::Name(name.trim().to_owned()) });
+                }
+                close = true;
+            }
+            if plain_button(ui, "Cancel") {
+                close = true;
+            }
+        });
+    });
+    if close || modal.should_close() {
+        du.group = None;
+    }
 }
 
 /// This account's profile in one server (the server menu's Edit Server Profile), over the chat.

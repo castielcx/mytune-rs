@@ -21,6 +21,7 @@ features = [
   "Win32_Security_Credentials",
   "Win32_Globalization",
   "Win32_Graphics_Gdi",
+  "Win32_Devices_Display",
   "Win32_Graphics_Dwm",
   "Win32_System_Memory",
   "Win32_UI_ColorSystem",

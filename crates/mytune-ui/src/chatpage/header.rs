@@ -148,7 +148,8 @@ mod tests {
 
 /// A header icon button: no fill until hovered, brighter when its panel is open.
 fn hbtn(ui: &mut Ui, g: &str, active: bool, tip: &str) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click());
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(32.0, 32.0), Sense::click_and_drag());
+    let rect = crate::theme::pulled(rect, crate::theme::pull(ui, &mut resp));
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
     if t > 0.0 {
         ui.painter().rect_filled(rect, 10.0, k_hover().gamma_multiply(t));
@@ -245,6 +246,7 @@ pub fn bar(ui: &mut Ui, h: &mut HeaderUi, s: &AppState, r: &ChatRoom, tex: &mut 
                         let av = Rect::from_min_size(if k == 0 { a.min + vec2(10.0, 0.0) } else { a.min + vec2(0.0, 10.0) }, vec2(20.0, 20.0));
                         let t = texture(&ctx, tex, asked, s, &Some(url.clone()), want);
                         avatar(ui, av, t, &r.name);
+                        ui.painter().circle_stroke(av.center(), 10.0, egui::Stroke::new(1.0, Color32::from_white_alpha(0x50)));
                     }
                     ui.add_space(4.0);
                 } else if r.direct {
@@ -567,12 +569,17 @@ pub fn profile_card(ctx: &egui::Context, s: &AppState, tex: &mut HashMap<String,
     let screen = ctx.content_rect();
     let at = ctx.data(|d| d.get_temp::<egui::Pos2>(egui::Id::new("profile_at"))).unwrap_or(screen.center());
     let (w, h) = if pv.large { ((screen.width() - 64.0).min(940.0), (screen.height() - 64.0).min(660.0)) } else { (320.0_f32, (screen.height() - 16.0).min(560.0)) };
+    let area_id = egui::Id::new(("profile_card", pv.large));
     let pos = if pv.large {
         (screen.center() - vec2(w, h) / 2.0).round()
     } else {
-        pos2((at.x + 12.0).min(screen.right() - w - 8.0), (at.y - 40.0).clamp(screen.top() + 8.0, (screen.bottom() - h - 8.0).max(screen.top() + 8.0))).round()
+        // A corner of the card sits on the pointer, like the message menu: it opens down and right, and flips
+        // up or left where the window ends. The card's real size (last frame's) decides, not its largest one.
+        let size = ctx.memory(|m| m.area_rect(area_id)).map_or(vec2(w, 200.0), |r| r.size());
+        let side = |at: f32, len: f32, lo: f32, hi: f32| (if at + len <= hi - 8.0 { at } else { at - len }).clamp(lo + 8.0, (hi - len - 8.0).max(lo + 8.0));
+        pos2(side(at.x, size.x, screen.left(), screen.right()), side(at.y, size.y, screen.top(), screen.bottom())).round()
     };
-    let resp = egui::Area::new(egui::Id::new(("profile_card", pv.large))).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
+    let resp = egui::Area::new(area_id).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
         egui::Frame::new()
             .fill(crate::theme::Glass::Float.fill())
             .stroke(Stroke::new(1.0, k_edge()))
@@ -642,7 +649,9 @@ fn profile_head(ui: &mut Ui, s: &AppState, pr: &Profile, bh: f32, av: f32, round
     }
     let a = Rect::from_min_size(pos2(banner.left() + 16.0, banner.bottom() - av / 2.0), vec2(av, av));
     th::dot(ui.painter(), a.center(), av / 2.0 + 6.0, back);
-    let t = texture(&ctx, tex, asked, s, &pr.avatar, want);
+    // drawn at up to 140 px: Discord's larger copy, the usual 128 px one until it comes
+    let big = pr.avatar.as_ref().map(|u| u.replace("size=128", "size=256"));
+    let t = texture(&ctx, tex, asked, s, &big, want).or_else(|| texture(&ctx, tex, asked, s, &pr.avatar, want));
     avatar(ui, a, t, &pr.name);
     status_dot_k(ui, a, pr.presence, back, 0.13);
     if let Some(url) = pr.avatar.as_ref().filter(|_| view_pic) {
@@ -673,7 +682,8 @@ fn profile_btn(ui: &mut Ui, g: &str, text: Option<&str>, tip: &str) -> bool {
     let font = egui::FontId::new(13.5, th::semibold());
     let words = text.map(|t| ui.painter().layout_no_wrap(t.to_owned(), font, p().on_accent));
     let w = words.as_ref().map_or(H, |w| 12.0 + 16.0 + 7.0 + w.size().x + 14.0);
-    let (r, resp) = ui.allocate_exact_size(vec2(w, H), Sense::click());
+    let (r, mut resp) = ui.allocate_exact_size(vec2(w, H), Sense::click_and_drag());
+    let r = crate::theme::pulled(r, crate::theme::pull(ui, &mut resp));
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
     match words {
         Some(words) => {
@@ -691,7 +701,8 @@ fn profile_btn(ui: &mut Ui, g: &str, text: Option<&str>, tip: &str) -> bool {
 }
 
 fn banner_btn(ui: &mut Ui, r: Rect, g: &str, tip: &str) -> bool {
-    let resp = ui.interact(r, ui.id().with(("banner_btn", g)), Sense::click());
+    let mut resp = ui.interact(r, ui.id().with(("banner_btn", g)), Sense::click_and_drag());
+    let r = crate::theme::pulled(r, crate::theme::pull(ui, &mut resp));
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
     ui.painter().circle_filled(r.center(), r.width() / 2.0, Color32::from_black_alpha(0x8C).lerp_to_gamma(Color32::from_black_alpha(0xD0), t));
     glyph(ui.painter(), r.center(), g, 14.0, Color32::WHITE, false);
@@ -1144,7 +1155,8 @@ mod profile_tests {
 
 /// The channel's member list: Discord's group headings ("Online — 12"), then each member with a status dot,
 /// their role colour and what they are doing.
-pub fn members_panel(ui: &mut Ui, s: &AppState, tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSet<String>, want: &mut Vec<String>, acts: &mut Vec<Action>) {
+/// `owned_group`: the open room when it is a group DM this account owns, whose people it may remove.
+pub fn members_panel(ui: &mut Ui, s: &AppState, owned_group: Option<&str>, tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSet<String>, want: &mut Vec<String>, acts: &mut Vec<Action>) {
     let list = match &s.members {
         None => {
             ui.label(rt("Loading members\u{2026}", 13.0).color(MUTED));
@@ -1187,6 +1199,12 @@ pub fn members_panel(ui: &mut Ui, s: &AppState, tex: &mut HashMap<String, Textur
                         if b.label == "Mention" {
                             super::compose::focus(ui.ctx());
                         }
+                        ui.close();
+                    }
+                }
+                if let Some(room) = owned_group.filter(|_| s.discord_user.as_deref() != Some(super::userbtns::raw(&uid))) {
+                    if ui.button(egui::RichText::new("Remove From Group").color(DANGER)).clicked() {
+                        acts.push(Action::ChangeGroup { room: room.to_owned(), change: mytune_chat::yapfast_core::chat::GroupChange::Remove(super::userbtns::raw(&uid).to_owned()) });
                         ui.close();
                     }
                 }

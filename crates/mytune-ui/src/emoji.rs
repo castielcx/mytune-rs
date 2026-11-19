@@ -82,7 +82,11 @@ fn make(ctx: &egui::Context, emoji: &str, paced: bool) -> Option<TextureId> {
         let made = png(emoji).and_then(|bytes| image::load_from_memory(bytes).ok()).map(|img| {
             let rgba = img.to_rgba8();
             let size = [rgba.width() as usize, rgba.height() as usize];
-            ctx.load_texture(format!("emoji:{emoji}"), egui::ColorImage::from_rgba_unmultiplied(size, &rgba), crate::theme::SMOOTH)
+            let tex = ctx.load_texture(format!("emoji:{emoji}"), egui::ColorImage::from_rgba_unmultiplied(size, &rgba), crate::theme::SMOOTH);
+            // 72 px pictures in 20 px text: small draws get exact-size copies, decoded again when one is made
+            let name = emoji.to_owned();
+            crate::sharp::register_lazy(tex.id(), rgba.width(), move || Some(image::load_from_memory(png(&name)?).ok()?.to_rgba8()));
+            tex
         });
         let id = made.as_ref().map(|h| h.id());
         t.insert(emoji.to_owned(), made);

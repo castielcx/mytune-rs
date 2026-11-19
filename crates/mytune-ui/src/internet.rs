@@ -64,6 +64,18 @@ fn text_of(e: &dyn std::fmt::Display) -> String {
     e.to_string()
 }
 
+/// Reads every tweak's state on a thread (about 5 s: eight PowerShell starts).
+fn read_states(tw: Arc<Vec<NetTweak>>, ctx: Option<egui::Context>) -> Rx<Vec<bool>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(tw.iter().map(|t| t.tweak.is_applied().unwrap_or(false)).collect());
+        if let Some(ctx) = ctx {
+            ctx.request_repaint();
+        }
+    });
+    Some(rx)
+}
+
 impl InternetPage {
     /// Also starts the VPN watcher (it must run while the app sits in the tray, not only on this page).
     pub fn new(engine: Arc<Engine>) -> InternetPage {
@@ -73,8 +85,9 @@ impl InternetPage {
         InternetPage {
             engine,
             applied: vec![false; tweaks.len()],
+            // Read at app start, so the switches are right when the page is first opened.
+            applied_rx: read_states(tweaks.clone(), None),
             tweaks,
-            applied_rx: None,
             tweak_rx: None,
             tweak_busy: 0,
             status: None,
@@ -96,13 +109,7 @@ impl InternetPage {
     }
 
     fn read_applied(&mut self, ctx: &egui::Context) {
-        let (tx, rx) = mpsc::channel();
-        let (tw, ctx) = (self.tweaks.clone(), ctx.clone());
-        std::thread::spawn(move || {
-            let _ = tx.send(tw.iter().map(|t| t.tweak.is_applied().unwrap_or(false)).collect());
-            ctx.request_repaint();
-        });
-        self.applied_rx = Some(rx);
+        self.applied_rx = read_states(self.tweaks.clone(), Some(ctx.clone()));
     }
 
     fn rescan(&mut self, ctx: &egui::Context) {
@@ -290,7 +297,12 @@ impl InternetPage {
         let ctx = ui.ctx().clone();
         if !self.started {
             self.started = true;
-            self.read_applied(&ctx);
+            // Keep a start read that is still running; read again only once it is in (a start at
+            // Windows boot may have read before the adapters were up).
+            if let Some(v) = self.applied_rx.as_ref().and_then(|r| r.try_recv().ok()) {
+                self.applied = v;
+                self.read_applied(&ctx);
+            }
             self.rescan(&ctx);
         }
         self.poll(&ctx);
@@ -321,30 +333,33 @@ impl InternetPage {
     fn tweaks_ui(&mut self, ui: &mut Ui, ctx: &egui::Context, show: &dyn Fn(&str) -> bool) {
         let mut click = None;
         let working = self.tweak_rx.is_some();
-        for (i, n) in self.tweaks.iter().enumerate() {
-            if !show(n.tweak.title()) && !show(&n.description) {
-                continue;
-            }
-            th::card(ui, (10, 16, 16, 16), |ui| {
-                ui.horizontal(|ui| {
-                    let avail = ui.available_width();
-                    ui.vertical(|ui| {
-                        ui.set_max_width((avail - 120.0).max(120.0));
-                        ui.label(sb(n.tweak.title(), 14.0));
-                        ui.label(rt(&n.description, 12.0).color(text2()));
-                        th::flag_chips(ui, n.flags);
-                    });
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if working && i == self.tweak_busy {
-                            ui.label(rt("Working…", 12.0).color(text3()));
-                        } else if th::switch(ui, self.applied[i]).on_hover_text(&n.details).clicked() && !working {
-                            click = Some((i, !self.applied[i]));
-                        }
+        // one plate, a row per tweak (as on Optimize)
+        th::group(ui, |ui| {
+            for (i, n) in self.tweaks.iter().enumerate() {
+                if !show(n.tweak.title()) && !show(&n.description) {
+                    continue;
+                }
+                th::card(ui, (10, 13, 14, 13), |ui| {
+                    ui.horizontal(|ui| {
+                        let avail = ui.available_width();
+                        ui.vertical(|ui| {
+                            ui.set_max_width((avail - 120.0).max(120.0));
+                            ui.label(th::md(n.tweak.title(), 14.0));
+                            ui.add_space(2.0);
+                            ui.label(rt(&n.description, 12.5).color(text2()));
+                            th::flag_chips(ui, n.flags);
+                        });
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if working && i == self.tweak_busy {
+                                ui.label(rt("Working…", 12.0).color(text3()));
+                            } else if th::switch(ui, self.applied[i]).on_hover_text(&n.details).clicked() && !working {
+                                click = Some((i, !self.applied[i]));
+                            }
+                        });
                     });
                 });
-            });
-            ui.add_space(8.0);
-        }
+            }
+        });
         if let Some((i, on)) = click {
             self.toggle_tweak(ctx, i, on);
         }

@@ -112,6 +112,30 @@ struct PropRow {
     /// Values the driver accepts, comma separated; empty when it lists none.
     #[serde(rename = "L", default)]
     valid: Option<String>,
+    /// Largest value of a numeric range, empty when the driver gives none.
+    #[serde(rename = "X", default)]
+    max: Option<String>,
+    /// Step of that range, empty when the driver gives none.
+    #[serde(rename = "S", default)]
+    step: Option<String>,
+}
+
+/// Twice the driver default, capped at what the driver accepts (range max on its step grid, else the
+/// smallest listed value at or above it, else the largest listed). None when the default or the accepted
+/// values are unknown, or the result would not raise the value.
+fn doubled(r: &PropRow) -> Option<String> {
+    let num = |s: &Option<String>| s.as_deref().and_then(|s| s.trim().parse::<u64>().ok());
+    let d = num(&r.default)?;
+    let want = d.checked_mul(2)?;
+    let t = if let Some(max) = num(&r.max) {
+        let step = num(&r.step).filter(|s| *s > 0).unwrap_or(1);
+        let t = want.min(max);
+        d + t.checked_sub(d)? / step * step
+    } else {
+        let valid: Vec<u64> = r.valid.as_deref().unwrap_or("").split(',').filter_map(|v| v.trim().parse().ok()).collect();
+        valid.iter().copied().filter(|v| *v >= want).min().or_else(|| valid.iter().copied().max())?
+    };
+    (t > d).then(|| t.to_string())
 }
 
 /// Restarts the adapter; waits for the link only when it had one (a disconnected adapter never comes up).
@@ -120,14 +144,16 @@ fn restart_script(a: &str) -> String {
     format!("$u=(Get-NetAdapter -Name {q} -ErrorAction SilentlyContinue).Status -eq 'Up'; Restart-NetAdapter -Name {q}; for($i=0;$u -and $i -lt 30 -and (Get-NetAdapter -Name {q} -ErrorAction SilentlyContinue).Status -ne 'Up';$i++){{ Start-Sleep 1 }}")
 }
 
+const NO_SETTING: &str = "your network driver has no setting for this, nothing was changed";
 const NOTHING_TO_UNDO: &str = "these are already your network driver's default settings, there is nothing to turn off";
 
-/// Driver keyword tweak, e.g. "Adapter power management off". Targets are (keyword, value).
+/// Driver keyword tweak, e.g. "Adapter power management off". Targets are (keyword, value);
+/// value None = twice the driver default (`doubled`).
 pub struct AdapterPropertyTweak {
     pub cmd: Arc<dyn Cmd>,
     pub id: String,
     pub title: String,
-    pub targets: Vec<(String, String)>,
+    pub targets: Vec<(String, Option<String>)>,
 }
 
 type Found = (String, String, String); // adapter, keyword, value
@@ -141,7 +167,7 @@ impl AdapterPropertyTweak {
         }
         let kws: Vec<String> = self.targets.iter().map(|t| t.0.clone()).collect();
         let script = format!(
-            "$r=@(); foreach($a in {}){{ foreach($k in {}){{ $p=Get-NetAdapterAdvancedProperty -Name $a -AllProperties -RegistryKeyword $k -ErrorAction SilentlyContinue; if($p){{ $r+=[pscustomobject]@{{A=$a;K=$k;V=(@($p.RegistryValue) -join ',');D=(@($p.DefaultRegistryValue) -join ',');L=(@($p.ValidRegistryValues) -join ',')}} }} }} }}; ConvertTo-Json -InputObject @($r) -Compress",
+            "$r=@(); foreach($a in {}){{ foreach($k in {}){{ $p=Get-NetAdapterAdvancedProperty -Name $a -AllProperties -RegistryKeyword $k -ErrorAction SilentlyContinue; if($p){{ $r+=[pscustomobject]@{{A=$a;K=$k;V=(@($p.RegistryValue) -join ',');D=(@($p.DefaultRegistryValue) -join ',');L=(@($p.ValidRegistryValues) -join ',');X=(@($p.NumericParameterMaxValue) -join ',');S=(@($p.NumericParameterStepValue) -join ',')}} }} }} }}; ConvertTo-Json -InputObject @($r) -Compress",
             ps_list(adapters),
             ps_list(&kws)
         );
@@ -150,13 +176,22 @@ impl AdapterPropertyTweak {
             .into_iter()
             .filter(|r| {
                 let valid = r.valid.as_deref().unwrap_or("");
-                valid.is_empty() || self.target(&r.keyword).is_some_and(|t| valid.split(',').any(|v| v == t))
+                self.target(r).is_some_and(|t| valid.is_empty() || valid.split(',').any(|v| v == t))
             })
             .collect())
     }
 
-    fn target(&self, kw: &str) -> Option<&str> {
-        self.targets.iter().find(|t| t.0 == kw).map(|t| t.1.as_str())
+    /// The value this tweak sets on the row's keyword; None when it cannot be worked out.
+    fn target(&self, r: &PropRow) -> Option<String> {
+        match &self.targets.iter().find(|t| t.0 == r.keyword)?.1 {
+            Some(v) => Some(v.clone()),
+            None => doubled(r),
+        }
+    }
+
+    /// The fixed target of a keyword, None for a doubled one.
+    fn fixed(&self, kw: &str) -> Option<&str> {
+        self.targets.iter().find(|t| t.0 == kw).and_then(|t| t.1.as_deref())
     }
 
     /// Off without stored originals: every keyword at the target goes back to the driver's default.
@@ -166,8 +201,9 @@ impl AdapterPropertyTweak {
             .found(&tweak_adapters(&*self.cmd)?)?
             .into_iter()
             .filter_map(|r| {
+                let at = self.target(&r).is_some_and(|t| Some(t.as_str()) == r.value.as_deref());
                 let (v, d) = (r.value.unwrap_or_default(), r.default.unwrap_or_default());
-                (self.target(&r.keyword) == Some(v.as_str()) && !d.is_empty() && d != v).then_some((r.adapter, r.keyword, d))
+                (at && !d.is_empty() && d != v).then_some((r.adapter, r.keyword, d))
             })
             .collect();
         self.set(&changes)?;
@@ -216,16 +252,22 @@ impl Tweak for AdapterPropertyTweak {
     }
     fn is_applied(&self) -> Result<bool> {
         let found = self.found(&tweak_adapters(&*self.cmd)?)?;
-        Ok(!found.is_empty() && found.iter().all(|r| self.target(&r.keyword) == r.value.as_deref()))
+        Ok(!found.is_empty() && found.iter().all(|r| self.target(r).as_deref() == r.value.as_deref()))
     }
     fn apply(&self, b: &mut TweakBackup) -> Result<()> {
         let mut changes = Vec::new();
-        for r in self.found(&tweak_adapters(&*self.cmd)?)? {
+        let found = self.found(&tweak_adapters(&*self.cmd)?)?;
+        // Nothing to set is a failure, not a silent success: the switch would report on and read off.
+        if found.is_empty() {
+            return Err(Error::Plain(NO_SETTING.into()));
+        }
+        for r in found {
+            let t = self.target(&r);
             let v = r.value.unwrap_or_default();
             // Only a value this changes is an original worth keeping.
-            if let Some(t) = self.target(&r.keyword).filter(|t| *t != v) {
+            if let Some(t) = t.filter(|t| *t != v) {
                 b.data.entry(format!("{}|{}", r.adapter, r.keyword)).or_insert(v);
-                changes.push((r.adapter, r.keyword, t.to_string()));
+                changes.push((r.adapter, r.keyword, t));
             }
         }
         self.set(&changes)
@@ -238,7 +280,7 @@ impl Tweak for AdapterPropertyTweak {
                 let mut p = key.splitn(3, '|');
                 match (p.next(), p.next(), p.next()) {
                     // Older backups also stored values that were already at the target: not an original.
-                    (Some(a), Some(k), None) if self.target(k) != Some(v.as_str()) => Some((a.to_string(), k.to_string(), v.clone())),
+                    (Some(a), Some(k), None) if self.fixed(k) != Some(v.as_str()) => Some((a.to_string(), k.to_string(), v.clone())),
                     _ => None,
                 }
             })
@@ -343,14 +385,15 @@ impl Tweak for ProtocolBindingsTweak {
     }
 }
 
-/// The two catalog instances of `AdapterPropertyTweak`.
+/// The catalog instances of `AdapterPropertyTweak`.
 pub fn adapter_tweaks(cmd: Arc<dyn Cmd>) -> Vec<AdapterPropertyTweak> {
-    let t = |id: &str, title: &str, kws: &[&str]| AdapterPropertyTweak {
+    let to = |id: &str, title: &str, kws: &[&str], v: Option<&str>| AdapterPropertyTweak {
         cmd: cmd.clone(),
         id: id.into(),
         title: title.into(),
-        targets: kws.iter().map(|k| (k.to_string(), "0".to_string())).collect(),
+        targets: kws.iter().map(|k| (k.to_string(), v.map(str::to_string))).collect(),
     };
+    let t = |id: &str, title: &str, kws: &[&str]| to(id, title, kws, Some("0"));
     vec![
         t("net.adapterpower", "Adapter power management off", &["*DeviceSleepOnDisconnect", "*SelectiveSuspend", "ReduceSpeedOnPowerDown", "ULPMode"]),
         t(
@@ -358,6 +401,7 @@ pub fn adapter_tweaks(cmd: Arc<dyn Cmd>) -> Vec<AdapterPropertyTweak> {
             "Adapter latency tuning",
             &["*InterruptModeration", "*FlowControl", "*EEE", "EEELinkAdvertisement", "AdvancedEEE", "EnableGreenEthernet", "GreenEthernet"],
         ),
+        to("net.buffers", "Larger adapter buffers", &["*ReceiveBuffers", "*TransmitBuffers"], None),
     ]
 }
 
@@ -807,6 +851,106 @@ impl Tweak for AdBlockTweak {
     }
 }
 
+/// `cust.cleanstart`: the catalog's Start policies plus the pin file `start2.bin`, which has no registry form.
+pub struct CleanStartTweak {
+    reg: DataTweak,
+    cmd: Arc<dyn Cmd>,
+}
+
+/// Saves the pin file once: a second apply must never replace the user's real pins with an emptied file.
+/// Copied under another name first, so a copy that broke half way is not taken for a backup later.
+fn save_pins(pins: &std::path::Path, bak: &std::path::Path) -> Result<()> {
+    if !bak.exists() {
+        let tmp = bak.with_extension("tmp");
+        std::fs::copy(pins, &tmp)?;
+        std::fs::rename(&tmp, bak)?;
+    }
+    Ok(())
+}
+
+/// The Start menu process comes back by itself and can hold the file for a moment: tries for 2 s.
+fn retry_locked<T>(f: impl Fn() -> std::io::Result<T>) -> Result<T> {
+    for _ in 0..10 {
+        if let Ok(v) = f() {
+            return Ok(v);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    Ok(f()?)
+}
+
+/// Puts the saved pins back. The backup goes only after the copy worked, so a failed revert can be retried.
+fn restore_pins(pins: &std::path::Path, bak: &std::path::Path) -> Result<()> {
+    retry_locked(|| std::fs::copy(bak, pins))?;
+    Ok(std::fs::remove_file(bak)?)
+}
+
+impl CleanStartTweak {
+    pub fn new(mut reg: DataTweak, cmd: Arc<dyn Cmd>) -> CleanStartTweak {
+        // Explorer restarts once, after the pin file, not right after the registry values.
+        reg.flags = TweakFlags::default();
+        CleanStartTweak { reg, cmd }
+    }
+
+    fn paths() -> (std::path::PathBuf, std::path::PathBuf) {
+        let local = std::path::PathBuf::from(std::env::var_os("LOCALAPPDATA").unwrap_or_default());
+        (local.join(r"Packages\Microsoft.Windows.StartMenuExperienceHost_cw5n1h2txyewy\LocalState\start2.bin"), crate::util::default_dir().join("start2.bin.bak"))
+    }
+
+    /// Fails when it was not running: fine.
+    fn stop_start_menu(&self) {
+        let _ = self.cmd.run(&system32("taskkill.exe").to_string_lossy(), &["/F", "/IM", "StartMenuExperienceHost.exe"]);
+    }
+
+    fn put_pins_back(&self) -> Result<()> {
+        let (pins, bak) = Self::paths();
+        if bak.exists() {
+            self.stop_start_menu();
+            restore_pins(&pins, &bak)?;
+        }
+        self.reg.hooks.restart_explorer();
+        Ok(())
+    }
+}
+
+impl Tweak for CleanStartTweak {
+    fn id(&self) -> &str {
+        &self.reg.id
+    }
+    fn title(&self) -> &str {
+        &self.reg.title
+    }
+    fn is_applied(&self) -> Result<bool> {
+        for s in self.reg.sets.iter().filter(|s| ["NoStartMenuMorePrograms", "ConfigureStartPins"].contains(&s.name.as_str())) {
+            if reg::get(s.hive, &s.path, &s.name)?.as_ref() != Some(&s.value) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+    fn apply(&self, b: &mut TweakBackup) -> Result<()> {
+        self.reg.apply(b)?;
+        let (pins, bak) = Self::paths();
+        if pins.exists() {
+            save_pins(&pins, &bak)?;
+            b.data.insert("start2".into(), "saved".into());
+            self.stop_start_menu();
+            retry_locked(|| std::fs::remove_file(&pins))?;
+        }
+        self.reg.hooks.restart_explorer();
+        Ok(())
+    }
+    fn revert(&self, b: &TweakBackup) -> Result<()> {
+        b.restore_registry()?;
+        self.put_pins_back()
+    }
+    fn revert_default(&self) -> Result<bool> {
+        let known = self.reg.revert_default()?;
+        self.put_pins_back()?;
+        Ok(known)
+    }
+}
+
 #[allow(dead_code)]
 fn _unused(_: BTreeMap<String, String>) {}
 
@@ -884,12 +1028,13 @@ mod tests {
 
     // ------------------------------------------------------------ adapter properties
 
-    fn adapter_fake(state: Arc<Mutex<Vec<(String, String, String)>>>) -> Arc<Fake> {
+    /// `extra(keyword)` adds JSON fields to that keyword's rows, e.g. `,"D":"512"`.
+    fn adapter_fake(state: Arc<Mutex<Vec<(String, String, String)>>>, extra: fn(&str) -> &'static str) -> Arc<Fake> {
         Fake::new(move |l| {
             if l.contains("Get-NetAdapter -ErrorAction") {
                 Some(r#"[{"N":"Ethernet","D":"Realtek","T":6}]"#.into())
             } else if l.contains("Get-NetAdapterAdvancedProperty") {
-                let rows: Vec<String> = state.lock().unwrap().iter().map(|(a, k, v)| format!(r#"{{"A":"{a}","K":"{k}","V":"{v}"}}"#)).collect();
+                let rows: Vec<String> = state.lock().unwrap().iter().map(|(a, k, v)| format!(r#"{{"A":"{a}","K":"{k}","V":"{v}"{}}}"#, extra(k))).collect();
                 Some(format!("[{}]", rows.join(",")))
             } else if l.contains("Set-NetAdapterAdvancedProperty") {
                 for part in l.trim_start_matches("ps ").split(';').filter(|p| p.starts_with("Set-NetAdapterAdvancedProperty")) {
@@ -932,7 +1077,7 @@ mod tests {
             ("Ethernet".to_string(), "*SelectiveSuspend".to_string(), "1".to_string()),
             ("Ethernet".to_string(), "ULPMode".to_string(), "0".to_string()), // already at target
         ]));
-        let fake = adapter_fake(state.clone());
+        let fake = adapter_fake(state.clone(), |_| "");
         let t = adapter_tweaks(fake.clone()).remove(0);
         assert_eq!(t.id, "net.adapterpower");
         assert!(!t.is_applied().unwrap());
@@ -951,8 +1096,52 @@ mod tests {
         let none = Fake::new(|l| l.contains("Get-NetAdapter -ErrorAction").then(|| "[]".to_string()));
         assert_eq!(adapter_tweaks(none).remove(0).unavailable().unwrap().as_deref(), Some(NO_ADAPTER));
         let state = Arc::new(Mutex::new(vec![]));
-        let no_kw = adapter_fake(state);
-        assert!(adapter_tweaks(no_kw).remove(0).unavailable().unwrap().unwrap().contains("driver"));
+        let no_kw = adapter_fake(state, |_| "");
+        assert!(adapter_tweaks(no_kw.clone()).remove(0).unavailable().unwrap().unwrap().contains("driver"));
+        let (_d, e) = engine();
+        assert!(e.apply(&adapter_tweaks(no_kw).remove(2)).is_err(), "nothing to set must not report success");
+    }
+
+    fn prop(d: &str, l: &str, x: &str, s: &str) -> PropRow {
+        let o = |v: &str| (!v.is_empty()).then(|| v.to_string());
+        PropRow { adapter: "Ethernet".into(), keyword: "*ReceiveBuffers".into(), value: None, default: o(d), valid: o(l), max: o(x), step: o(s) }
+    }
+
+    #[test]
+    fn doubled_target_respects_driver_limits() {
+        assert_eq!(doubled(&prop("512", "", "4096", "8")).as_deref(), Some("1024"));
+        assert_eq!(doubled(&prop("512", "", "800", "")).as_deref(), Some("800"), "range max caps");
+        assert_eq!(doubled(&prop("80", "", "150", "64")).as_deref(), Some("144"), "rounded down to the step grid");
+        assert_eq!(doubled(&prop("256", "128,256,512,1024", "", "")).as_deref(), Some("512"));
+        assert_eq!(doubled(&prop("256", "128,256,384,768", "", "")).as_deref(), Some("768"), "smallest listed at or above 2x");
+        assert_eq!(doubled(&prop("256", "128,256,384", "", "")).as_deref(), Some("384"), "else the largest listed");
+        assert_eq!(doubled(&prop("4096", "", "4096", "8")), None, "already at the maximum");
+        assert_eq!(doubled(&prop("512", "256,512", "", "")), None, "largest listed is the default");
+        assert_eq!(doubled(&prop("", "", "4096", "")), None, "unknown default");
+        assert_eq!(doubled(&prop("Auto", "", "4096", "")), None, "non-numeric default");
+        assert_eq!(doubled(&prop("512", "", "", "")), None, "no range and no list");
+    }
+
+    #[test]
+    fn buffers_apply_doubles_and_reverts() {
+        let state = Arc::new(Mutex::new(vec![
+            ("Ethernet".to_string(), "*ReceiveBuffers".to_string(), "512".to_string()),
+            ("Ethernet".to_string(), "*TransmitBuffers".to_string(), "128".to_string()),
+        ]));
+        let fake = adapter_fake(state.clone(), |k| if k == "*ReceiveBuffers" { r#","D":"512","X":"4096","S":"8""# } else { r#","D":"128","L":"128""# });
+        let t = adapter_tweaks(fake.clone()).remove(2);
+        assert_eq!(t.id, "net.buffers");
+        assert!(!t.is_applied().unwrap());
+        let (_d, e) = engine();
+        e.apply(&t).unwrap();
+        assert_eq!(state.lock().unwrap()[0].2, "1024");
+        assert_eq!(state.lock().unwrap()[1].2, "128", "a driver that allows no more is left alone");
+        assert!(t.is_applied().unwrap());
+        let b = e.with_store(|s| s.get_backup("net.buffers").cloned()).unwrap();
+        assert_eq!(b.data.get("Ethernet|*ReceiveBuffers").map(String::as_str), Some("512"));
+        assert!(!b.data.contains_key("Ethernet|*TransmitBuffers"));
+        assert_eq!(e.revert(&t).unwrap(), RevertOutcome::Reverted);
+        assert_eq!(state.lock().unwrap()[0].2, "512", "original value back");
     }
 
     // ------------------------------------------------------------ bindings
@@ -1164,5 +1353,35 @@ mod adblock_tests {
         assert_eq!(reg::get(Hive::Hklm, chrome, "2").unwrap(), None);
         reg::delete_value(Hive::Hklm, chrome, "1").unwrap();
         reg::delete_key_if_empty(Hive::Hklm, chrome).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod cleanstart_tests {
+    use super::*;
+
+    #[test]
+    fn pin_file_backup_and_restore() {
+        let d = tempfile::tempdir().unwrap();
+        let (pins, bak) = (d.path().join("start2.bin"), d.path().join("start2.bin.bak"));
+
+        // A copy that fails leaves the pins alone and no backup behind.
+        std::fs::write(&pins, "real pins").unwrap();
+        assert!(save_pins(&pins, &d.path().join("missing").join("start2.bin.bak")).is_err());
+        assert_eq!(std::fs::read_to_string(&pins).unwrap(), "real pins");
+
+        // A second apply sees the emptied file and must keep the first backup.
+        save_pins(&pins, &bak).unwrap();
+        std::fs::write(&pins, "emptied").unwrap();
+        save_pins(&pins, &bak).unwrap();
+        assert_eq!(std::fs::read_to_string(&bak).unwrap(), "real pins");
+
+        // A restore that fails keeps the backup (the target folder is missing, tried for 2 s).
+        assert!(restore_pins(&d.path().join("missing").join("start2.bin"), &bak).is_err());
+        assert!(bak.exists());
+
+        restore_pins(&pins, &bak).unwrap();
+        assert_eq!(std::fs::read_to_string(&pins).unwrap(), "real pins");
+        assert!(!bak.exists());
     }
 }

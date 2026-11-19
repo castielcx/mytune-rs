@@ -43,6 +43,14 @@ pub struct CallUi {
     full: bool,
     /// The watched stream plays in its own window (`popout.rs`), not in the call stage.
     pub pop: bool,
+    /// The watched stream fills the call stage (its tile was clicked); else it plays in its tile.
+    focus: bool,
+    /// Whose stream the user closed: not started again by itself while they keep sharing.
+    stopped: Option<String>,
+    /// Whose stream was being watched on the last frame of the stage.
+    watched: Option<String>,
+    /// When a stream was last started by itself (egui time).
+    auto_at: f64,
 }
 
 impl CallUi {
@@ -162,7 +170,8 @@ enum Look {
 
 /// Yapfast's IconButton: a round 52 px button (or `size`), raised fill, a quick hover fade.
 fn round_button(ui: &mut Ui, size: f32, g: &str, slash: bool, look: Look, tip: &str) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(size, size), Sense::click());
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(size, size), Sense::click_and_drag());
+    let rect = crate::theme::pulled(rect, crate::theme::pull(ui, &mut resp));
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
     let (fill, icon) = match look {
         Look::Plain => (k_raised(), SECONDARY),
@@ -178,7 +187,8 @@ fn round_button(ui: &mut Ui, size: f32, g: &str, slash: bool, look: Look, tip: &
 
 /// Yapfast's Leave button: a red pill with the hang-up glyph.
 fn leave_button(ui: &mut Ui, w: f32, h: f32, leaving: bool) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(w, h), Sense::click_and_drag());
+    let rect = crate::theme::pulled(rect, crate::theme::pull(ui, &mut resp));
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
     let fill = DANGER.lerp_to_gamma(DANGER_HOVER, t).gamma_multiply(if leaving { 0.5 } else { 1.0 });
     crate::theme::capsule(ui.painter(), rect, fill, 0x50);
@@ -192,7 +202,8 @@ fn call_button(ui: &mut Ui, g: &str, label: &str, fill: Color32) -> bool {
     // fixed size so a centred parent layout centres the button too (plain `vertical` hugs the left)
     ui.allocate_ui_with_layout(vec2(64.0, 68.0), Layout::top_down(Align::Min), |ui| {
         ui.spacing_mut().item_spacing.y = 4.0;
-        let (rect, resp) = ui.allocate_exact_size(vec2(64.0, 48.0), Sense::click());
+        let (rect, mut resp) = ui.allocate_exact_size(vec2(64.0, 48.0), Sense::click_and_drag());
+        let rect = crate::theme::pulled(rect, crate::theme::pull(ui, &mut resp));
         let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
         crate::theme::capsule(ui.painter(), rect, fill.lerp_to_gamma(Color32::BLACK, t * 0.15), 0x50);
         glyph(ui.painter(), rect.center(), g, 22.0, Color32::WHITE, false);
@@ -207,9 +218,10 @@ fn call_button(ui: &mut Ui, g: &str, label: &str, fill: Color32) -> bool {
 fn tile_pill(ui: &mut Ui, at: egui::Pos2, text: &str, fill: Color32, id: egui::Id) -> bool {
     let g = ui.painter().layout_no_wrap(text.to_owned(), egui::FontId::new(12.0, th::semibold()), Color32::WHITE);
     let rect = Rect::from_min_size(pos2(at.x - g.size().x - 20.0, at.y), vec2(g.size().x + 20.0, 26.0));
-    let resp = ui.interact(rect, id, Sense::click());
+    let mut resp = ui.interact(rect, id, Sense::click_and_drag());
+    let rect = crate::theme::pulled(rect, crate::theme::pull(ui, &mut resp));
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
-    crate::theme::capsule(ui.painter(), rect, fill.lerp_to_gamma(Color32::WHITE, t * 0.12), 0x40);
+    crate::theme::plate(ui.painter(), rect, 8.0, fill.lerp_to_gamma(Color32::WHITE, t * 0.12), 0x40);
     ui.painter().galley(rect.center() - g.size() / 2.0, g, Color32::WHITE);
     resp.clicked()
 }
@@ -217,7 +229,8 @@ fn tile_pill(ui: &mut Ui, at: egui::Pos2, text: &str, fill: Color32, id: egui::I
 /// A round 28 px icon button on a tile, its right edge at `at`; what it does is in its tooltip.
 fn tile_icon(ui: &mut Ui, at: egui::Pos2, g: &str, tip: &str, id: egui::Id) -> bool {
     let rect = Rect::from_min_size(pos2(at.x - 28.0, at.y), vec2(28.0, 28.0));
-    let resp = ui.interact(rect, id, Sense::click());
+    let mut resp = ui.interact(rect, id, Sense::click_and_drag());
+    let rect = crate::theme::pulled(rect, crate::theme::pull(ui, &mut resp));
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
     ui.painter().circle_filled(rect.center(), 14.0 + t, k_raised().lerp_to_gamma(Color32::WHITE, t * 0.12));
     glyph(ui.painter(), rect.center(), g, 12.0, Color32::WHITE, false);
@@ -263,7 +276,7 @@ fn name_chip(ui: &Ui, rect: Rect, name: &str, muted: bool, deafened: bool, serve
 /// One participant's tile: camera video or their avatar, a green border while they speak, the name chip, and a
 /// "Watch stream" pill when they share their screen (LIVE for this account's own share, with its preview).
 #[allow(clippy::too_many_arguments)]
-fn participant_tile(ui: &mut Ui, cu: &mut CallUi, s: &AppState, tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSet<String>, want: &mut Vec<String>, acts: &mut Vec<Action>, pe: &voice::Participant, rect: Rect) {
+fn participant_tile(ui: &mut Ui, cu: &mut CallUi, s: &AppState, tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSet<String>, want: &mut Vec<String>, pe: &voice::Participant, rect: Rect) {
     let ctx = ui.ctx().clone();
     let id = egui::Id::new(("tile", &pe.id));
     let rect = glide(&ctx, id, rect);
@@ -310,9 +323,71 @@ fn participant_tile(ui: &mut Ui, cu: &mut CallUi, s: &AppState, tex: &mut HashMa
     if pe.local && v.sharing.is_some() {
         // no fullscreen for one's own share: a shared screen showing its own capture feeds back into a smear
         tile_pill(ui, at, "LIVE", DANGER, id.with("live"));
-    } else if pe.streaming && !pe.local && v.watching.as_ref().is_none_or(|w| w.user != pe.id) && tile_pill(ui, at, "Watch stream", DANGER, id.with("watch")) {
-        acts.push(Action::Voice(Vc::Watch(pe.id.clone())));
     }
+}
+
+/// Someone else's screen share as its own tile: the live stream when it is the one being watched (a click
+/// makes it fill the stage), else Discord's still preview of it (a click starts watching).
+#[allow(clippy::too_many_arguments)]
+fn stream_tile(ui: &mut Ui, cu: &mut CallUi, s: &AppState, tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSet<String>, want: &mut Vec<String>, acts: &mut Vec<Action>, pe: &voice::Participant, rect: Rect) {
+    let ctx = ui.ctx().clone();
+    let id = egui::Id::new(("stream_tile", &pe.id));
+    let rect = glide(&ctx, id, rect);
+    ui.painter().rect_filled(rect, 12.0, Color32::BLACK);
+    // the call's room is "discord:<server or @me>:<channel>"
+    let key = s.voice.room.as_deref().and_then(|r| {
+        let mut p = r.trim_start_matches("discord:").splitn(2, ':');
+        Some(mytune_chat::yapfast_core::yapfast_discord::stream::key(p.next()?, p.next()?, &pe.id))
+    });
+    // Discord has no preview for a stream's first seconds and the engine asks for an address once: so a
+    // new address every 10 s until a picture came, then one a minute; the last picture stays meanwhile
+    let good: Option<String> = ctx.data(|d| d.get_temp(id.with("good")));
+    let now = ctx.input(|i| i.time);
+    let live = s.voice.watching.as_ref().filter(|w| w.user == pe.id);
+    let mut shown = live.filter(|w| !w.opening).and_then(|w| w.frames.as_ref()).and_then(|f| cu.frames_texture(&ctx, "watch", f));
+    if let Some(key) = key.filter(|_| shown.is_none()) {
+        let fresh = if good.is_some() { format!("stream-preview:{key}#m{}", (now / 60.0) as u64) } else { format!("stream-preview:{key}#s{}", (now / 10.0) as u64) };
+        for url in [Some(fresh), good.clone()].into_iter().flatten() {
+            if let Some(t) = texture(&ctx, tex, asked, s, &Some(url.clone()), want) {
+                shown = Some((t, tex.get(&url).map_or(vec2(16.0, 9.0), |h| h.size_vec2())));
+                if good.as_ref() != Some(&url) {
+                    ctx.data_mut(|d| d.insert_temp(id.with("good"), url));
+                }
+                break;
+            }
+        }
+    }
+    match shown {
+        Some(t) => cover(ui, rect, t, 12.0, true),
+        None => glyph(ui.painter(), rect.center(), I_SCREEN, (rect.height() * 0.25).min(40.0), MUTED, false),
+    }
+    ctx.request_repaint_after(std::time::Duration::from_secs(5));
+    let resp = ui.interact(rect, id, Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+    if resp.secondary_clicked() {
+        super::callmenu::open(&ctx, &pe.id);
+    }
+    if resp.clicked() {
+        if live.is_some() {
+            cu.focus = true;
+        } else {
+            cu.stopped = None;
+            acts.push(Action::Voice(Vc::Watch(pe.id.clone())));
+        }
+    }
+    name_chip(ui, rect, &format!("{}'s screen", pe.user), false, false, false);
+    tile_pill(ui, pos2(rect.right() - 8.0, rect.top() + 8.0), "LIVE", DANGER, id.with("live"));
+}
+
+/// The stage's tiles in order: each person, then their screen share.
+fn tiles(v: &voice::State) -> Vec<(&voice::Participant, bool)> {
+    let mut out = Vec::new();
+    for p in &v.participants {
+        out.push((p, false));
+        if p.streaming && !p.local {
+            out.push((p, true));
+        }
+    }
+    out
 }
 
 /// One person as a round picture on the bare stage: a green ring while they speak, dimmed with a pulsing ring
@@ -355,10 +430,35 @@ pub fn stage(ui: &mut Ui, rect: Rect, cu: &mut CallUi, s: &AppState, tex: &mut H
     let controls = Rect::from_min_max(pos2(rect.left(), rect.bottom() - 76.0), rect.max);
     let area = Rect::from_min_max(rect.min + vec2(16.0, 16.0), pos2(rect.right() - 16.0, controls.top()));
     let people: Vec<&voice::Participant> = v.participants.iter().collect();
-    if let Some(w) = &v.watching {
-        let strip_h = if people.is_empty() { 0.0 } else { (area.height() * 0.22).clamp(70.0, 108.0) };
-        let big = Rect::from_min_max(area.min, pos2(area.right(), area.bottom() - strip_h - if strip_h > 0.0 { 8.0 } else { 0.0 }));
-        let big = grid(1, big, 0.0).first().copied().unwrap_or(big);
+    // a screen share plays in its tile without a click (one at a time: the engine watches one stream),
+    // unless the user closed it
+    let now = ctx.input(|i| i.time);
+    // a stream that stopped showing while its owner still shares was closed (any Stop watching button)
+    match &v.watching {
+        Some(w) if cu.watched.as_ref() != Some(&w.user) => cu.watched = Some(w.user.clone()),
+        Some(_) => {}
+        None => {
+            if let Some(u) = cu.watched.take() {
+                cu.stopped = Some(u);
+            }
+        }
+    }
+    if cu.stopped.as_ref().is_some_and(|u| !people.iter().any(|p| &p.id == u && p.streaming)) {
+        cu.stopped = None;
+    }
+    if v.watching.is_none() {
+        cu.focus = false;
+        if now - cu.auto_at > 10.0 {
+            if let Some(p) = people.iter().find(|p| p.streaming && !p.local && cu.stopped.as_ref() != Some(&p.id)) {
+                cu.auto_at = now;
+                acts.push(Action::Voice(Vc::Watch(p.id.clone())));
+            }
+        }
+    }
+    let filled = cu.focus || cu.pop || cu.full;
+    if let Some(w) = v.watching.as_ref().filter(|_| filled) {
+        // the watched stream fills the stage, as Discord's does; a click on it brings the tiles back
+        let big = grid(1, area, 0.0).first().copied().unwrap_or(area);
         ui.painter().rect_filled(big, 12.0, Color32::BLACK);
         match w.frames.as_ref().filter(|_| !cu.full && !cu.pop).and_then(|f| cu.frames_texture(&ctx, "watch", f)) {
             Some(t) if !w.opening => cover(ui, big, t, 12.0, true),
@@ -371,9 +471,13 @@ pub fn stage(ui: &mut Ui, rect: Rect, cu: &mut CallUi, s: &AppState, tex: &mut H
                 ui.painter().text(big.center(), egui::Align2::CENTER_CENTER, "Opening stream\u{2026}", egui::FontId::proportional(14.0), SECONDARY.gamma_multiply(a));
             }
         }
-        if !cu.pop && ui.interact(big, egui::Id::new("watch_open"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-            cu.full = true;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(true));
+        let open = ui.interact(big, egui::Id::new("watch_open"), Sense::click());
+        // right click: the streamer's menu, with Stream Volume
+        if open.secondary_clicked() {
+            super::callmenu::open(&ctx, &w.user);
+        }
+        if !cu.pop && open.clicked() {
+            cu.focus = false;
         }
         name_chip(ui, big, &format!("{}'s screen", w.name), false, false, false);
         if tile_icon(ui, pos2(big.right() - 8.0 - 68.0, big.top() + 8.0), "\u{E8A7}", if cu.pop { "Back into MyTune" } else { "Own window, always on top" }, egui::Id::new("watch_pop")) {
@@ -386,10 +490,6 @@ pub fn stage(ui: &mut Ui, rect: Rect, cu: &mut CallUi, s: &AppState, tex: &mut H
         if tile_icon(ui, pos2(big.right() - 8.0, big.top() + 8.0), "\u{E711}", "Stop watching", egui::Id::new("stop_watch")) {
             acts.push(Action::Voice(Vc::StopWatching));
         }
-        let strip = Rect::from_min_max(pos2(area.left(), area.bottom() - strip_h), area.max);
-        for (pe, r) in people.iter().zip(grid(people.len(), strip, 8.0)) {
-            participant_tile(ui, cu, s, tex, asked, want, acts, pe, r);
-        }
     } else if v.sharing.is_none() && !people.iter().any(|p| p.video.is_some() || p.streaming) {
         // nobody shows a camera or a screen: just the round pictures in a row, as Discord does
         let n = people.len().max(1) as f32;
@@ -401,8 +501,13 @@ pub fn stage(ui: &mut Ui, rect: Rect, cu: &mut CallUi, s: &AppState, tex: &mut H
             avatar_only(ui, cu, s, tex, asked, want, acts, pe, c, d);
         }
     } else {
-        for (pe, r) in people.iter().zip(grid(people.len(), area, 12.0)) {
-            participant_tile(ui, cu, s, tex, asked, want, acts, pe, r);
+        let all = tiles(v);
+        for (&(pe, stream), r) in all.iter().zip(grid(all.len(), area, 12.0)) {
+            if stream {
+                stream_tile(ui, cu, s, tex, asked, want, acts, pe, r);
+            } else {
+                participant_tile(ui, cu, s, tex, asked, want, pe, r);
+            }
         }
     }
     // controls: Mute, Deafen, Camera, Share, then Leave (CallControls)
@@ -511,10 +616,11 @@ pub fn dock(ui: &mut Ui, cu: &mut CallUi, s: &AppState, acts: &mut Vec<Action>) 
 
 /// Yapfast's DockButton: 32 px high, radius 8; green when on, red glyph when it alerts.
 fn dock_button(ui: &mut Ui, w: f32, g: &str, slash: bool, on: bool, alert: bool, tip: &str) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, 32.0), Sense::click());
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(w, 32.0), Sense::click_and_drag());
+    let rect = crate::theme::pulled(rect, crate::theme::pull(ui, &mut resp));
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
     let fill = if on { LIVE.gamma_multiply(0.22 + 0.10 * t) } else { k_raised().lerp_to_gamma(k_hover(), t) };
-    crate::theme::capsule(ui.painter(), rect, fill, 0x2C);
+    crate::theme::plate(ui.painter(), rect, th::R_CTL, fill, 0x2C);
     let icon = if alert { DANGER } else if on { LIVE } else { SECONDARY.lerp_to_gamma(TEXT, t) };
     glyph(ui.painter(), rect.center(), g, 17.0, icon, slash);
     resp.on_hover_text(tip)
@@ -522,9 +628,10 @@ fn dock_button(ui: &mut Ui, w: f32, g: &str, slash: bool, on: bool, alert: bool,
 
 /// The dock's leave button: same 32 px square as its neighbours, red with a white hang-up glyph.
 fn dock_leave(ui: &mut Ui, w: f32) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(w, 32.0), Sense::click());
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(w, 32.0), Sense::click_and_drag());
+    let rect = crate::theme::pulled(rect, crate::theme::pull(ui, &mut resp));
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
-    crate::theme::capsule(ui.painter(), rect, DANGER.lerp_to_gamma(Color32::WHITE, 0.12 * t), 0x50);
+    crate::theme::plate(ui.painter(), rect, th::R_CTL, DANGER.lerp_to_gamma(Color32::WHITE, 0.12 * t), 0x50);
     glyph(ui.painter(), rect.center(), I_HANGUP, 17.0, Color32::WHITE, false);
     resp.on_hover_text("Leave call")
 }
@@ -558,7 +665,8 @@ fn who_is_here(people: &[mytune_chat::yapfast_core::chat::VoicePerson]) -> Strin
 pub fn incoming_card(ctx: &egui::Context, cu: &mut CallUi, s: &AppState, tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSet<String>, want: &mut Vec<String>, acts: &mut Vec<Action>, any_page: bool) {
     let Some(r) = ringing(s).find(|r| any_page || s.selected.as_ref() != Some(&r.id)) else { return };
     cu.live = true;
-    egui::Area::new(egui::Id::new("incoming_call")).anchor(egui::Align2::RIGHT_TOP, vec2(-24.0, 64.0)).order(egui::Order::Foreground).show(ctx, |ui| {
+    // as Discord: starts in the middle of the window, drags anywhere inside it, stays where it was put
+    egui::Area::new(egui::Id::new("incoming_call")).movable(true).pivot(egui::Align2::CENTER_CENTER).default_pos(ctx.content_rect().center()).order(egui::Order::Foreground).show(ctx, |ui| {
         egui::Frame::new()
             .fill(crate::theme::Glass::Float.fill())
             .stroke(Stroke::new(1.0, k_edge()))
@@ -877,9 +985,9 @@ impl ShareMenu {
                 let y = ui.cursor().top();
                 ui.painter().hline(ui.max_rect().x_range(), y, Stroke::new(1.0, k_edge()));
                 ui.add_space(12.0);
-                let res = [Resolution::Source, Resolution::P720, Resolution::P1080];
+                let res = [Resolution::Source, Resolution::P720, Resolution::P1080, Resolution::P1440];
                 let at = res.iter().position(|r| *r == self.quality.resolution).unwrap_or(2);
-                if let Some(i) = setting_row(ui, "Resolution", &["Source", "720p", "1080p"], at, pal) {
+                if let Some(i) = setting_row(ui, "Resolution", &["Source", "720p", "1080p", "1440p"], at, pal) {
                     self.quality.resolution = res[i];
                 }
                 let fps = [15, 30, 60];
@@ -937,8 +1045,10 @@ fn setting_row(ui: &mut Ui, label: &str, items: &[&str], selected: usize, pal: t
     let (row, _) = ui.allocate_exact_size(vec2(560.0, 38.0), Sense::hover());
     ui.painter().text(row.left_center(), egui::Align2::LEFT_CENTER, label, egui::FontId::new(13.5, th::semibold()), TEXT);
     let bar = Rect::from_min_size(pos2(row.left() + 150.0, row.top()), vec2(row.width() - 150.0, 38.0));
-    ui.painter().rect_filled(bar, 19.0, Color32::from_black_alpha(0x38));
-    ui.painter().rect_stroke(bar, 19.0, Stroke::new(1.0, Color32::from_white_alpha(0x16)), egui::StrokeKind::Inside);
+    // the same track and thumb as `th::tab`
+    let radius = th::R_CTL + 2.0;
+    ui.painter().rect_filled(bar, radius, Color32::from_black_alpha(0x44));
+    ui.painter().rect_stroke(bar, radius, Stroke::new(th::px(), Color32::from_white_alpha(0x18)), egui::StrokeKind::Inside);
     let w = bar.width() / items.len() as f32;
     let mut hit = None;
     for (i, name) in items.iter().enumerate() {
@@ -946,9 +1056,9 @@ fn setting_row(ui: &mut Ui, label: &str, items: &[&str], selected: usize, pal: t
         let resp = ui.interact(seg, ui.id().with(("seg", label, i)), Sense::click());
         let on = i == selected;
         if on {
-            crate::theme::capsule(ui.painter(), seg, Color32::from_white_alpha(0x34), 0x36);
+            crate::theme::plate(ui.painter(), seg, th::nested(radius, 3.0), Color32::from_white_alpha(0x2A), 0x4C);
         } else if resp.hovered() {
-            ui.painter().rect_filled(seg, 16.0, k_hover());
+            ui.painter().rect_filled(seg, th::nested(radius, 3.0), k_hover());
         }
         ui.painter().text(seg.center(), egui::Align2::CENTER_CENTER, *name, egui::FontId::new(13.0, th::semibold()), if on { TEXT } else { SECONDARY });
         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -960,24 +1070,29 @@ fn setting_row(ui: &mut Ui, label: &str, items: &[&str], selected: usize, pal: t
 
 /// A 128 by 38 button: accent when primary, flat otherwise; a disabled one does not click.
 fn footer_button(ui: &mut Ui, text: &str, primary: bool, enabled: bool, pal: th::Palette) -> bool {
-    let (rect, resp) = ui.allocate_exact_size(vec2(128.0, 38.0), if enabled { Sense::click() } else { Sense::hover() });
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(128.0, 38.0), if enabled { Sense::click_and_drag() } else { Sense::hover() });
+    let rect = crate::theme::pulled(rect, crate::theme::pull(ui, &mut resp));
     let (fill, fg) = match (primary, enabled) {
         (true, true) => (if resp.hovered() { pal.accent_dark.lerp_to_gamma(pal.accent, 0.5) } else { pal.accent }, pal.on_accent),
         (true, false) => (pal.accent.gamma_multiply(0.3), pal.on_accent.gamma_multiply(0.6)),
         _ => (if resp.hovered() { k_hover() } else { k_raised() }, TEXT),
     };
-    crate::theme::capsule(ui.painter(), rect, fill, if primary { 0x50 } else { 0x30 });
+    crate::theme::plate(ui.painter(), rect, th::R_CTL + 1.0, fill, if primary { 0x70 } else { 0x34 });
     ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::new(13.5, th::semibold()), fg);
     enabled && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
 }
 
 /// A watched stream over the whole window, the window itself fullscreen.
-/// The small button at the bottom right leaves it; Esc and a double click do too.
+/// The small button at the bottom right leaves it; Esc does too. A click zooms in a little on the
+/// pointer, the next click zooms back out.
 pub fn fullscreen(ctx: &egui::Context, cu: &mut CallUi, s: &AppState, acts: &mut Vec<Action>) {
     if !cu.full {
         return;
     }
+    // (zoomed, the point the zoom grows from)
+    let zoom_id = egui::Id::new("watch_fs_zoom");
     let leave = |cu: &mut CallUi| {
+        ctx.data_mut(|d| d.remove::<(bool, egui::Pos2)>(zoom_id));
         cu.full = false;
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
     };
@@ -996,8 +1111,20 @@ pub fn fullscreen(ctx: &egui::Context, cu: &mut CallUi, s: &AppState, acts: &mut
         ui.set_clip_rect(rect);
         let (r, resp) = ui.allocate_exact_size(rect.size(), Sense::click());
         ui.painter().rect_filled(r, 0.0, Color32::BLACK);
+        let (mut zoomed, mut at) = ctx.data(|d| d.get_temp::<(bool, egui::Pos2)>(zoom_id)).unwrap_or((false, r.center()));
+        if resp.clicked() {
+            zoomed = !zoomed;
+            if zoomed {
+                at = resp.interact_pointer_pos().unwrap_or(r.center());
+            }
+            ctx.data_mut(|d| d.insert_temp(zoom_id, (zoomed, at)));
+        }
+        // 1.5x: a 1080p stream still shows 1280x720 of its own pixels
+        let scale = 1.0 + 0.5 * ctx.animate_bool_with_time_and_easing(zoom_id, zoomed, 0.2, egui::emath::easing::cubic_out);
+        let zr = Rect::from_min_size(at + (r.min - at) * scale, r.size() * scale);
+        let resp = resp.on_hover_cursor(if zoomed { egui::CursorIcon::ZoomOut } else { egui::CursorIcon::ZoomIn });
         match tex {
-            Some(t) if !opening => cover(ui, r, t, 0.0, true),
+            Some(t) if !opening => cover(ui, zr, t, 0.0, true),
             _ => {
                 cu.live = true;
                 ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "Opening stream\u{2026}", egui::FontId::proportional(15.0), SECONDARY);
@@ -1008,8 +1135,10 @@ pub fn fullscreen(ctx: &egui::Context, cu: &mut CallUi, s: &AppState, acts: &mut
             acts.push(Action::Voice(Vc::StopWatching));
             exit = true;
         }
-        if resp.double_clicked() {
-            exit = true;
+        if resp.secondary_clicked() {
+            if let Some(w) = &s.voice.watching {
+                super::callmenu::open_stream(ctx, &w.user);
+            }
         }
         // the small button at the bottom right: back to the window
         let b = Rect::from_center_size(pos2(r.right() - 34.0, r.bottom() - 34.0), vec2(40.0, 40.0));
@@ -1021,6 +1150,7 @@ pub fn fullscreen(ctx: &egui::Context, cu: &mut CallUi, s: &AppState, acts: &mut
             exit = true;
         }
     });
+    super::callmenu::show_stream(ctx);
     if exit {
         leave(cu);
     }
@@ -1045,7 +1175,12 @@ pub fn pop_stream(ui: &mut Ui, rect: Rect, cu: &mut CallUi, s: &AppState, acts: 
         if tile_icon(ui, pos2(rect.right() - 32.0, rect.top() + 1.0), "\u{E71A}", "Stop watching", egui::Id::new("pop_stop")) {
             acts.push(Action::Voice(Vc::StopWatching));
         }
+        // right click: Stream Volume and Mute Stream
+        if ui.input(|i| i.pointer.secondary_clicked()) {
+            super::callmenu::open_stream(&ctx, &w.user);
+        }
     }
+    super::callmenu::show_stream(&ctx);
 }
 
 /// The windows the call UI may have open: devices and the Go Live picker.

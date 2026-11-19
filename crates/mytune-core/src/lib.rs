@@ -2,12 +2,17 @@
 //! Compatible with the C# MyTune 2 `state.json` format.
 
 pub mod alltweaks;
+pub mod apps;
 pub mod audio;
 pub mod backup;
+pub mod bios;
 pub mod booster;
 pub mod catalog;
+pub mod customres;
 pub mod engine;
 pub mod etw;
+pub mod gamelib;
+pub mod gameprofile;
 pub mod gamewatch;
 pub mod heatwatch;
 pub mod error;
@@ -41,6 +46,7 @@ pub mod taskbar;
 pub mod tools;
 pub mod vibrance;
 pub mod diagnostics;
+pub mod diskuse;
 pub mod display;
 pub mod vpn;
 mod util;

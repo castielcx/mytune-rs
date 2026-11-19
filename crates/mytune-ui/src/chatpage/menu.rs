@@ -1,7 +1,7 @@
 //! A message's right-click menu, after Discord's and Yapfast's: quick reactions, Reply, Forward, Edit, Copy
-//! Text, Pin, Copy Message Link, Copy Message ID, Delete. Also what they open: reactions under a message, the
+//! Text, Pin, Mark Unread, Copy Message Link, Copy Message ID, Delete. Also what they open: reactions under a message, the
 //! reply or edit bar over the composer, the delete confirmation and the forward dialog. Discord's Bookmark,
-//! Reminder, Apps, Mark Unread, Speak and Report have no engine support and are left out.
+//! Reminder, Apps, Speak and Report have no engine support and are left out.
 
 use super::voice::{glyph, k_panel, QUICK, k_raised};
 use super::*;
@@ -66,7 +66,7 @@ pub fn message_menu(ctx: &egui::Context, s: &AppState, pk: &mut super::picker::P
                 for e in QUICK_REACTIONS {
                     let (r, er) = ui.allocate_exact_size(vec2(45.0, 40.0), Sense::click());
                     let t = ui.ctx().animate_bool_with_time(er.id, er.hovered(), QUICK);
-                    crate::theme::capsule(ui.painter(), r, Color32::from_white_alpha(0x20 + (0x18 as f32 * t) as u8), 0x26);
+                    crate::theme::plate(ui.painter(), r, crate::theme::R_CTL + 1.0, Color32::from_white_alpha(0x20 + (0x18 as f32 * t) as u8), 0x34);
                     match crate::emoji::texture(ui.ctx(), e) {
                         Some(t) => egui::Image::new(egui::load::SizedTexture::new(t, vec2(24.0, 24.0))).paint_at(ui, egui::Rect::from_center_size(r.center(), vec2(24.0, 24.0))),
                         None => {
@@ -110,6 +110,10 @@ pub fn message_menu(ctx: &egui::Context, s: &AppState, pk: &mut super::picker::P
         }
         if m.can_pin && item(ui, "\u{E718}", if m.pinned { "Unpin Message" } else { "Pin Message" }, false) {
             acts.push(Action::PinMessage(m.item.clone()));
+            close = true;
+        }
+        if m.item.starts_with("d:") && item(ui, "\u{E91F}", "Mark Unread", false) {
+            acts.push(Action::MarkUnread(m.item.clone()));
             close = true;
         }
         if m.thread.is_none() && s.threads_channel().is_some() && item(ui, "\u{E8BD}", "Create Thread", false) {

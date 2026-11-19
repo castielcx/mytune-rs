@@ -32,6 +32,7 @@ mod channelsettings;
 mod serverpages;
 mod settings;
 mod voice;
+mod voicenote;
 
 #[derive(Default)]
 pub struct ChatPage {
@@ -133,6 +134,7 @@ fn texture(ctx: &egui::Context, cache: &mut HashMap<String, TextureHandle>, aske
             let img = egui::ColorImage::from_rgba_unmultiplied([pic.width as usize, pic.height as usize], &pic.rgba);
             let t = ctx.load_texture(url.clone(), img, th::SMOOTH);
             let id = t.id();
+            crate::sharp::register(id, &pic.rgba, pic.width, pic.height); // small draws get exact-size copies
             touch(ctx, url);
             cache.insert(url.clone(), t);
             Some(id)
@@ -144,6 +146,12 @@ fn texture(ctx: &egui::Context, cache: &mut HashMap<String, TextureHandle>, aske
             None
         }
     }
+}
+
+/// A call's length as Discord writes it: `m:ss`, from an hour on `h:mm:ss`.
+fn call_time(secs: u64) -> String {
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
 }
 
 /// Temp-data key of the open stream preview: (picture address, streamer's name, time opened).
@@ -633,7 +641,9 @@ fn message_list(ui: &mut Ui, s: &AppState, msgs: &[std::sync::Arc<mytune_chat::y
         // a reply: a line with the replied-to author's small avatar, "@name" and the start of their text above the
         // message, joined to this author's picture by a curve; a click jumps to the original, as in Discord
         if let Some(rp) = &m.reply {
-            let (rr, resp) = ui.allocate_exact_size(vec2(ui.available_width() - 8.0, 20.0), Sense::click());
+            // not below zero: with no width left (window shrunk to nothing) egui stopped the app on the negative
+            // size ("Negative child size: [-8.0 20.0]", the crash of 2026-11-19)
+            let (rr, resp) = ui.allocate_exact_size(vec2((ui.available_width() - 8.0).max(0.0), 20.0), Sense::click());
             let (x0, y) = (rr.left() + 28.0, rr.center().y);
             let st = egui::Stroke::new(2.0, FAINT);
             ui.painter().add(egui::Shape::line(vec![egui::pos2(x0, rr.bottom() + 2.0), egui::pos2(x0, y + 6.0), egui::pos2(x0 + 2.0, y + 2.5), egui::pos2(x0 + 6.0, y), egui::pos2(x0 + 18.0, y)], st));
@@ -850,6 +860,15 @@ impl ChatPage {
             std::thread::spawn(move || {
                 if let Some(path) = rfd::FileDialog::new().set_title("Save attachment").set_file_name(&name).save_file() {
                     chat.dispatch(Action::SaveAttachment { item, index, path });
+                }
+            });
+        }
+        // Edit Group > Change Icon: the same, for the picture file
+        if let Some(room) = dialogs::take_group_icon(ui.ctx()) {
+            let chat = chat.clone();
+            std::thread::spawn(move || {
+                if let Some(path) = rfd::FileDialog::new().set_title("Choose a group icon").add_filter("Pictures", &["png", "jpg", "jpeg", "gif", "webp"]).pick_file() {
+                    chat.dispatch(Action::ChangeGroup { room, change: mytune_chat::yapfast_core::chat::GroupChange::Icon(Some(path)) });
                 }
             });
         }
@@ -1273,6 +1292,8 @@ impl ChatPage {
                                 let av = egui::Rect::from_min_size(if k == 0 { egui::pos2(x + 10.0, top) } else { egui::pos2(x, top + 10.0) }, vec2(22.0, 22.0));
                                 let t = texture(&ctx, tex, asked, s, &Some(url.clone()), &mut want);
                                 avatar(ui, av, t, &r.name);
+                                // a light ring: a near-black picture read as a blob (the row colour is see-through)
+                                ui.painter().circle_stroke(av.center(), 11.0, egui::Stroke::new(1.0, Color32::from_white_alpha(0x50)));
                             }
                             x += 42.0;
                         } else if r.direct {
@@ -1293,14 +1314,17 @@ impl ChatPage {
                         // under a DM's name (never the last message, by the user's choice): the voice channel
                         // they are in (speaker icon), else the game they play (green gamepad), else their custom status
                         let sub: Option<(Option<(&str, Color32)>, String)> = if r.direct {
-                            // a DM call itself is not shown ("In a call" removed by the user's choice)
-                            let in_voice = match &r.person {
-                                Some(p) => s.rooms.iter().find(|v| !v.direct && v.voice && v.people.iter().any(|x| &x.id == p)).map(|v| tidy(&v.name)),
+                            // a call in this DM: "In call" with the speaker (user's choice 2026-11-17, replaces
+                            // the rows of people under the DM)
+                            let in_call = (!r.people.is_empty()).then(|| ("In call".to_owned(), r.people.iter().any(|x| x.streaming)));
+                            let in_voice = in_call.or_else(|| match &r.person {
+                                Some(p) => s.rooms.iter().find(|v| !v.direct && v.voice && v.people.iter().any(|x| &x.id == p)).map(|v| (tidy(&v.name), v.people.iter().any(|x| &x.id == p && x.streaming))),
                                 None => None,
-                            };
-                            let game = || r.activities.iter().find(|a| a.kind == mytune_chat::yapfast_core::chat::ActivityKind::Playing).map(|a| a.name.to_string());
+                            });
+                            let game =|| r.activities.iter().find(|a| a.kind == mytune_chat::yapfast_core::chat::ActivityKind::Playing).map(|a| a.name.to_string());
                             in_voice
-                                .map(|v| (Some(("\u{E767}", SECONDARY)), v))
+                                // green speaker; sharing their screen: the red LIVE pill instead
+                                .map(|(v, live)| (Some((if live { "LIVE" } else { "\u{E767}" }, LIVE)), v))
                                 .or_else(|| game().map(|g| (Some(("\u{E7FC}", LIVE)), g)))
                                 .or_else(|| r.activity.as_deref().map(|a| (None, markdown::plain(a))))
                                 // a group DM: how many are in it, this account included
@@ -1310,14 +1334,37 @@ impl ChatPage {
                             None
                         };
                         let dy = if sub.is_some() { -8.0 } else { 0.0 };
-                        let room_w = (rect.right() - x - 36.0).max(40.0);
+                        // a server voice channel with people in it: how long its call has been going, at the right.
+                        // Discord's start time when the engine has it, else since this app first saw the call.
+                        let mut timer_w = 0.0;
+                        if r.voice && !r.direct {
+                            let seen = egui::Id::new(("vc_seen", &r.id));
+                            if r.people.is_empty() {
+                                ui.data_mut(|d| d.remove::<u64>(seen));
+                            } else {
+                                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+                                let first = ui.data_mut(|d| *d.get_temp_mut_or(seen, now));
+                                let start = r.id.rsplit(':').next().and_then(mytune_chat::yapfast_core::yapfast_discord::voice_start::get).unwrap_or(first);
+                                let g = ui.painter().layout_no_wrap(call_time(now.saturating_sub(start)), egui::FontId::proportional(11.5), MUTED);
+                                timer_w = g.size().x + 8.0;
+                                ui.painter().galley(egui::pos2(rect.right() - 26.0 - g.size().x, rect.center().y - g.size().y / 2.0), g, MUTED);
+                                ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+                            }
+                        }
+                        let room_w = (rect.right() - x - 36.0 - timer_w).max(40.0);
                         let nf = egui::FontId::new(14.0, font);
                         let name = ellipsize(ui, &tidy(&r.name), &nf, room_w);
                         ui.painter().text(egui::pos2(x, rect.center().y + dy), egui::Align2::LEFT_CENTER, name, nf, color);
                         if let Some((icon, t)) = sub {
                             let f = egui::FontId::new(11.5, egui::FontFamily::Proportional);
                             let mut tx = x;
-                            if let Some((g, c)) = icon {
+                            if let Some(("LIVE", _)) = icon {
+                                let g = ui.painter().layout_no_wrap("LIVE".to_owned(), egui::FontId::new(9.5, th::bold()), Color32::WHITE);
+                                let pill = egui::Rect::from_min_size(egui::pos2(x, rect.center().y + 2.0), vec2(g.size().x + 10.0, 14.0));
+                                ui.painter().rect_filled(pill, 4.0, DANGER);
+                                ui.painter().galley(pill.center() - g.size() / 2.0, g, Color32::WHITE);
+                                tx += pill.width() + 4.0;
+                            } else if let Some((g, c)) = icon {
                                 // Segoe Fluent icons are drawn for 16 px; smaller sizes blur
                                 // 2 px under the text's box centre: measured on a capture, the icon's ink sits high in
                                 // its box and the letters low in theirs
@@ -1358,18 +1405,26 @@ impl ChatPage {
                             chat.warm(&r.id);
                         }
                         if resp.clicked() {
-                            acts.push(Action::Open(r.id.clone()));
-                            if r.voice {
-                                acts.push(Action::RequestJoinVoice(r.id.clone()));
+                            // a voice channel asks before joining (extras::voice_join); the one already joined just opens
+                            if r.voice && !(s.voice.active() && s.voice.room.as_ref() == Some(&r.id)) {
+                                let at = (resp.rect, ctx.input(|i| i.time));
+                                ctx.data_mut(|d| {
+                                    d.insert_temp(egui::Id::new(extras::JOIN_ASK), r.id.clone());
+                                    d.insert_temp(egui::Id::new(extras::JOIN_ASK).with("at"), at);
+                                });
+                            } else if r.voice {
+                                // the call over the channel's text chat, as a DM call shows
+                                acts.push(Action::OpenChat(r.id.clone()));
+                            } else {
+                                acts.push(Action::Open(r.id.clone()));
                             }
                         }
-                        // who is in a voice channel or DM call, known without joining
-                        for pe in r.people.iter().take(12) {
+                        // who is in a voice channel, known without joining (a DM call shows "In call" instead)
+                        for pe in r.people.iter().filter(|_| !r.direct).take(12) {
                             let (pr, _) = ui.allocate_exact_size(vec2(w, 24.0), Sense::hover());
                             let av = egui::Rect::from_min_size(egui::pos2(pr.left() + 40.0, pr.center().y - 9.0), vec2(18.0, 18.0));
                             let t = texture(&ctx, tex, asked, s, &pe.avatar, &mut want);
                             avatar(ui, av, t, &pe.name);
-                            ui.painter().text(egui::pos2(av.right() + 8.0, pr.center().y), egui::Align2::LEFT_CENTER, &pe.name, egui::FontId::proportional(13.0), MUTED);
                             // icons at the row's right, as Discord: streaming (screen), deafened (struck headphones),
                             // muted (struck microphone)
                             let mut ix = pr.right() - 16.0;
@@ -1377,7 +1432,7 @@ impl ChatPage {
                                 // the red LIVE pill of the call tile, small
                                 let g = ui.painter().layout_no_wrap("LIVE".to_owned(), egui::FontId::new(9.5, th::bold()), Color32::WHITE);
                                 let pill = egui::Rect::from_min_size(egui::pos2(pr.right() - 8.0 - g.size().x - 10.0, pr.center().y - 8.0), vec2(g.size().x + 10.0, 16.0));
-                                ui.painter().rect_filled(pill, 8.0, DANGER);
+                                ui.painter().rect_filled(pill, 5.0, DANGER);
                                 ui.painter().galley(pill.center() - g.size() / 2.0, g, Color32::WHITE);
                                 ix = pill.left() - 12.0;
                                 // a click shows what they stream, without joining
@@ -1397,6 +1452,10 @@ impl ChatPage {
                                     ix -= 18.0;
                                 }
                             }
+                            // the name last: it ends before the pill and icons instead of running under them
+                            let font = egui::FontId::proportional(13.0);
+                            let name = ellipsize(ui, &pe.name, &font, ix + 6.0 - (av.right() + 8.0));
+                            ui.painter().text(egui::pos2(av.right() + 8.0, pr.center().y), egui::Align2::LEFT_CENTER, name, font, MUTED);
                         }
                     }
                     // a drag in progress: an accent line where the row lands (where the engine says it may go);
@@ -1456,11 +1515,13 @@ impl ChatPage {
                     }
                 });
             }
+            voicenote::frame(s);
             menu::message_menu(&ctx, s, pk, acts);
             placemenu::show(&ctx, app, acts);
             callmenu::show(&ctx, s, acts);
             dialogs::invite(&ctx, s, acts);
             dialogs::leave(&ctx, s, acts);
+            dialogs::group(&ctx, dlg, s, acts);
             dialogs::person(&ctx, dlg, s, acts);
             dialogs::channel(&ctx, dlg, s, acts);
             dialogs::join(&ctx, dlg, s, acts);
@@ -1476,6 +1537,7 @@ impl ChatPage {
             extras::event(&ctx, s, acts);
             extras::gift(&ctx, s, acts);
             extras::voice_switch(&ctx, s, acts);
+            extras::voice_join(&ctx, s, acts);
             extras::move_sync(&ctx, s, acts);
             dialogs::server_profile(&ctx, dlg, s, acts);
             menu::confirm_delete(&ctx, s, acts);
@@ -1510,7 +1572,7 @@ impl ChatPage {
                         header::Side::Search => header::search_panel(ui, hd, s, tex, asked, &mut want, acts),
                         header::Side::Aside | header::Side::Split => forum::aside(ui, fo, look, s, tex, asked, &mut want, acts),
                         header::Side::Profile => header::profile_panel(ui, s, tex, asked, &mut want, acts),
-                        header::Side::Members => header::members_panel(ui, s, tex, asked, &mut want, acts),
+                        header::Side::Members => header::members_panel(ui, s, s.selected.as_deref().filter(|r| app.owns_group(r)), tex, asked, &mut want, acts),
                     });
                 }
             }
@@ -1566,7 +1628,9 @@ impl ChatPage {
                         compose::typing_line(ui, s);
                         // the reply/edit bar sits flush on the field
                         let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
-                        menu::compose_bar(ui, s, acts);
+                        if !voicenote::bar(ui, acts) {
+                            menu::compose_bar(ui, s, acts);
+                        }
                         let field =egui::Frame::new().fill(k_field()).corner_radius(12.0).inner_margin(egui::Margin { left: 8, right: 8, top: 6, bottom: 6 }).show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 let icon = |ui: &mut Ui, g: &str, tip: &str, on: bool| {
@@ -1579,7 +1643,7 @@ impl ChatPage {
                                 if icon(ui, "\u{E710}", "Upload a file, create a poll", pu.open) {
                                     pu.toggle();
                                 }
-                                let w = ui.available_width() - 2.0 * 40.0;
+                                let w = ui.available_width() - 3.0 * 40.0;
                                 compose::files(&ctx, acts);
                                 compose::before_edit(&ctx, s, draft, acts);
                                 let out = egui::TextEdit::singleline(draft).id(compose::edit_id()).frame(egui::Frame::NONE).desired_width(w).hint_text(rt(format!("Message {name}"), 14.0).color(FAINT)).font(egui::FontId::proportional(14.0)).show(ui);
@@ -1602,6 +1666,12 @@ impl ChatPage {
                                 }
                                 let at = ui.input(|i| i.pointer.interact_pos());
                                 let open = pk.open == Some(picker::For::Composer);
+                                let rec = voicenote::recording();
+                                if icon(ui, "\u{E720}", if rec { "Stop and throw the recording away" } else { "Record a voice message" }, rec) {
+                                    if let Some(room) = &s.selected {
+                                        voicenote::toggle(room);
+                                    }
+                                }
                                 if icon(ui, "GIF", "GIFs", open && pk.gifs()) {
                                     pk.toggle(picker::For::Composer, true, at, acts);
                                 }

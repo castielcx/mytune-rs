@@ -22,6 +22,16 @@ struct Ghosts {
 /// A menu or dialog opens at this size and grows to full size over `DUR` (ease-out) while egui fades it in.
 const OPEN_SCALE: f32 = 0.96;
 
+/// `shape` without the lens callbacks in it (`crate::lens`): a callback cannot fade, so in a fading ghost the
+/// blurred picture behind a menu would stay at full strength and vanish at once at the end.
+fn without_lens(shape: &egui::Shape) -> egui::Shape {
+    match shape {
+        egui::Shape::Callback(_) => egui::Shape::Noop,
+        egui::Shape::Vec(list) => egui::Shape::Vec(list.iter().map(without_lens).collect()),
+        other => other.clone(),
+    }
+}
+
 /// Call once per frame after everything is drawn.
 pub fn end_frame(ctx: &egui::Context) {
     // Windows (Middle) fade out too; the sidebar is the only other Middle area and never closes.
@@ -74,7 +84,7 @@ pub fn end_frame(ctx: &egui::Context) {
         let a = 1.0 - ((t - t0) / DUR) as f32;
         let mut p = ctx.layer_painter(LayerId::new(Order::Foreground, layer.id.with("fade_ghost")));        p.multiply_opacity(a * a);
         for s in shapes.iter() {
-            p.with_clip_rect(s.clip_rect).add(s.shape.clone());
+            p.with_clip_rect(s.clip_rect).add(without_lens(&s.shape));
         }
     }
     if !gh.fading.is_empty() {

@@ -15,5 +15,14 @@ Twemoji
   crates/mytune-ui/assets/twemoji/LICENSE-GRAPHICS.txt. The pictures were packed into one file; they were
   not otherwise changed.
 
+Inter
+  The typeface is Inter 4.1 (https://github.com/rsms/inter), copyright The Inter Project Authors, licensed under
+  the SIL Open Font License 1.1. The license text is in crates/mytune-ui/assets/fonts/LICENSE-Inter.txt. The font
+  file is shipped unchanged, inside the program.
+
+epaint
+  The drawing library epaint 0.37.0 (https://github.com/emilk/egui, MIT or Apache-2.0) is built with one change,
+  the patch in patches/epaint-0.37.0-mytune.patch.
+
 Segoe UI and Segoe Fluent Icons
   Loaded from the Windows fonts folder at run time; they are not shipped.

@@ -74,6 +74,34 @@ pub struct Settings {
     /// How loud each person is in calls for this account, by user id: (voice gain, muted, soundboard
     /// muted). Only people changed from the default are listed.
     pub person_sound: BTreeMap<String, (f32, bool, bool)>,
+    /// How loud each person's stream (Go Live) is for this account, by user id: (gain, muted). Only
+    /// streams changed from the default are listed.
+    pub person_stream: BTreeMap<String, (f32, bool)>,
+}
+
+/// Streams changed from the default, by user id: (gain chosen, muted). The engine has a stream volume but
+/// no stream mute, so a muted stream is handed to it as gain 0 and the chosen gain is kept here.
+static STREAM_SOUND: std::sync::Mutex<BTreeMap<String, (f32, bool)>> = std::sync::Mutex::new(BTreeMap::new());
+
+/// How loud `person`'s stream is, as chosen, and whether it is muted.
+pub fn stream_sound(person: &str) -> (f32, bool) {
+    let map = STREAM_SOUND.lock().unwrap_or_else(|e| e.into_inner());
+    map.get(person).copied().unwrap_or((yapfast_core::volume::Kind::Stream.default_gain(), false))
+}
+
+/// Sets how loud `person`'s stream is and whether it is muted; the engine plays it so at once.
+pub fn set_stream_sound(person: &str, gain: f32, muted: bool) {
+    use yapfast_core::volume::{self, Kind};
+    let plain = !muted && (gain - Kind::Stream.default_gain()).abs() < f32::EPSILON;
+    {
+        let mut map = STREAM_SOUND.lock().unwrap_or_else(|e| e.into_inner());
+        if plain {
+            map.remove(person);
+        } else {
+            map.insert(person.to_owned(), (gain, muted));
+        }
+    }
+    volume::set(Kind::Stream, person, if muted { 0.0 } else { gain });
 }
 
 /// The chat page's layout, kept between runs: the member list and profile panel shown or not, the server
@@ -134,6 +162,7 @@ impl Default for Settings {
             pinned_dms: vec![],
             layout: ChatLayout::default(),
             person_sound: BTreeMap::new(),
+            person_stream: BTreeMap::new(),
         }
     }
 }
@@ -173,6 +202,9 @@ impl Settings {
             volume::mute(person, muted);
             volume::mute_soundboard(person, quiet);
         }
+        for (person, &(gain, muted)) in &self.person_stream {
+            set_stream_sound(person, gain, muted);
+        }
         leveling::set_enabled(self.level_voice);
         noise::set(self.noise_suppression);
         noise::set_strength(self.noise_strength);
@@ -204,6 +236,16 @@ mod tests {
         assert_eq!(back, s);
         let partial: Settings = serde_json::from_str(r#"{"share_typing": false}"#).unwrap();
         assert!(!partial.share_typing && partial.unmute_on_join && partial.sound_volume == 100);
+    }
+
+    #[test]
+    fn muted_stream_is_silent_and_keeps_its_volume() {
+        use yapfast_core::volume::{self, Kind};
+        set_stream_sound("stream-test-1", 0.5, true);
+        assert_eq!((stream_sound("stream-test-1"), volume::get(Kind::Stream, "stream-test-1")), ((0.5, true), 0.0));
+        set_stream_sound("stream-test-1", 0.5, false);
+        assert_eq!(volume::get(Kind::Stream, "stream-test-1"), 0.5);
+        assert_eq!(volume::get(Kind::Voice, "stream-test-1"), 1.0); // the voice is untouched
     }
 
     #[test]

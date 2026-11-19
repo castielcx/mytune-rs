@@ -34,7 +34,7 @@ const ADVANCED: &[Group] = &[
     ("Startup and shutdown", &["sys.startupdelay", "sys.shutdown"]),
     ("Security trade-offs", &["adv.vbs"]),
 ];
-const NETWORK: &[Group] = &[("", &["net.adapterpower", "net.adapteradvanced", "net.bindings"])];
+const NETWORK: &[Group] = &[("", &["net.adapterpower", "net.adapteradvanced", "net.buffers", "net.bindings"])];
 const DEBLOAT: &[Group] = &[
     ("Privacy and telemetry", &["general.telemetry", "deb.tasks", "deb.adid", "deb.activity", "deb.tailored", "deb.feedback", "deb.wer"]),
     ("Ads and suggestions", &["deb.ads", "adv.copilot"]),
@@ -46,7 +46,7 @@ const DEBLOAT: &[Group] = &[
 const CUSTOMIZE: &[Group] = &[
     ("Appearance", &["cust.dark", "general.display", "cust.dragoutline", "sys.menudelay", "qol.hover"]),
     ("Taskbar", &["cust.taskbarleft", "cust.hidesearch", "cust.hidetaskview", "adv.notifications", "qol.seconds"]),
-    ("Start and search", &["cust.bing", "cust.startrecs", "qol.searchhighlights"]),
+    ("Start and search", &["cust.bing", "cust.startrecs", "cust.cleanstart", "qol.searchhighlights"]),
     ("File Explorer", &["cust.fileext", "cust.hiddenfiles", "qol.thispc", "qol.navpane"]),
     ("Right-click menu", &["adv.classicmenu", "qol.cleanmenu", "qol.takeown"]),
     ("Window snapping", &["cust.snapoff", "cust.snapflyout", "cust.snapassist"]),
@@ -93,7 +93,7 @@ pub fn impact(id: &str) -> &'static str {
         "general.windowsupdate" | "general.storeupdate" | "sys.wudrivers" | "sys.norestart" => "Updates",
         "adv.backgroundapps" | "adv.storagesense" | "adv.hibernation" => "Cleanup",
         "adv.mpo" => "Stability",
-        "net.adapterpower" | "net.bindings" | "sys.deliveryopt" => "Network",
+        "net.adapterpower" | "net.buffers" | "net.bindings" | "sys.deliveryopt" => "Network",
         "game.vrr" | "game.autohdr" => "Display",
         "sys.shutdown" | "sys.startupdelay" => "Startup",
         "sys.longpaths" => "Compatibility",
@@ -130,7 +130,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(seen.len(), 71);
+        assert_eq!(seen.len(), 73);
     }
 
     #[test]

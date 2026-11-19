@@ -16,7 +16,7 @@ use crate::engine::Tweak;
 use crate::error::{Error, Result};
 use crate::nvidia::{self, NvidiaGlobalProfileTweak, NvidiaGsyncTweak};
 use crate::pccheck::on_battery_capable;
-use crate::special::{adapter_tweaks, msi_tweak, service_tweaks, AdBlockTweak, ComTaskApi, DirectXTweak, DnsRevert, MemoryCompressionRevert, ProtocolBindingsTweak, ScheduledTasksTweak, TcpStackRevert};
+use crate::special::{adapter_tweaks, msi_tweak, service_tweaks, AdBlockTweak, CleanStartTweak, ComTaskApi, DirectXTweak, DnsRevert, MemoryCompressionRevert, ProtocolBindingsTweak, ScheduledTasksTweak, TcpStackRevert};
 use crate::store::Store;
 use crate::tweaks::{Cmd, HibernationTweak, PowerPlanTweak, TimerTickTweak, VbsTweak};
 use std::collections::HashMap;
@@ -45,6 +45,9 @@ impl Tweak for TweakItem {
     }
     fn is_applied(&self) -> Result<bool> {
         self.inner.is_applied()
+    }
+    fn capture(&self, b: &mut TweakBackup) -> Result<()> {
+        self.inner.capture(b)
     }
     fn apply(&self, b: &mut TweakBackup) -> Result<()> {
         self.inner.apply(b)
@@ -75,6 +78,9 @@ impl Tweak for TimerResolution {
     }
     fn is_applied(&self) -> Result<bool> {
         self.0.is_applied()
+    }
+    fn capture(&self, b: &mut TweakBackup) -> Result<()> {
+        self.0.capture(b)
     }
     fn apply(&self, b: &mut TweakBackup) -> Result<()> {
         self.0.apply(b)?;
@@ -109,6 +115,8 @@ pub fn build(cmd: Arc<dyn Cmd>) -> Result<Vec<TweakItem>> {
             put(&e.id, Box::new(data_tweak(e.clone(), hooks.clone())?));
         } else if e.cls == "TimerResolutionTweak" {
             put(&e.id, Box::new(TimerResolution(data_tweak(e.clone(), hooks.clone())?)));
+        } else if e.cls == "CleanStartTweak" {
+            put(&e.id, Box::new(CleanStartTweak::new(data_tweak(e.clone(), hooks.clone())?, cmd.clone())));
         }
     }
     // MSI mode needs the PCI device list; without PowerShell it is simply not offered.

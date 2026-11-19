@@ -76,7 +76,7 @@
     "removed": false,
     "title": "NVIDIA low-latency profile",
     "description": "Sets the global NVIDIA driver profile for maximum performance and minimum input lag.",
-    "details": "NVIDIA Base Profile:\n\u2022 Power management: prefer maximum performance\n\u2022 Low latency mode: on (1 pre-rendered frame)\n\u2022 Vertical sync: off\n\u2022 Triple buffering: off\n\u2022 Preferred refresh rate: highest available\n\u2022 Texture filtering quality: high performance\n\u2022 Trilinear optimization: on\n\u2022 Anisotropic filter optimization: on\n\u2022 Anisotropic sample optimization: on\n\u2022 Shader cache size: unlimited\n\u2022 FXAA: off\n\u2022 Ansel: off (older drivers only)\n\u2022 Anisotropic filtering: off\n\u2022 Antialiasing transparency: off\n\u2022 OpenGL GDI compatibility: prefer performance\nG-SYNC and per-game profiles you set yourself are not touched.",
+    "details": "NVIDIA Base Profile:\n\u2022 Power management: prefer maximum performance\n\u2022 Low latency mode: on (1 pre-rendered frame)\n\u2022 Vertical sync: off\n\u2022 Triple buffering: off\n\u2022 Preferred refresh rate: highest available\n\u2022 Texture filtering quality: high performance\n\u2022 Trilinear optimization: on\n\u2022 Anisotropic filter optimization: on\n\u2022 Anisotropic sample optimization: on\n\u2022 Shader cache size: unlimited\n\u2022 FXAA: off\n\u2022 Ansel: off (older drivers only)\n\u2022 Anisotropic filtering: off\n\u2022 Antialiasing transparency: off\n\u2022 OpenGL GDI compatibility: prefer performance\n\u2022 Threaded optimization: on\n\u2022 Texture filtering negative LOD bias: clamp\nG-SYNC and per-game profiles you set yourself are not touched.",
     "flags": "None",
     "group": "",
     "page": "",
@@ -755,6 +755,23 @@
     "title": "Adapter latency tuning",
     "description": "Turns off interrupt moderation, flow control and Energy-Efficient Ethernet. The connection drops for a few seconds when applied.",
     "details": "Driver settings (only those your adapter has): *InterruptModeration, *FlowControl, *EEE, EEELinkAdvertisement, AdvancedEEE, EnableGreenEthernet, GreenEthernet = 0",
+    "flags": "Experimental, NetworkBlip",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": false,
+    "provider": false,
+    "afterChange": false,
+    "afterFallbackRevert": false,
+    "sets": null
+  },
+  {
+    "id": "net.buffers",
+    "cls": "AdapterPropertyTweak",
+    "removed": false,
+    "title": "Larger adapter buffers",
+    "description": "Doubles your network adapter's receive and transmit buffers, up to what the driver allows, so fewer packets are dropped in bursts. Uses a little more memory. The connection drops for a few seconds when applied.",
+    "details": "Driver settings (only those your adapter has): *ReceiveBuffers, *TransmitBuffers = twice the driver default, capped at the driver's maximum",
     "flags": "Experimental, NetworkBlip",
     "group": "",
     "page": "",
@@ -2082,6 +2099,123 @@
         "hive": "HKCU",
         "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
         "name": "Start_IrisRecommendations",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      }
+    ]
+  },
+  {
+    "id": "cust.cleanstart",
+    "cls": "CleanStartTweak",
+    "removed": false,
+    "title": "Clean Start menu",
+    "description": "Start shows only the search box and what you pin: no app list, no recommendations, all pins removed.",
+    "details": "You then open apps through search or your own pins. While this is on, the Windows setting for the app list in Start is locked. Switching it off puts your old pins back; pins you made in between are dropped. Explorer restarts.\nHKCU\\...\\Policies\\Explorer: NoStartMenuMorePrograms = 1\nHKCU\\SOFTWARE\\Policies\\Microsoft\\Windows\\Explorer: empty pin list, recommendations, recently added and most used apps hidden\nHKCU\\...\\Explorer\\Advanced and ...\\Start: account notifications, websites, recent and frequent lists off\nPin file start2.bin: saved to %ProgramData%\\MyTune\\start2.bin.bak, then deleted",
+    "flags": "RestartsExplorer",
+    "group": "",
+    "page": "",
+    "impact": "",
+    "registry": true,
+    "provider": false,
+    "afterChange": true,
+    "afterFallbackRevert": false,
+    "sets": [
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer",
+        "name": "NoStartMenuMorePrograms",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Policies\\Microsoft\\Windows\\Explorer",
+        "name": "ConfigureStartPins",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Policies\\Microsoft\\Windows\\Explorer",
+        "name": "ConfigureStartPinsJSON",
+        "kind": "ExpandString",
+        "value": "{\"pinnedList\":[],\"applyOnce\":true}",
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Policies\\Microsoft\\Windows\\Explorer",
+        "name": "HideRecommendedSection",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Policies\\Microsoft\\Windows\\Explorer",
+        "name": "HideRecentlyAddedApps",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Policies\\Microsoft\\Windows\\Explorer",
+        "name": "ShowOrHideMostUsedApps",
+        "kind": "DWord",
+        "value": 2,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Policies\\Microsoft\\Windows\\Explorer",
+        "name": "HideRecommendedPersonalizedSites",
+        "kind": "DWord",
+        "value": 1,
+        "default": null,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "Start_AccountNotifications",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced",
+        "name": "Start_RecoPersonalizedSites",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Start",
+        "name": "ShowRecentList",
+        "kind": "DWord",
+        "value": 0,
+        "default": 1,
+        "onlyIfKeyExists": false
+      },
+      {
+        "hive": "HKCU",
+        "path": "Software\\Microsoft\\Windows\\CurrentVersion\\Start",
+        "name": "ShowFrequentList",
         "kind": "DWord",
         "value": 0,
         "default": 1,

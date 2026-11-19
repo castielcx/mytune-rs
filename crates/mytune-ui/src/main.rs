@@ -4,6 +4,13 @@ use tray_icon::{menu::{Menu, MenuEvent, MenuItem}, Icon, MouseButton, MouseButto
 
 const SOUND_TRAY: &str = "mytune-sound";
 const SOUND_TIP: &str = "MyTune volume";
+use mytune_ui::theme::UI_ZOOM;
+/// The comparison copy (feature `preview`) runs beside the installed MyTune: own names, no global hotkey,
+/// no speaker tray icon.
+const PREVIEW: bool = cfg!(feature = "preview");
+/// Window title: the installed MyTune finds its own window by the exact title "MyTune".
+const TITLE: &str = if PREVIEW { "MyTune Redesign" } else { "MyTune" };
+const INSTANCE: &str = if PREVIEW { "Local\\MyTuneRs.SingleInstance.Preview" } else { "Local\\MyTuneRs.SingleInstance" };
 
 /// The accent saved by the C# app or this one (`Settings.AccentColor`).
 fn accent() -> String {
@@ -33,7 +40,7 @@ fn already_running() -> bool {
     use windows_sys::Win32::{Foundation::{GetLastError, ERROR_ALREADY_EXISTS}, System::Threading::CreateMutexW, UI::WindowsAndMessaging::*};
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     unsafe {
-        CreateMutexW(std::ptr::null(), 0, wide("Local\\MyTuneRs.SingleInstance").as_ptr());
+        CreateMutexW(std::ptr::null(), 0, wide(INSTANCE).as_ptr());
         if GetLastError() != ERROR_ALREADY_EXISTS {
             return false;
         }
@@ -48,7 +55,7 @@ fn raise() {
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     unsafe {
         // "Window Class" is winit's class name: an Explorer window of a folder named MyTune must not match
-        let w = FindWindowW(wide("Window Class").as_ptr(), wide("MyTune").as_ptr());
+        let w = FindWindowW(wide("Window Class").as_ptr(), wide(TITLE).as_ptr());
         if !w.is_null() {
             ShowWindow(w, if IsIconic(w) != 0 { SW_RESTORE } else { SW_SHOW });
             SetForegroundWindow(w);
@@ -94,11 +101,12 @@ fn main() -> eframe::Result {
     let hidden = std::env::args().any(|a| a == "--minimized");
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1120.0, 720.0])
-            .with_min_inner_size([800.0, 520.0])
+            // the window exists before the zoom is set, so its sizes are scaled by hand
+            .with_inner_size([1120.0 * UI_ZOOM, 720.0 * UI_ZOOM])
+            .with_min_inner_size([800.0 * UI_ZOOM, 520.0 * UI_ZOOM])
             .with_decorations(false)
             .with_visible(!hidden)
-            .with_title("MyTune").with_icon(std::sync::Arc::new(window_icon())),
+            .with_title(TITLE).with_icon(std::sync::Arc::new(window_icon())),
         // egui's dither uses the same noise for every shape, so it adds up through stacked see-through layers
         // (2-level grain on the chat page); the backdrop picture is dithered once by `theme::backdrop_image`
         dithering: false,
@@ -118,7 +126,9 @@ fn main() -> eframe::Result {
                 show(&ctx);
             }
         }));
-        open_hotkey(cc.egui_ctx.clone());
+        if !PREVIEW {
+            open_hotkey(cc.egui_ctx.clone());
+        }
         let ctx = cc.egui_ctx.clone();
         TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| {
             if let TrayIconEvent::Click { id, rect, button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = e {
@@ -133,16 +143,19 @@ fn main() -> eframe::Result {
         // Second icon, a speaker: left click opens the volume flyout. Windows hides new icons behind the
         // overflow arrow, so once it is registered the program's "show" switch is set (only while the user never
         // chose; Windows has one switch for both icons).
-        let sound = TrayIconBuilder::new().with_id(SOUND_TRAY).with_tooltip(SOUND_TIP).with_icon(Icon::from_rgba(mytune_ui::soundpage::speaker(32), 32, 32).expect("icon")).build();
-        std::mem::forget(sound);
-        std::thread::spawn(|| {
-            std::thread::sleep(std::time::Duration::from_secs(2));
-            if mytune_core::audio::show_tray_icons() {
-                mytune_core::log::info("tray icons set to show beside the overflow arrow");
-            }
-        });
-        let tray = TrayIconBuilder::new().with_tooltip("MyTune").with_icon(icon()).with_menu(Box::new(menu)).with_menu_on_left_click(false).build();
+        if !PREVIEW {
+            let sound = TrayIconBuilder::new().with_id(SOUND_TRAY).with_tooltip(SOUND_TIP).with_icon(Icon::from_rgba(mytune_ui::soundpage::speaker(32), 32, 32).expect("icon")).build();
+            std::mem::forget(sound);
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                if mytune_core::audio::show_tray_icons() {
+                    mytune_core::log::info("tray icons set to show beside the overflow arrow");
+                }
+            });
+        }
+        let tray = TrayIconBuilder::new().with_tooltip(TITLE).with_icon(icon()).with_menu(Box::new(menu)).with_menu_on_left_click(false).build();
         let mut app = mytune_ui::app::App::new();
+        cc.egui_ctx.set_zoom_factor(UI_ZOOM);
         mytune_ui::theme::install_fonts(&cc.egui_ctx);
         mytune_ui::theme::apply_visuals(&cc.egui_ctx);
         app.keep_in_tray = tray.is_ok();

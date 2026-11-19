@@ -39,6 +39,67 @@ pub fn open(ctx: &egui::Context, who: &str) {
 /// Temp-data key: the person whose volume or mutes the menu just changed, for the page to save.
 pub const SOUND_CHANGED: &str = "person_sound_changed";
 
+/// Stream Volume slider and Mute Stream tick for `person`'s stream (Go Live): its sound alone, apart from
+/// their voice, for this account's ears only.
+fn stream_rows(ui: &mut Ui, person: &str) {
+    use mytune_chat::settings::{set_stream_sound, stream_sound};
+    let (gain, muted) = stream_sound(person);
+    let mut vol = f64::from(volume::to_slider(gain).round());
+    let mut changed = false;
+    let (head, _) = ui.allocate_exact_size(vec2(240.0, 26.0), Sense::hover());
+    ui.painter().text(egui::pos2(head.left() + 14.0, head.center().y), egui::Align2::LEFT_CENTER, "Stream Volume", egui::FontId::proportional(13.0), SECONDARY);
+    ui.painter().text(egui::pos2(head.right() - 14.0, head.center().y), egui::Align2::RIGHT_CENTER, format!("{vol:.0}%"), egui::FontId::proportional(12.0), MUTED);
+    ui.horizontal(|ui| {
+        ui.add_space(12.0);
+        if crate::widgets::slider(ui, key().with("stream_vol"), &mut vol, 0.0, 200.0, 216.0, true).changed {
+            set_stream_sound(person, volume::from_slider(vol.round() as f32), muted);
+            changed = true;
+        }
+    });
+    ui.add_space(6.0);
+    sep(ui);
+    if row(ui, "\u{E74F}", "Mute Stream", false, false, Some(muted)) {
+        set_stream_sound(person, stream_sound(person).0, !muted);
+        changed = true;
+    }
+    if changed {
+        ui.data_mut(|d| d.insert_temp(egui::Id::new(SOUND_CHANGED), person.to_owned()));
+    }
+}
+
+/// The small menu of a watched stream in fullscreen and in its own window: one per OS window.
+fn stream_key(ctx: &egui::Context) -> egui::Id {
+    egui::Id::new("stream_menu").with(ctx.viewport_id())
+}
+
+/// Opens the stream menu of `who`'s stream at the pointer, in the window `ctx` is drawing.
+pub fn open_stream(ctx: &egui::Context, who: &str) {
+    let (at, born) = ctx.input(|i| (i.pointer.interact_pos().unwrap_or(egui::pos2(100.0, 100.0)), i.time));
+    let k = stream_key(ctx);
+    ctx.data_mut(|d| d.insert_temp(k, Open { who: who.to_owned(), at, sub: None, born }));
+}
+
+/// Draws the open stream menu; call it in the window that opened it, after the stream's picture.
+pub fn show_stream(ctx: &egui::Context) {
+    let k = stream_key(ctx);
+    let Some(m) = ctx.data(|d| d.get_temp::<Open>(k)) else { return };
+    let area = k.with("area");
+    let screen = ctx.content_rect();
+    let size = ctx.memory(|mem| mem.area_rect(area)).map_or(egui::Vec2::ZERO, |r| r.size());
+    let pos = egui::pos2(m.at.x.min(screen.right() - size.x - 8.0), m.at.y.min(screen.bottom() - size.y - 8.0)).max(screen.min + vec2(8.0, 8.0)).round();
+    let resp = egui::Area::new(area).order(egui::Order::Foreground).fixed_pos(pos).show(ctx, |ui| {
+        th::float(ui, th::R_MENU, 6, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            stream_rows(ui, &m.who);
+        });
+    });
+    ctx.move_to_top(resp.response.layer_id);
+    let (fresh, esc) = ctx.input(|i| (i.time == m.born, i.key_pressed(egui::Key::Escape)));
+    if !fresh && (resp.response.clicked_elsewhere() || esc) {
+        ctx.data_mut(|d| d.remove::<Open>(k));
+    }
+}
+
 pub fn show(ctx: &egui::Context, s: &AppState, acts: &mut Vec<Action>) {
     let Some(mut m) = ctx.data(|d| d.get_temp::<Open>(key())) else { return };
     // they left the call: nothing to act on
@@ -134,6 +195,11 @@ pub fn show(ctx: &egui::Context, s: &AppState, acts: &mut Vec<Action>) {
                 if changed_sound {
                     ui.data_mut(|d| d.insert_temp(egui::Id::new(SOUND_CHANGED), pe.person.clone()));
                 }
+            }
+            // Tests: MYTUNE_STREAM_ROWS shows the rows on any tile (the offline preview has no streamer).
+            if (pe.streaming && !pe.local) || std::env::var_os("MYTUNE_STREAM_ROWS").is_some() {
+                sep(ui);
+                stream_rows(ui, &pe.person);
             }
             if other {
                 if !s.servers.is_empty() {

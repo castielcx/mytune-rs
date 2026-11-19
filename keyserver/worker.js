@@ -135,6 +135,7 @@ export default {
       }
       return fail("not found", 404);
     } catch (e) {
+      console.error(e);
       return fail("server error", 500);
     }
   },

@@ -4428,13 +4428,29 @@ dependencies = [
 name = "mytune-core"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "cc",
+ "ed25519-dalek",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.21",
  "ureq",
  "windows 0.61.3",
+]
+
+[[package]]
+name = "mytune-keys"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "ed25519-dalek",
+ "eframe",
+ "getrandom 0.2.17",
+ "serde",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]

@@ -39,6 +39,8 @@ pub mod sysreport;
 pub mod updater;
 pub mod cleaner;
 pub mod layout;
+#[cfg(feature = "license")]
+pub mod license;
 pub mod stability;
 pub mod startup;
 #[cfg(feature = "taskbar-look")]

@@ -418,6 +418,15 @@ impl App {
                 mytune_core::process::trim_working_set();
             });
         }
+        // public setup: no sidebar and no pages until a licence key is active on this PC
+        #[cfg(feature = "license")]
+        if mytune_core::license::status() != mytune_core::license::Status::Unlocked {
+            th::backdrop(ctx, &ctx.layer_painter(egui::LayerId::background()), ctx.content_rect());
+            self.title_bar(root, 248.0);
+            crate::licensegate::ui(root);
+            crate::fade::end_frame(ctx);
+            return;
+        }
         if let Some(rx) = &self.check_rx {
             if let Ok(v) = rx.try_recv() {
                 self.checks = Some(v);

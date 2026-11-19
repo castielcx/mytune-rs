@@ -31,6 +31,9 @@ local-stickers = []
 # Taskbar look (Customize > Taskbar). It loads a DLL into explorer.exe, which antivirus may flag on an
 # unsigned setup, so it is in the owner's own build only until the owner says to ship it (2026-11-15).
 taskbar-look = ["mytune-core/taskbar-look"]
+# Licence key screen on start (src/licensegate.rs, mytune-core/src/license.rs). For the public setup;
+# the owner's own build is made without it and never asks.
+license = ["mytune-core/license"]
 # A second copy that runs beside the installed MyTune for comparing looks: own single-instance name and window
 # title, no Win+Y, no speaker tray icon, no call rejoin. Never together with `taskbar-look`.
 preview = ["mytune-chat/preview"]

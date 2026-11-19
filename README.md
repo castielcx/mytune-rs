@@ -48,6 +48,12 @@ Rust port of MyTune 2: a Windows gaming-tuning app with a glass-style egui UI an
   `taskbar-look`. Run it under another file name (`MyTuneRedesign.exe`): scripts that stop `MyTune` then leave it
   alone. Both copies write one `state.json`; `Store::save` merges with what the other wrote, but a MyTune built
   before that change still overwrites the file whole.
+- Feature `license` (`mytune-ui` forwards it to `mytune-core`; `installer\build.ps1` passes it, the owner's own
+  build does not): on start MyTune asks for a licence key, the key server binds it to this PC (a hash of
+  MachineGuid, board serial and the built-in MAC of the first PCI network adapter) and answers with a signed token
+  good for 7 days, kept in `%ProgramData%\MyTune\license.json`. The server is asked again at every start and every
+  24 h. Fill in `SERVER_URL` and `PUBLIC_KEY` (the server's Ed25519 public key, base64) in
+  `crates/mytune-core/src/license.rs` after deploying the server: while either is empty the check is off.
 
 ## Toolchain
 Rustup stable (`x86_64-pc-windows-msvc`) + Visual Studio Build Tools (C++ workload). In a new shell:

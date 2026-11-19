@@ -11,6 +11,8 @@ pub mod displaypage;
 pub mod icon;
 pub mod internet;
 pub mod lens;
+#[cfg(feature = "license")]
+pub mod licensegate;
 pub mod mouse;
 pub mod nav;
 pub mod notice;

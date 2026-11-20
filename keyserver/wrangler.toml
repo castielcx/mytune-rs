@@ -5,4 +5,4 @@ compatibility_date = "2025-01-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "mytune-keys"
-database_id = "PUT-THE-DATABASE-ID-HERE"
+database_id = "314f66d0-0b9d-4f87-a45c-482055e63656"

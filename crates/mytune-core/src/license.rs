@@ -15,9 +15,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // The owner fills in both after deploying the key server. While either is empty the check is off
 // and the app is unlocked.
 /// Address of the key server without a trailing slash, e.g. `https://keys.example.com`.
-pub const SERVER_URL: &str = "";
+pub const SERVER_URL: &str = "https://mytune-keys.mytune.workers.dev";
 /// The server's Ed25519 public key: 32 raw bytes as standard base64.
-pub const PUBLIC_KEY: &str = "";
+pub const PUBLIC_KEY: &str = "9DS8EdE9dMia10w/5QoACFCo+iUoxz1xLxosENlxs3w=";
 
 /// Why the app is locked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -289,6 +289,17 @@ mod tests {
         assert!(verify_with(&pk, &forged, DEVICE, 1000).is_err(), "changed payload");
         assert!(verify_with(&SigningKey::from_bytes(&[8; 32]).verifying_key(), &good, DEVICE, 1000).is_err(), "another server key");
         assert!(verify_with(&pk, "nonsense", DEVICE, 1000).is_err());
+    }
+
+    /// A token the live server gave out (env MYTUNE_TEST_TOKEN, for device MYTUNE_TEST_DEVICE) passes `PUBLIC_KEY`.
+    #[test]
+    #[ignore]
+    fn real_server_token() {
+        let token = std::env::var("MYTUNE_TEST_TOKEN").expect("MYTUNE_TEST_TOKEN");
+        let device = std::env::var("MYTUNE_TEST_DEVICE").expect("MYTUNE_TEST_DEVICE");
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+        assert!(verify(&token, &device, now).is_ok());
+        assert!(verify(&token, "another", now).is_err());
     }
 
     #[test]

@@ -147,17 +147,54 @@ fn stale(r: &Row) -> bool {
     r.device.is_some() && r.last_seen.map_or(true, |t| now() - t >= STALE_DAYS * 86400)
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum Col {
+    Key,
+    Note,
+    State,
+    Device,
+    Seen,
+    Created,
+}
+
+const ORANGE: egui::Color32 = egui::Color32::from_rgb(255, 150, 40);
+const RED: egui::Color32 = egui::Color32::from_rgb(240, 90, 90);
+const GREEN: egui::Color32 = egui::Color32::from_rgb(90, 200, 120);
+
+fn state_of(r: &Row) -> (&'static str, egui::Color32) {
+    if r.revoked {
+        ("Revoked", RED)
+    } else if r.device.is_some() {
+        ("In use", GREEN)
+    } else {
+        ("Free", egui::Color32::from_gray(150))
+    }
+}
+
+/// A small coloured badge.
+fn badge(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
+    egui::Frame::new()
+        .fill(color.gamma_multiply(0.18))
+        .corner_radius(4)
+        .inner_margin(egui::Margin::symmetric(8, 2))
+        .show(ui, |ui| ui.label(egui::RichText::new(text).color(color)));
+}
+
 struct App {
     cfg: Config,
     server_form: Option<Config>,
     rows: Vec<Row>,
-    status: String,
+    /// (text, is an error)
+    status: Option<(String, bool)>,
     busy: usize,
     tx: Sender<Reply>,
     rx: Receiver<Reply>,
     new_note: Option<String>,
     created: Option<String>,
     confirm_delete: Option<String>,
+    search: String,
+    sort: Col,
+    ascending: bool,
 }
 
 impl App {
@@ -168,18 +205,29 @@ impl App {
             cfg: saved.clone().unwrap_or_default(),
             server_form: if saved.is_none() { Some(Config::default()) } else { None },
             rows: Vec::new(),
-            status: String::new(),
+            status: None,
             busy: 0,
             tx,
             rx,
             new_note: None,
             created: None,
             confirm_delete: None,
+            search: String::new(),
+            sort: Col::Created,
+            ascending: false,
         };
         if saved.is_some() {
             app.refresh(ctx);
         }
         app
+    }
+
+    fn info(&mut self, text: impl Into<String>) {
+        self.status = Some((text.into(), false));
+    }
+
+    fn error(&mut self, text: impl Into<String>) {
+        self.status = Some((text.into(), true));
     }
 
     fn run(&mut self, ctx: &egui::Context, job: impl FnOnce(&Config) -> Reply + Send + 'static) {
@@ -194,10 +242,7 @@ impl App {
     fn refresh(&mut self, ctx: &egui::Context) {
         self.run(ctx, |c| match call(c, "GET", "/admin/keys", None) {
             Ok(text) => match serde_json::from_str::<Vec<Row>>(&text) {
-                Ok(mut rows) => {
-                    rows.sort_by(|a, b| b.created.cmp(&a.created));
-                    Reply::Keys(rows)
-                }
+                Ok(rows) => Reply::Keys(rows),
                 Err(e) => Reply::Error(format!("Unexpected answer: {e}")),
             },
             Err(e) => Reply::Error(e),
@@ -217,7 +262,9 @@ impl App {
             match reply {
                 Reply::Keys(rows) => {
                     self.rows = rows;
-                    self.status.clear();
+                    if self.status.as_ref().is_some_and(|s| s.1) {
+                        self.status = None;
+                    }
                 }
                 Reply::Created(key) => {
                     ctx.copy_text(key.clone());
@@ -225,62 +272,115 @@ impl App {
                     self.refresh(ctx);
                 }
                 Reply::Done => self.refresh(ctx),
-                Reply::Error(e) => self.status = e,
+                Reply::Error(e) => self.error(e),
+            }
+        }
+    }
+
+    /// Rows matching the search, in the chosen order.
+    fn visible(&self) -> Vec<&Row> {
+        let q = self.search.trim().to_lowercase();
+        let mut rows: Vec<&Row> = self.rows.iter()
+            .filter(|r| q.is_empty() || [Some(&r.key), r.note.as_ref(), r.device_name.as_ref()]
+                .into_iter().flatten().any(|s| s.to_lowercase().contains(&q)))
+            .collect();
+        let lower = |s: &Option<String>| s.as_deref().unwrap_or("").to_lowercase();
+        rows.sort_by(|a, b| {
+            let o = match self.sort {
+                Col::Key => a.key.cmp(&b.key),
+                Col::Note => lower(&a.note).cmp(&lower(&b.note)),
+                Col::State => state_of(a).0.cmp(state_of(b).0),
+                Col::Device => lower(&a.device_name).cmp(&lower(&b.device_name)),
+                Col::Seen => a.last_seen.cmp(&b.last_seen),
+                Col::Created => a.created.cmp(&b.created),
+            };
+            // newest key breaks ties, so the order never jumps between refreshes
+            let o = if self.ascending { o } else { o.reverse() };
+            o.then(b.created.cmp(&a.created))
+        });
+        rows
+    }
+
+    fn header(&mut self, ui: &mut egui::Ui, col: Col, name: &str) {
+        let clicked = ui.horizontal(|ui| {
+            let r = ui.add(egui::Label::new(egui::RichText::new(name).strong()).sense(egui::Sense::click())).on_hover_text("Sort");
+            if self.sort == col {
+                // drawn, not a glyph: the bundled fonts have no arrow characters
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                let c = rect.center();
+                let (tip, base) = if self.ascending { (-4.0, 3.0) } else { (4.0, -3.0) };
+                let points = vec![c + egui::vec2(0.0, tip), c + egui::vec2(-4.0, base), c + egui::vec2(4.0, base)];
+                ui.painter().add(egui::Shape::convex_polygon(points, ui.visuals().strong_text_color(), egui::Stroke::NONE));
+            }
+            r.clicked()
+        }).inner;
+        if clicked {
+            if self.sort == col {
+                self.ascending = !self.ascending;
+            } else {
+                self.sort = col;
+                // dates read best newest first, names A to Z
+                self.ascending = !matches!(col, Col::Seen | Col::Created);
             }
         }
     }
 
     fn dialogs(&mut self, ctx: &egui::Context) {
-        let center = |title: &str| {
-            egui::Window::new(title.to_owned()).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        let modal = |id: &str| egui::Modal::new(egui::Id::unique(id));
+        let buttons = |ui: &mut egui::Ui, ok: &str, ok_enabled: bool| -> (bool, bool) {
+            ui.add_space(12.0);
+            let mut r = (false, false);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                r.0 = ui.add_enabled(ok_enabled, egui::Button::new(ok)).clicked();
+                r.1 = ui.button("Cancel").clicked();
+            });
+            r
         };
 
         if let Some(form) = &mut self.server_form {
-            let (mut save, mut cancel) = (false, false);
-            center("Server").show(ctx, |ui| {
-                egui::Grid::new("server").num_columns(2).show(ui, |ui| {
-                    ui.label("Server URL");
-                    ui.add(egui::TextEdit::singleline(&mut form.url).desired_width(360.0).hint_text("https://mytune-keys.<name>.workers.dev"));
-                    ui.end_row();
-                    ui.label("Admin secret");
-                    ui.add(egui::TextEdit::singleline(&mut form.secret).desired_width(360.0).password(true));
-                    ui.end_row();
-                });
-                ui.horizontal(|ui| {
-                    save = ui.add_enabled(!form.url.trim().is_empty() && !form.secret.is_empty(), egui::Button::new("Save")).clicked();
-                    cancel = ui.button("Cancel").clicked();
-                });
+            let resp = modal("server").show(ctx, |ui| {
+                ui.set_width(420.0);
+                ui.heading("Key server");
+                ui.add_space(8.0);
+                ui.label("Address");
+                ui.add(egui::TextEdit::singleline(&mut form.url).desired_width(f32::INFINITY).hint_text("https://mytune-keys.<name>.workers.dev"));
+                ui.add_space(4.0);
+                ui.label("Admin secret");
+                ui.add(egui::TextEdit::singleline(&mut form.secret).desired_width(f32::INFINITY).password(true));
+                buttons(ui, "Save", !form.url.trim().is_empty() && !form.secret.is_empty())
             });
+            let (save, cancel) = resp.inner;
             if save && !form.url.trim().starts_with("https://") {
                 // the admin secret must never go over plain http; the form stays open
-                self.status = "The server address must start with https://".to_owned();
+                self.error("The server address must start with https://");
             } else if save {
                 let mut c = self.server_form.take().unwrap();
                 c.url = c.url.trim().to_owned();
                 if let Err(e) = save_config(&c) {
-                    self.status = format!("Could not save the settings: {e}");
+                    self.error(format!("Could not save the settings: {e}"));
                 }
                 self.cfg = c;
                 self.refresh(ctx);
-            } else if cancel {
+            } else if cancel || resp.should_close() {
                 self.server_form = None;
             }
         }
 
         if let Some(note) = &mut self.new_note {
-            let (mut create, mut cancel) = (false, false);
-            center("New key").show(ctx, |ui| {
-                ui.label("Note (who gets it)");
-                let r = ui.add(egui::TextEdit::singleline(note).desired_width(300.0));
+            let resp = modal("new").show(ctx, |ui| {
+                ui.set_width(340.0);
+                ui.heading("New key");
+                ui.add_space(8.0);
+                ui.label("Who is it for?");
+                let r = ui.add(egui::TextEdit::singleline(note).desired_width(f32::INFINITY).hint_text("Name"));
                 r.request_focus();
-                create = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                ui.horizontal(|ui| {
-                    create |= ui.button("Create").clicked();
-                    cancel = ui.button("Cancel").clicked();
-                });
+                let enter = r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let (create, cancel) = buttons(ui, "Create", true);
+                (create || enter, cancel)
             });
+            let (create, cancel) = resp.inner;
             if create {
-                let note = self.new_note.take().unwrap();
+                let note = self.new_note.take().unwrap().trim().to_owned();
                 self.run(ctx, move |c| match call(c, "POST", "/admin/keys", Some(serde_json::json!({ "note": note }))) {
                     Ok(text) => match serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v["key"].as_str().map(str::to_owned)) {
                         Some(k) => Reply::Created(k),
@@ -288,36 +388,39 @@ impl App {
                     },
                     Err(e) => Reply::Error(e),
                 });
-            } else if cancel {
+            } else if cancel || resp.should_close() {
                 self.new_note = None;
             }
         }
 
         if let Some(key) = &self.created {
-            let mut close = false;
-            center("Key created").show(ctx, |ui| {
+            let resp = modal("created").show(ctx, |ui| {
+                ui.heading("Key created");
+                ui.add_space(8.0);
                 ui.label(egui::RichText::new(key).monospace().size(20.0));
-                ui.label("Copied to the clipboard.");
-                close = ui.button("OK").clicked();
+                ui.label(egui::RichText::new("Copied to the clipboard.").weak());
+                ui.add_space(12.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.button("Done").clicked()).inner
             });
-            if close {
+            if resp.inner || resp.should_close() {
                 self.created = None;
             }
         }
 
         if let Some(key) = self.confirm_delete.clone() {
-            let (mut yes, mut no) = (false, false);
-            center("Delete key").show(ctx, |ui| {
-                ui.label(format!("Delete {key}? The friend using it loses MyTune once the token runs out. This cannot be undone."));
-                ui.horizontal(|ui| {
-                    yes = ui.button("Delete").clicked();
-                    no = ui.button("Cancel").clicked();
-                });
+            let resp = modal("delete").show(ctx, |ui| {
+                ui.set_width(380.0);
+                ui.heading("Delete key?");
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new(&key).monospace());
+                ui.label("Whoever uses it loses MyTune once their token runs out. This cannot be undone.");
+                buttons(ui, "Delete", true)
             });
+            let (yes, no) = resp.inner;
             if yes {
                 self.confirm_delete = None;
                 self.action(ctx, "/admin/delete", serde_json::json!({ "key": key }));
-            } else if no {
+            } else if no || resp.should_close() {
                 self.confirm_delete = None;
             }
         }
@@ -328,79 +431,103 @@ impl eframe::App for App {
     fn ui(&mut self, root: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = &root.ctx().clone();
         self.poll(ctx);
-        let modal = self.server_form.is_some() || self.new_note.is_some() || self.created.is_some() || self.confirm_delete.is_some();
 
-        egui::Panel::top("bar").show(root, |ui| {
-            ui.add_enabled_ui(!modal, |ui| {
-                ui.horizontal(|ui| {
-                    if ui.button("New key").clicked() {
-                        self.new_note = Some(String::new());
-                    }
-                    if ui.button("Refresh").clicked() {
-                        self.refresh(ctx);
-                    }
-                    if ui.button("Server").clicked() {
+        egui::Panel::top("bar").frame(egui::Frame::side_top_panel(root.style()).inner_margin(10)).show(root, |ui| {
+            ui.horizontal(|ui| {
+                if ui.button("New key").clicked() {
+                    self.new_note = Some(String::new());
+                }
+                if ui.button("Refresh").clicked() {
+                    self.refresh(ctx);
+                }
+                ui.add(egui::TextEdit::singleline(&mut self.search).hint_text("Search key, name or device").desired_width(200.0));
+                if self.busy > 0 {
+                    ui.spinner();
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Server").on_hover_text(&self.cfg.url).clicked() {
                         self.server_form = Some(self.cfg.clone());
-                    }
-                    if self.busy > 0 {
-                        ui.spinner();
                     }
                 });
             });
-            let (bound, revoked) = (self.rows.iter().filter(|r| r.device.is_some()).count(), self.rows.iter().filter(|r| r.revoked).count());
-            let stale_n = self.rows.iter().filter(|r| stale(r)).count();
-            ui.label(format!("{} keys, {bound} bound, {revoked} revoked. {stale_n} devices not seen for {STALE_DAYS}+ days (marked orange).", self.rows.len()));
-            if !self.status.is_empty() {
-                ui.colored_label(egui::Color32::LIGHT_RED, &self.status);
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let used = self.rows.iter().filter(|r| r.device.is_some() && !r.revoked).count();
+                let revoked = self.rows.iter().filter(|r| r.revoked).count();
+                ui.label(egui::RichText::new(format!("{} keys  ·  {used} in use  ·  {revoked} revoked", self.rows.len())).weak());
+                let stale_n = self.rows.iter().filter(|r| stale(r)).count();
+                if stale_n > 0 {
+                    ui.colored_label(ORANGE, format!("·  {stale_n} not seen for {STALE_DAYS}+ days"));
+                }
+            });
+            if let Some((text, is_error)) = &self.status {
+                ui.colored_label(if *is_error { RED } else { egui::Color32::from_gray(170) }, text);
             }
         });
 
         egui::CentralPanel::default().show(root, |ui| {
-            ui.add_enabled_ui(!modal, |ui| {
-                egui::ScrollArea::both().show(ui, |ui| {
-                    egui::Grid::new("keys").striped(true).spacing([16.0, 6.0]).show(ui, |ui| {
-                        for h in ["Key", "Note", "State", "Device", "Bound", "Last seen", ""] {
-                            ui.strong(h);
+            if self.rows.is_empty() {
+                ui.centered_and_justified(|ui| {
+                    ui.label(egui::RichText::new(if self.busy > 0 { "Loading…" } else { "No keys yet. Click New key to make one." }).weak());
+                });
+                return;
+            }
+            egui::ScrollArea::both().auto_shrink(false).show(ui, |ui| {
+                egui::Grid::new("keys").striped(true).spacing([20.0, 8.0]).min_row_height(24.0).show(ui, |ui| {
+                    for (col, name) in [(Col::Key, "Key"), (Col::Note, "For"), (Col::State, "State"), (Col::Device, "Device"), (Col::Seen, "Last seen"), (Col::Created, "Created")] {
+                        self.header(ui, col, name);
+                    }
+                    ui.end_row();
+                    let mut todo: Option<(&'static str, serde_json::Value)> = None;
+                    let (mut copied, mut delete) = (None, None);
+                    for r in self.visible() {
+                        if ui.add(egui::Label::new(egui::RichText::new(&r.key).monospace()).sense(egui::Sense::click()))
+                            .on_hover_text("Click to copy").clicked()
+                        {
+                            copied = Some(r.key.clone());
                         }
+                        match r.note.as_deref().filter(|n| !n.is_empty()) {
+                            Some(n) => ui.label(n),
+                            None => ui.weak("—"),
+                        };
+                        let (state, color) = state_of(r);
+                        badge(ui, state, color);
+                        match &r.device {
+                            Some(d) => ui.label(r.device_name.as_deref().unwrap_or("Unnamed"))
+                                .on_hover_text(format!("Device {d}\nBound {}", r.bound_at.map(date).unwrap_or_default())),
+                            None => ui.weak("—"),
+                        };
+                        let seen = r.last_seen.map(days_ago).unwrap_or_else(|| "never".into());
+                        if stale(r) {
+                            ui.colored_label(ORANGE, seen);
+                        } else {
+                            ui.weak(seen);
+                        }
+                        ui.weak(r.created.map(date).unwrap_or_default());
+                        ui.horizontal(|ui| {
+                            if r.device.is_some() && ui.small_button("Unbind").on_hover_text("Free the key so another PC can use it").clicked() {
+                                todo = Some(("/admin/unbind", serde_json::json!({ "key": r.key })));
+                            }
+                            let (label, tip) = if r.revoked { ("Allow", "Let this key work again") } else { ("Revoke", "Stop this key from working") };
+                            if ui.small_button(label).on_hover_text(tip).clicked() {
+                                todo = Some(("/admin/revoke", serde_json::json!({ "key": r.key, "revoked": !r.revoked })));
+                            }
+                            if ui.small_button(egui::RichText::new("Delete").color(RED)).clicked() {
+                                delete = Some(r.key.clone());
+                            }
+                        });
                         ui.end_row();
-                        let mut todo: Option<(&'static str, serde_json::Value)> = None;
-                        for r in &self.rows {
-                            if ui.add(egui::Label::new(egui::RichText::new(&r.key).monospace()).sense(egui::Sense::click()))
-                                .on_hover_text("Click to copy").clicked()
-                            {
-                                ctx.copy_text(r.key.clone());
-                                self.status = format!("Copied {}", r.key);
-                            }
-                            ui.label(r.note.as_deref().unwrap_or(""));
-                            ui.label(if r.revoked { "Revoked" } else if r.device.is_some() { "Bound" } else { "Free" });
-                            ui.label(match &r.device {
-                                Some(d) => format!("{} ({})", r.device_name.as_deref().unwrap_or(""), &d[..d.len().min(8)]),
-                                None => String::new(),
-                            });
-                            ui.label(r.bound_at.map(date).unwrap_or_default());
-                            let seen = r.last_seen.map(days_ago).unwrap_or_else(|| "never".into());
-                            if stale(r) {
-                                ui.colored_label(egui::Color32::from_rgb(255, 150, 40), seen);
-                            } else {
-                                ui.label(seen);
-                            }
-                            ui.horizontal(|ui| {
-                                if r.device.is_some() && ui.button("Unbind").clicked() {
-                                    todo = Some(("/admin/unbind", serde_json::json!({ "key": r.key })));
-                                }
-                                if ui.button(if r.revoked { "Allow again" } else { "Revoke" }).clicked() {
-                                    todo = Some(("/admin/revoke", serde_json::json!({ "key": r.key, "revoked": !r.revoked })));
-                                }
-                                if ui.button("Delete").clicked() {
-                                    self.confirm_delete = Some(r.key.clone());
-                                }
-                            });
-                            ui.end_row();
-                        }
-                        if let Some((path, body)) = todo {
-                            self.action(ctx, path, body);
-                        }
-                    });
+                    }
+                    if let Some(key) = copied {
+                        ctx.copy_text(key.clone());
+                        self.info(format!("Copied {key}"));
+                    }
+                    if delete.is_some() {
+                        self.confirm_delete = delete;
+                    }
+                    if let Some((path, body)) = todo {
+                        self.action(ctx, path, body);
+                    }
                 });
             });
         });

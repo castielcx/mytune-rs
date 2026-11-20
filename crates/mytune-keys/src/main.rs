@@ -6,6 +6,7 @@
 #[link(name = "kernel32")]
 extern "system" {
     fn AttachConsole(process: u32) -> i32;
+    fn GetStdHandle(which: u32) -> isize;
 }
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
@@ -29,8 +30,13 @@ fn keygen() -> (Vec<u8>, [u8; 32]) {
 
 fn main() -> eframe::Result {
     if std::env::args().nth(1).as_deref() == Some("keygen") {
-        // SAFETY: plain Win32 call; u32::MAX is ATTACH_PARENT_PROCESS. Fails harmlessly when output is piped.
-        unsafe { AttachConsole(u32::MAX) };
+        // SAFETY: plain Win32 calls. Attach (u32::MAX = parent process) only when stdout (-11) is not
+        // already a pipe or file: attaching would replace it and a script would read nothing.
+        unsafe {
+            if matches!(GetStdHandle(-11i32 as u32), 0 | -1) {
+                AttachConsole(u32::MAX);
+            }
+        }
         let (der, public) = keygen();
         println!("SIGNING_KEY (private, for `wrangler secret put SIGNING_KEY`; keep it secret):");
         println!("{}", STANDARD.encode(der));

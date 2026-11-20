@@ -1,6 +1,12 @@
 //! MyTune key manager: creates, revokes, unbinds and deletes licence keys on the key server (keyserver\worker.js).
 //! `mytune-keys keygen` prints a fresh Ed25519 key pair instead of opening the window.
-// Console subsystem kept on purpose: `keygen` must print into the PowerShell it was started from.
+// No console window of its own; `keygen` attaches to the terminal it was started from to print there.
+#![windows_subsystem = "windows"]
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn AttachConsole(process: u32) -> i32;
+}
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use eframe::egui;
@@ -23,6 +29,8 @@ fn keygen() -> (Vec<u8>, [u8; 32]) {
 
 fn main() -> eframe::Result {
     if std::env::args().nth(1).as_deref() == Some("keygen") {
+        // SAFETY: plain Win32 call; u32::MAX is ATTACH_PARENT_PROCESS. Fails harmlessly when output is piped.
+        unsafe { AttachConsole(u32::MAX) };
         let (der, public) = keygen();
         println!("SIGNING_KEY (private, for `wrangler secret put SIGNING_KEY`; keep it secret):");
         println!("{}", STANDARD.encode(der));

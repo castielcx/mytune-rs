@@ -38,7 +38,7 @@ fn main() {
     println!("CPU: {} cores, performance mask {:#x}, hybrid {}, V-Cache mask {:#x}", topo.cores, topo.performance_mask, topo.is_hybrid, topo.vcache_mask);
     println!("Watching games. Ctrl+C to stop.");
     let booster = Booster::new(system_cmd(), Arc::new(NtTimer), procs.clone());
-    let mut service = GameService::new(store, GameWatcher::new(procs, topo), booster);
+    let mut service = GameService::new(store, GameWatcher::new(procs), booster);
     match service.run(&STOP) {
         Ok(()) => println!("Stopped, everything put back."),
         Err(e) => {

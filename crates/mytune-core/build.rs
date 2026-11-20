@@ -13,7 +13,7 @@ fn main() {
         .args(["/nologo", "/LD", "/std:c++20", "/EHsc", "/O1", "/MT", "/DUNICODE", "/D_UNICODE"])
         .arg(std::env::current_dir().unwrap().join("taskbar/tap.cpp"))
         .arg("/Fe:mytune-taskbar.dll")
-        .args(["/link", "WindowsApp.lib", "ole32.lib", "oleaut32.lib"])
+        .args(["/link", "WindowsApp.lib", "ole32.lib", "oleaut32.lib", "user32.lib"])
         .output()
         .expect("cl.exe did not start");
     assert!(run.status.success(), "taskbar DLL did not compile:\n{}", String::from_utf8_lossy(&run.stdout));

@@ -23,5 +23,7 @@ fn games_page() {
     std::thread::sleep(std::time::Duration::from_secs(3)); // the scan thread
     h.run_steps(40);
     let out = std::env::var("SHOT_DIR").unwrap_or_else(|_| ".".into());
-    h.render().expect("render").save(format!("{out}/games.png")).unwrap();
+    // env MYTUNE_GAME_SETTINGS=<part of a game's name> opens that game's settings dialog
+    let name = if std::env::var_os("MYTUNE_GAME_SETTINGS").is_some() { "games-dialog" } else { "games" };
+    h.render().expect("render").save(format!("{out}/{name}.png")).unwrap();
 }

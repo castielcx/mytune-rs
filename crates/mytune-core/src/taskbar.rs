@@ -4,10 +4,10 @@
 //! (`SetWindowCompositionAttribute`) does nothing (measured on build 26200). Instead Windows' XAML
 //! diagnostics load `taskbar/tap.cpp` (built by `build.rs`, embedded here) into explorer.exe, where it
 //! swaps the background brush. This module tells that DLL which look to show through the shared memory
-//! `Local\MyTuneTaskbar2` and counts a heartbeat; 3 s without one and the DLL shows the normal taskbar.
+//! `Local\MyTuneTaskbar3` and counts a heartbeat; 3 s without one and the DLL shows the normal taskbar.
 //!
-//! shortcut: one look for every monitor's taskbar (a window maximised on any monitor counts),
-//! upgrade to a look per taskbar when someone with two monitors asks.
+//! The maximised look shows only on the taskbars of monitors that have a maximised window; Start and
+//! Search looks show on every taskbar.
 
 use crate::store::Store;
 use serde::{Deserialize, Serialize};
@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use windows::core::{s, w, BOOL, GUID, HRESULT, HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
+use windows::Win32::Graphics::Gdi::{MonitorFromWindow, MONITOR_DEFAULTTONEAREST};
 use windows::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryW};
 use windows::Win32::System::Memory::{MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_READ, FILE_MAP_WRITE, MEMORY_MAPPED_VIEW_ADDRESS};
 use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION};
@@ -143,6 +144,11 @@ struct Shared {
     look: i32,
     argb: i32,
     bars: i32,
+    max_look: i32,
+    max_argb: i32,
+    max_count: i32,
+    pad: i32,
+    max_mons: [i64; 8],
 }
 
 /// The DLL's shared memory in one explorer.exe.
@@ -156,7 +162,7 @@ struct Link {
 impl Link {
     fn open(pid: u32) -> Option<Link> {
         unsafe {
-            let map = OpenFileMappingW((FILE_MAP_READ | FILE_MAP_WRITE).0, false, w!("Local\\MyTuneTaskbar2")).ok()?;
+            let map = OpenFileMappingW((FILE_MAP_READ | FILE_MAP_WRITE).0, false, w!("Local\\MyTuneTaskbar3")).ok()?;
             let view = MapViewOfFile(map, FILE_MAP_READ | FILE_MAP_WRITE, 0, 0, size_of::<Shared>()).Value as *mut Shared;
             if view.is_null() {
                 let _ = CloseHandle(map);
@@ -166,11 +172,20 @@ impl Link {
         }
     }
 
-    fn write(&self, look: i32, argb: i32, beat: i32) {
+    /// `max`: the look for taskbars on the monitors in `mons` (those with a maximised window).
+    fn write(&self, look: (i32, i32), max: (i32, i32), mons: &[i64], beat: i32) {
+        let n = mons.len().min(8);
         unsafe {
-            (&raw mut (*self.view).look).write_volatile(look);
-            (&raw mut (*self.view).argb).write_volatile(argb);
-            (&raw mut (*self.view).beat).write_volatile(beat);
+            let v = self.view;
+            for (i, m) in mons[..n].iter().enumerate() {
+                (&raw mut (*v).max_mons[i]).write_volatile(*m);
+            }
+            (&raw mut (*v).max_count).write_volatile(n as i32);
+            (&raw mut (*v).max_look).write_volatile(max.0);
+            (&raw mut (*v).max_argb).write_volatile(max.1);
+            (&raw mut (*v).look).write_volatile(look.0);
+            (&raw mut (*v).argb).write_volatile(look.1);
+            (&raw mut (*v).beat).write_volatile(beat);
         }
     }
 
@@ -256,30 +271,31 @@ fn exe_name(window: HWND) -> String {
     path.rsplit('\\').next().unwrap_or_default().to_string()
 }
 
-/// A visible maximised window on any monitor.
-fn any_maximized() -> bool {
-    unsafe extern "system" fn each(window: HWND, find: LPARAM) -> BOOL {
-        let find = &mut *(find.0 as *mut bool);
+/// The monitors (HMONITOR values, the same in every process) that show a visible maximised window.
+fn maximized_monitors() -> Vec<i64> {
+    unsafe extern "system" fn each(window: HWND, found: LPARAM) -> BOOL {
+        let found = &mut *(found.0 as *mut Vec<i64>);
         if IsWindowVisible(window).as_bool() && IsZoomed(window).as_bool() {
             // windows on other virtual desktops are "visible" but cloaked
             let mut cloaked = 0u32;
             let _ = DwmGetWindowAttribute(window, DWMWA_CLOAKED, (&raw mut cloaked).cast(), 4);
-            if cloaked == 0 {
-                *find = true;
-                return false.into();
+            let mon = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST).0 as i64;
+            if cloaked == 0 && !found.contains(&mon) {
+                found.push(mon);
             }
         }
         true.into()
     }
-    let mut find = false;
+    let mut found = Vec::new();
     unsafe {
-        let _ = EnumWindows(Some(each), LPARAM(&raw mut find as isize));
+        let _ = EnumWindows(Some(each), LPARAM(&raw mut found as isize));
     }
-    find
+    found
 }
 
-/// Which rule applies now. `front` remembers the foreground window's answer, so the process name is
-/// looked up only when the foreground window changes.
+/// Which rule applies now on every taskbar (Desktop, Start or Search; maximised is per monitor).
+/// `front` remembers the foreground window's answer, so the process name is looked up only when the
+/// foreground window changes.
 fn state_now(front: &mut (isize, State)) -> State {
     let window = unsafe { GetForegroundWindow() };
     if window.0 as isize != front.0 {
@@ -290,14 +306,7 @@ fn state_now(front: &mut (isize, State)) -> State {
         };
         *front = (window.0 as isize, state);
     }
-    if front.1 != State::Desktop {
-        return front.1;
-    }
-    if any_maximized() {
-        State::Maximized
-    } else {
-        State::Desktop
-    }
+    front.1
 }
 
 /// Starts the thread that keeps the look applied while `config.on`. It re-injects after Explorer
@@ -314,7 +323,7 @@ pub fn start(config: Arc<Mutex<Config>>, gave_up: impl Fn() + Send + 'static) {
             let now = config.lock().unwrap_or_else(|p| p.into_inner()).clone();
             if !now.on {
                 if let Some(l) = link.take() {
-                    l.write(0, 0, beat.wrapping_add(1)); // normal taskbar at once, not after the 3 s
+                    l.write((0, 0), (0, 0), &[], beat.wrapping_add(1)); // normal taskbar at once, not after the 3 s
                 }
                 strikes = 0;
                 std::thread::sleep(Duration::from_millis(500));
@@ -364,9 +373,10 @@ pub fn start(config: Arc<Mutex<Config>>, gave_up: impl Fn() + Send + 'static) {
                 }
             }
             let l = link.as_ref().unwrap();
-            let (look, argb) = now.rule(state_now(&mut front)).wire();
+            let state = state_now(&mut front);
+            let mons = if state == State::Desktop { maximized_monitors() } else { Vec::new() };
             beat = beat.wrapping_add(1);
-            l.write(look, argb, beat);
+            l.write(now.rule(state).wire(), now.rule(State::Maximized).wire(), &mons, beat);
             if l.bars() > 0 {
                 set_problem(None);
             } else if l.since.elapsed() > Duration::from_secs(5) {

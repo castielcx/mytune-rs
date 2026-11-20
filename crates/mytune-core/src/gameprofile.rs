@@ -1,12 +1,14 @@
-//! Recommended settings for a game, written into the game's own settings file: V-Sync, motion blur, depth of
-//! field and lens flare off; shadows, effects, post-processing and foliage low. Resolution, window mode,
-//! refresh rate, frame cap, textures, view distance, anti-aliasing, sensitivity, keys and sound are never
-//! touched. The values are MyTune's own choice, not taken from another tool.
+//! A game's in-game settings, read from and written into the game's own settings file. Each supported game has
+//! a hand-written list of settings (`Setting`: key, label, kind, choices) with MyTune's own "competitive" value
+//! for some of them (V-Sync, motion blur, depth of field and lens flare off; shadows, effects, post-processing
+//! and foliage low). Resolution, window mode, sensitivity, keys and sound are never touched.
 //!
-//! Only the profile's keys change; every other byte of the file stays (line ends, encoding, read-only flag).
+//! Only the chosen keys change; every other byte of the file stays (line ends, encoding, read-only flag).
 //! `ConfigTweak` (id `game:<id>:config`) copies the whole file to `%ProgramData%\MyTune\gameconfig` first and
 //! records it in the backup's `Data` (`file<n>`, `backup<n>`, `after<n>` = hash of what was written, `procs`);
-//! revert puts that exact file back. Both refuse while the game runs: it would overwrite the file on exit.
+//! revert puts that exact file back. Saving again while applied keeps that first copy, so revert always goes
+//! back to the file from before MyTune touched it. Both refuse while the game runs: it would overwrite the
+//! file on exit.
 
 use crate::backup::TweakBackup;
 use crate::engine::Tweak;
@@ -29,27 +31,73 @@ pub enum Format {
 pub struct Edit {
     pub section: &'static str,
     pub key: &'static str,
-    pub value: &'static str,
+    pub value: String,
     /// Write the key at the end of its section when the file lacks it (Unreal reads added keys there).
     pub add: bool,
 }
 
-const fn set(section: &'static str, key: &'static str, value: &'static str) -> Edit {
-    Edit { section, key, value, add: false }
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Group {
+    Graphics,
+    Performance,
 }
-const fn sg(key: &'static str) -> Edit {
-    Edit { section: "ScalabilityGroups", key, value: "0", add: true }
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Kind {
+    /// On or off, in the file's own words. A value that is not `off` counts as on.
+    Switch { on: &'static str, off: &'static str },
+    /// (label, value in the file)
+    Choice(&'static [(&'static str, &'static str)]),
+    /// A number, written with `decimals` digits after the point.
+    Number { min: f64, max: f64, decimals: usize },
+}
+
+/// One setting of a game that the settings dialog shows.
+#[derive(Debug)]
+pub struct Setting {
+    pub section: &'static str,
+    pub key: &'static str,
+    pub label: &'static str,
+    pub group: Group,
+    pub kind: Kind,
+    /// MyTune's competitive value (as written in the file); `None`: no opinion.
+    pub best: Option<&'static str>,
+    /// See `Edit::add`. Other settings show only when the file has the key.
+    pub add: bool,
+}
+
+const G: Group = Group::Graphics;
+const P: Group = Group::Performance;
+
+/// A switch whose competitive value is off.
+const fn sw(section: &'static str, key: &'static str, label: &'static str, group: Group, on: &'static str, off: &'static str) -> Setting {
+    Setting { section, key, label, group, kind: Kind::Switch { on, off }, best: Some(off), add: false }
+}
+const fn pick(key: &'static str, label: &'static str, group: Group, choices: &'static [(&'static str, &'static str)], best: Option<&'static str>) -> Setting {
+    Setting { section: "", key, label, group, kind: Kind::Choice(choices), best, add: false }
+}
+const fn num(section: &'static str, key: &'static str, label: &'static str, group: Group, max: f64, decimals: usize) -> Setting {
+    Setting { section, key, label, group, kind: Kind::Number { min: 0.0, max, decimals }, best: None, add: false }
+}
+/// Unreal's quality levels. shortcut: the names are Unreal's defaults, a game's own menu may call them differently.
+const UE_LEVELS: &[(&str, &str)] = &[("Low", "0"), ("Medium", "1"), ("High", "2"), ("Epic", "3"), ("Ultra", "4")];
+/// An Unreal `sg.*` quality level.
+const fn sg(key: &'static str, label: &'static str, best: Option<&'static str>) -> Setting {
+    Setting { section: "ScalabilityGroups", key, label, group: G, kind: Kind::Choice(UE_LEVELS), best, add: true }
+}
+
+/// The edits that write every setting's competitive value.
+fn best_edits(settings: &[Setting]) -> Vec<Edit> {
+    settings.iter().filter_map(|s| Some(Edit { section: s.section, key: s.key, value: s.best?.to_string(), add: s.add })).collect()
 }
 
 pub struct Target {
     pub path: PathBuf,
     pub format: Format,
-    pub edits: &'static [Edit],
+    pub settings: &'static [Setting],
 }
 
 pub struct Profile {
-    /// What changes, in plain words, for the confirm dialog.
-    pub changes: &'static [&'static str],
     pub targets: Vec<Target>,
     /// Process names besides the game's exe that hold the settings file.
     pub procs: &'static [&'static str],
@@ -128,7 +176,11 @@ fn edit_xml(src: &[u8], edits: &[Edit]) -> (Vec<u8>, usize) {
         found += 1;
         // GTA V Legacy writes switches as words, Enhanced as numbers: keep the file's own form
         let word = matches!(&out[start..start + len], b"true" | b"false");
-        let new = if e.value == "0" && word { "false" } else { e.value };
+        let new = match (word, e.value.as_str()) {
+            (true, "0") => "false",
+            (true, "1") => "true",
+            (_, v) => v,
+        };
         out.splice(start..start + len, new.bytes());
     }
     (out, found)
@@ -147,55 +199,114 @@ pub fn edit(format: Format, src: &[u8], edits: &[Edit]) -> Result<(Vec<u8>, usiz
     })
 }
 
+fn read_lines(src: &[u8], settings: &[Setting], sep: u8, sections: bool) -> Vec<Option<String>> {
+    let mut out = vec![None; settings.len()];
+    let mut section = String::new();
+    for line in src.split(|&b| b == b'\n') {
+        let body = line.trim_ascii();
+        if sections && body.starts_with(b"[") && body.ends_with(b"]") {
+            section = String::from_utf8_lossy(&body[1..body.len() - 1]).to_string();
+        } else if let Some(eq) = line.iter().position(|&b| b == sep) {
+            let key = line[..eq].trim_ascii();
+            if let Some(i) = settings.iter().position(|s| (!sections || s.section.eq_ignore_ascii_case(&section)) && s.key.as_bytes().eq_ignore_ascii_case(key)) {
+                out[i] = Some(String::from_utf8_lossy(line[eq + 1..].trim_ascii()).to_string());
+            }
+        }
+    }
+    out
+}
+
+fn read_xml(src: &[u8], settings: &[Setting]) -> Vec<Option<String>> {
+    let value = |s: &Setting| {
+        let pat = format!("<{} value=\"", s.key);
+        let start = src.windows(pat.len()).position(|w| w == pat.as_bytes())? + pat.len();
+        let len = src[start..].iter().position(|&b| b == b'"')?;
+        // GTA V Legacy writes switches as words: report them as Enhanced's numbers
+        Some(match &src[start..start + len] {
+            b"true" => "1".to_string(),
+            b"false" => "0".to_string(),
+            v => String::from_utf8_lossy(v).to_string(),
+        })
+    };
+    settings.iter().map(value).collect()
+}
+
+/// The file's value of each setting, as written in the file; `None`: the file lacks the key (or is UTF-16,
+/// which `edit` refuses).
+pub fn read(format: Format, src: &[u8], settings: &[Setting]) -> Vec<Option<String>> {
+    if src.starts_with(&[0xFF, 0xFE]) || src.starts_with(&[0xFE, 0xFF]) {
+        return vec![None; settings.len()];
+    }
+    match format {
+        Format::Ini => read_lines(src, settings, b'=', true),
+        Format::Colon => read_lines(src, settings, b':', false),
+        Format::Xml => read_xml(src, settings),
+    }
+}
+
 // ---------------------------------------------------------------- profiles
 
-const ARC: &[Edit] = &[
-    sg("sg.ShadowQuality"),
-    sg("sg.PostProcessQuality"),
-    sg("sg.EffectsQuality"),
-    sg("sg.FoliageQuality"),
-    set("ScalabilityGroups", "MotionBlurMode", "Off"),
-    set("ScalabilityGroups", "bUseVSync", "False"),
+/// Where ARC Raiders keeps what is not a quality level (seen in the file on disk).
+const EMBARK: &str = "/Script/EmbarkUserSettings.EmbarkGameUserSettings";
+const ARC: &[Setting] = &[
+    sg("sg.ShadowQuality", "Shadows", Some("0")),
+    sg("sg.PostProcessQuality", "Post-processing", Some("0")),
+    sg("sg.EffectsQuality", "Effects", Some("0")),
+    sg("sg.FoliageQuality", "Foliage", Some("0")),
+    sg("sg.TextureQuality", "Textures", None),
+    sg("sg.ViewDistanceQuality", "View distance", None),
+    sg("sg.GlobalIlluminationQuality", "Global illumination", None),
+    sg("sg.ReflectionQuality", "Reflections", None),
+    sw(EMBARK, "MotionBlurMode", "Motion blur", G, "On", "Off"),
+    sw(EMBARK, "bUseVSync", "V-Sync", P, "True", "False"),
+    num(EMBARK, "FrameRateLimit", "FPS cap (0 = no cap)", P, 1000.0, 6),
 ];
 const WD: &str = "/Script/WDGame.WDUserSettings";
-const WARDOGS: &[Edit] = &[
-    sg("sg.ShadowQuality"),
-    sg("sg.PostProcessQuality"),
-    sg("sg.EffectsQuality"),
-    sg("sg.FoliageQuality"),
-    set("ScalabilityGroups", "sg.MotionBlurQuality", "0"),
-    set("ScalabilityGroups", "sg.DepthOfFieldQuality", "0"),
-    set("ScalabilityGroups", "sg.LensFlareQuality", "0"),
-    set(WD, "bUseMotionBlur", "False"),
-    set(WD, "bUseDepthOfField", "False"),
-    set(WD, "bUseLensFlare", "False"),
-    set(WD, "bUseVSync", "False"),
+const WARDOGS: &[Setting] = &[
+    sg("sg.ShadowQuality", "Shadows", Some("0")),
+    sg("sg.PostProcessQuality", "Post-processing", Some("0")),
+    sg("sg.EffectsQuality", "Effects", Some("0")),
+    sg("sg.FoliageQuality", "Foliage", Some("0")),
+    sg("sg.TextureQuality", "Textures", None),
+    sg("sg.ViewDistanceQuality", "View distance", None),
+    sw(WD, "bUseMotionBlur", "Motion blur", G, "True", "False"),
+    sw(WD, "bUseDepthOfField", "Depth of field", G, "True", "False"),
+    sw(WD, "bUseLensFlare", "Lens flare", G, "True", "False"),
+    sw(WD, "bUseBloom", "Bloom", G, "True", "False"),
+    sw(WD, "bUseVSync", "V-Sync", P, "True", "False"),
+    num(WD, "FrameRateLimit", "FPS cap (0 = no cap)", P, 1000.0, 6),
 ];
 const RL: &str = "SystemSettings";
-const ROCKET_LEAGUE: &[Edit] = &[
-    set(RL, "UseVsync", "False"),
-    set(RL, "MotionBlur", "False"),
-    set(RL, "DepthOfField", "False"),
-    set(RL, "LensFlares", "False"),
-    set(RL, "Bloom", "False"),
-    set(RL, "AmbientOcclusion", "False"),
-    set(RL, "bAllowLightShafts", "False"),
-    set(RL, "DynamicShadows", "False"),
+const ROCKET_LEAGUE: &[Setting] = &[
+    sw(RL, "DynamicShadows", "Dynamic shadows", G, "True", "False"),
+    sw(RL, "AmbientOcclusion", "Ambient occlusion", G, "True", "False"),
+    sw(RL, "bAllowLightShafts", "Light shafts", G, "True", "False"),
+    sw(RL, "Bloom", "Bloom", G, "True", "False"),
+    sw(RL, "LensFlares", "Lens flares", G, "True", "False"),
+    sw(RL, "DepthOfField", "Depth of field", G, "True", "False"),
+    sw(RL, "MotionBlur", "Motion blur", G, "True", "False"),
+    sw(RL, "UseVsync", "V-Sync", P, "True", "False"),
 ];
+const GTA_3: &[(&str, &str)] = &[("Normal", "0"), ("High", "1"), ("Very High", "2")];
+const GTA_4: &[(&str, &str)] = &[("Normal", "0"), ("High", "1"), ("Very High", "2"), ("Ultra", "3")];
 /// Shadows 1 = Normal (0 turns them off, which the game's menu does not offer); the others' lowest is 0.
-const GTA: &[Edit] = &[
-    set("", "VSync", "0"),
-    set("", "MotionBlurStrength", "0.000000"),
-    set("", "DoF", "0"),
-    set("", "ShadowQuality", "1"),
-    set("", "ParticleQuality", "0"),
-    set("", "GrassQuality", "0"),
-    set("", "PostFX", "0"),
+const GTA: &[Setting] = &[
+    pick("ShadowQuality", "Shadows", G, &[("Normal", "1"), ("High", "2"), ("Very High", "3")], Some("1")),
+    pick("ParticleQuality", "Particles", G, GTA_3, Some("0")),
+    pick("GrassQuality", "Grass", G, GTA_4, Some("0")),
+    pick("PostFX", "Post effects", G, GTA_4, Some("0")),
+    sw("", "MotionBlurStrength", "Motion blur", G, "0.500000", "0.000000"),
+    sw("", "DoF", "Depth of field", G, "1", "0"),
+    pick("VSync", "V-Sync", P, &[("Off", "0"), ("On", "1"), ("Half", "2")], Some("0")),
 ];
-const MC_JAVA: &[Edit] = &[set("", "enableVsync", "false"), set("", "entityShadows", "false"), set("", "particles", "1")];
-const MC_BEDROCK: &[Edit] = &[set("", "gfx_vsync", "0")];
-
-const UE_CHANGES: &[&str] = &["V-Sync off", "Motion blur off", "Shadows, effects, post-processing and foliage on Low"];
+const MC_JAVA: &[Setting] = &[
+    sw("", "entityShadows", "Entity shadows", G, "true", "false"),
+    pick("particles", "Particles", G, &[("All", "0"), ("Decreased", "1"), ("Minimal", "2")], Some("1")),
+    num("", "renderDistance", "Render distance (chunks)", G, 32.0, 0),
+    sw("", "enableVsync", "V-Sync", P, "true", "false"),
+    num("", "maxFps", "FPS cap (260 = no cap)", P, 260.0, 0),
+];
+const MC_BEDROCK: &[Setting] = &[sw("", "gfx_vsync", "V-Sync (Bedrock)", P, "1", "0")];
 
 /// The Documents folder, also when it was moved (OneDrive).
 fn documents() -> PathBuf {
@@ -223,41 +334,26 @@ pub fn profile_for(name: &str, exe_path: &str) -> Option<Profile> {
 }
 
 fn profile_in(name: &str, exe_path: &str, local: &Path, roaming: &Path, docs: &Path) -> Option<Profile> {
-    let one = |path: PathBuf, format, edits, changes| Profile { changes, targets: vec![Target { path, format, edits }], procs: &[] };
+    let one = |path: PathBuf, format, settings| Profile { targets: vec![Target { path, format, settings }], procs: &[] };
     Some(match crate::gamelib::title_key(name).as_str() {
-        "arc raiders" => one(local.join("PioneerGame\\Saved\\Config\\WindowsClient\\GameUserSettings.ini"), Format::Ini, ARC, UE_CHANGES),
-        "wardogs" => one(
-            local.join("Wardogs\\Saved\\Config\\WindowsClient\\GameUserSettings.ini"),
-            Format::Ini,
-            WARDOGS,
-            &["V-Sync off", "Motion blur, depth of field and lens flare off", "Shadows, effects, post-processing and foliage on Low"],
-        ),
-        "rocket league" => one(
-            docs.join("My Games\\Rocket League\\TAGame\\Config\\TASystemSettings.ini"),
-            Format::Ini,
-            ROCKET_LEAGUE,
-            &["V-Sync off", "Motion blur, depth of field, lens flares and bloom off", "Dynamic shadows, ambient occlusion and light shafts off"],
-        ),
+        "arc raiders" => one(local.join("PioneerGame\\Saved\\Config\\WindowsClient\\GameUserSettings.ini"), Format::Ini, ARC),
+        "wardogs" => one(local.join("Wardogs\\Saved\\Config\\WindowsClient\\GameUserSettings.ini"), Format::Ini, WARDOGS),
+        "rocket league" => one(docs.join("My Games\\Rocket League\\TAGame\\Config\\TASystemSettings.ini"), Format::Ini, ROCKET_LEAGUE),
         "grand theft auto v" => {
             let folder = if exe_path.to_lowercase().contains("enhanced") { "GTAV Enhanced" } else { "GTA V" };
-            one(
-                docs.join("Rockstar Games").join(folder).join("settings.xml"),
-                Format::Xml,
-                GTA,
-                &["V-Sync off", "Motion blur and depth of field off", "Shadows, particles, grass and post effects on Normal, their lowest setting"],
-            )
+            one(docs.join("Rockstar Games").join(folder).join("settings.xml"), Format::Xml, GTA)
         }
         "minecraft" => {
             let options = "games\\com.mojang\\minecraftpe\\options.txt";
             let mut targets = vec![
-                Target { path: roaming.join(".minecraft\\options.txt"), format: Format::Colon, edits: MC_JAVA },
-                Target { path: local.join("Packages\\Microsoft.MinecraftUWP_8wekyb3d8bbwe\\LocalState").join(options), format: Format::Colon, edits: MC_BEDROCK },
+                Target { path: roaming.join(".minecraft\\options.txt"), format: Format::Colon, settings: MC_JAVA },
+                Target { path: local.join("Packages\\Microsoft.MinecraftUWP_8wekyb3d8bbwe\\LocalState").join(options), format: Format::Colon, settings: MC_BEDROCK },
             ];
             // newer Bedrock builds keep one folder per signed-in user
             for user in fs::read_dir(roaming.join("Minecraft Bedrock\\Users")).into_iter().flatten().flatten() {
-                targets.push(Target { path: user.path().join(options), format: Format::Colon, edits: MC_BEDROCK });
+                targets.push(Target { path: user.path().join(options), format: Format::Colon, settings: MC_BEDROCK });
             }
-            Profile { changes: &["V-Sync off (Java and Bedrock)", "Java: entity shadows off, fewer particles"], targets, procs: &["javaw", "Minecraft.Windows"] }
+            Profile { targets, procs: &["javaw", "Minecraft.Windows"] }
         }
         _ => return None,
     })
@@ -317,6 +413,18 @@ pub struct ConfigTweak {
     pub stems: Vec<String>,
     /// Where the copies of the original files go.
     pub backup_dir: PathBuf,
+    /// What to write: (target, setting in the target's list, value as written in the file). `None`: every
+    /// setting's competitive value.
+    pub values: Option<Vec<(usize, usize, String)>>,
+}
+
+/// A setting of a game as its file has it now.
+pub struct Item {
+    pub target: usize,
+    pub index: usize,
+    pub setting: &'static Setting,
+    /// `None`: the file lacks the key (only settings that may be added are listed then).
+    pub value: Option<String>,
 }
 
 impl ConfigTweak {
@@ -326,17 +434,45 @@ impl ConfigTweak {
         stems.extend(profile.iter().flat_map(|p| p.procs.iter().map(|s| s.to_string())));
         ConfigTweak {
             id: crate::pergame::game_tweak_id(game_id, "config"),
-            title: format!("{game_name}: settings profile"),
+            title: format!("{game_name}: in-game settings"),
             profile,
             procs,
             stems,
             backup_dir: state_dir.join("gameconfig"),
+            values: None,
         }
+    }
+
+    /// The same tweak, writing these values instead of the competitive ones.
+    pub fn with_values(mut self, values: Vec<(usize, usize, String)>) -> ConfigTweak {
+        self.values = Some(values);
+        self
+    }
+
+    /// The game's settings as its files have them now, in the profile's order. Reads the files.
+    pub fn settings(&self) -> Vec<Item> {
+        let mut out = Vec::new();
+        for (target, t) in self.profile.iter().flat_map(|p| &p.targets).enumerate() {
+            let Ok(src) = fs::read(&t.path) else { continue };
+            let values = read(t.format, &src, t.settings);
+            if values.iter().all(Option::is_none) {
+                continue; // not a file we know
+            }
+            out.extend(values.into_iter().enumerate().filter(|(i, v)| v.is_some() || t.settings[*i].add).map(|(index, value)| Item { target, index, setting: &t.settings[index], value }));
+        }
+        out
+    }
+
+    fn edits(&self, target: usize, t: &Target) -> Vec<Edit> {
+        let Some(values) = &self.values else { return best_edits(t.settings) };
+        // a value that would break the line or the attribute is dropped, whatever sent it
+        let ok = |v: &str| !v.is_empty() && !v.contains(['\r', '\n', '"', '<', '>']);
+        values.iter().filter(|v| v.0 == target && ok(&v.2)).filter_map(|v| t.settings.get(v.1).map(|s| Edit { section: s.section, key: s.key, value: v.2.clone(), add: s.add })).collect()
     }
 
     /// For reverting a stored backup by its id alone (Restore page).
     pub fn for_revert(procs: Arc<dyn Procs>, id: &str, title: &str) -> ConfigTweak {
-        ConfigTweak { id: id.into(), title: title.into(), profile: None, procs, stems: vec![], backup_dir: PathBuf::new() }
+        ConfigTweak { id: id.into(), title: title.into(), profile: None, procs, stems: vec![], backup_dir: PathBuf::new(), values: None }
     }
 
     fn not_running(&self, stems: &[String]) -> Result<()> {
@@ -347,12 +483,12 @@ impl ConfigTweak {
         }
     }
 
-    /// The targets that exist and hold profile keys: (target, file now, file with the profile).
+    /// The targets that exist and hold keys to write: (target, file now, file with the values).
     fn readable(&self) -> Result<Vec<(&Target, Vec<u8>, Vec<u8>)>> {
         let mut out = Vec::new();
-        for t in self.profile.iter().flat_map(|p| &p.targets) {
+        for (i, t) in self.profile.iter().flat_map(|p| &p.targets).enumerate() {
             let Ok(src) = fs::read(&t.path) else { continue }; // the game has not made this file (yet)
-            let (new, found) = edit(t.format, &src, t.edits)?;
+            let (new, found) = edit(t.format, &src, &self.edits(i, t))?;
             if found > 0 {
                 out.push((t, src, new));
             }
@@ -365,7 +501,7 @@ impl ConfigTweak {
     /// Running it again copies nothing twice: a file keeps its first copy, the true original.
     fn prepare(&self, b: &mut TweakBackup) -> Result<Vec<(PathBuf, Vec<u8>, usize)>> {
         if self.profile.is_none() {
-            return Err(Error::Plain("No profile for this game yet.".into()));
+            return Err(Error::Plain("No settings for this game yet.".into()));
         }
         self.not_running(&self.stems)?;
         let files = self.readable()?;
@@ -396,9 +532,9 @@ impl ConfigTweak {
         Ok(out)
     }
 
-    /// The settings files the profile would edit on this PC.
+    /// The game's settings files that exist on this PC.
     pub fn files(&self) -> Vec<PathBuf> {
-        self.readable().unwrap_or_default().into_iter().map(|r| r.0.path.clone()).collect()
+        self.profile.iter().flat_map(|p| &p.targets).filter(|t| t.path.is_file()).map(|t| t.path.clone()).collect()
     }
 }
 
@@ -464,9 +600,6 @@ mod tests {
         fn restore(&self, _: u32, _: &Held) -> Result<()> {
             Ok(())
         }
-        fn set_affinity(&self, _: u32, _: u64) -> Result<()> {
-            Ok(())
-        }
     }
 
     /// Lines of `b` that differ from `a`, and lines only `b` has; fails when anything else differs.
@@ -488,48 +621,49 @@ mod tests {
         out
     }
 
-    const UE: &str = ";METADATA=(Diff=true, UseCommands=true)\r\n[Internationalization]\r\nCulture=en\r\n\r\n[ScalabilityGroups]\r\nsg.ResolutionQuality=100\r\nsg.ViewDistanceQuality=3\r\nsg.AntiAliasingQuality=4\r\nsg.ShadowQuality=3\r\nsg.PostProcessQuality=2\r\nsg.TextureQuality=3\r\nsg.EffectsQuality=3\r\n\r\nMotionBlurMode=On\r\nbUseVSync=True\r\nResolutionSizeX=1920\r\nFullscreenMode=1\r\nFrameRateLimit=0.000000\r\n\r\n[Other]\r\nbUseVSync=True\r\nsg.ShadowQuality=3\r\n";
+    const UE: &str = ";METADATA=(Diff=true, UseCommands=true)\r\n[Internationalization]\r\nCulture=en\r\n\r\n[ScalabilityGroups]\r\nsg.ResolutionQuality=100\r\nsg.ViewDistanceQuality=3\r\nsg.AntiAliasingQuality=4\r\nsg.ShadowQuality=3\r\nsg.PostProcessQuality=2\r\nsg.TextureQuality=3\r\nsg.EffectsQuality=3\r\n\r\n[/Script/EmbarkUserSettings.EmbarkGameUserSettings]\r\nMotionBlurMode=On\r\nbUseVSync=True\r\nResolutionSizeX=1920\r\nFullscreenMode=1\r\nFrameRateLimit=0.000000\r\n\r\n[Other]\r\nbUseVSync=True\r\nsg.ShadowQuality=3\r\n";
 
     #[test]
     fn unreal_ini_changes_only_profile_keys_in_their_section() {
-        let (out, found) = edit(Format::Ini, UE.as_bytes(), ARC).unwrap();
+        let (out, found) = edit(Format::Ini, UE.as_bytes(), &best_edits(ARC)).unwrap();
         assert_eq!(found, 6);
         assert_eq!(
             changed_lines(UE.as_bytes(), &out),
-            ["sg.ShadowQuality=0\r\n", "sg.PostProcessQuality=0\r\n", "sg.EffectsQuality=0\r\n", "MotionBlurMode=Off\r\n", "bUseVSync=False\r\n", "sg.FoliageQuality=0\r\n"]
+            ["sg.ShadowQuality=0\r\n", "sg.PostProcessQuality=0\r\n", "sg.EffectsQuality=0\r\n", "sg.FoliageQuality=0\r\n", "MotionBlurMode=Off\r\n", "bUseVSync=False\r\n"]
         );
         let text = String::from_utf8(out.clone()).unwrap();
-        assert!(text.contains("FrameRateLimit=0.000000\r\nsg.FoliageQuality=0\r\n\r\n[Other]\r\nbUseVSync=True\r\nsg.ShadowQuality=3\r\n"), "missing key goes to the end of its section; [Other] is untouched");
+        assert!(text.contains("sg.EffectsQuality=0\r\nsg.FoliageQuality=0\r\n\r\n[/Script/Embark"), "missing key goes to the end of its section");
+        assert!(text.contains("FrameRateLimit=0.000000\r\n\r\n[Other]\r\nbUseVSync=True\r\nsg.ShadowQuality=3\r\n"), "[Other] is untouched");
         assert!(text.contains("sg.ViewDistanceQuality=3\r\nsg.AntiAliasingQuality=4") && text.contains("sg.TextureQuality=3") && text.contains("ResolutionSizeX=1920\r\nFullscreenMode=1"));
-        assert_eq!(edit(Format::Ini, &out, ARC).unwrap().0, out, "a second pass changes nothing");
+        assert_eq!(edit(Format::Ini, &out, &best_edits(ARC)).unwrap().0, out, "a second pass changes nothing");
     }
 
     #[test]
     fn ini_keeps_unix_line_ends_missing_last_line_end_and_other_sections() {
         let src = b"[SystemSettings]\nUseVsync=True\nMotionBlur=TRUE\nResX=1920\n[SystemSettingsMobile]\nMotionBlur=TRUE\nBloom=TRUE";
-        let (out, found) = edit(Format::Ini, src, ROCKET_LEAGUE).unwrap();
+        let (out, found) = edit(Format::Ini, src, &best_edits(ROCKET_LEAGUE)).unwrap();
         assert_eq!(found, 2);
         assert_eq!(out, b"[SystemSettings]\nUseVsync=False\nMotionBlur=False\nResX=1920\n[SystemSettingsMobile]\nMotionBlur=TRUE\nBloom=TRUE");
         // an Unreal file without the section gets nothing added
-        assert_eq!(edit(Format::Ini, b"[Other]\r\nA=1\r\n", ARC).unwrap(), (b"[Other]\r\nA=1\r\n".to_vec(), 0));
+        assert_eq!(edit(Format::Ini, b"[Other]\r\nA=1\r\n", &best_edits(ARC)).unwrap(), (b"[Other]\r\nA=1\r\n".to_vec(), 0));
         // added key after a last line without a line end
-        assert_eq!(edit(Format::Ini, b"[ScalabilityGroups]\nsg.ShadowQuality=2", &[sg("sg.ShadowQuality"), sg("sg.FoliageQuality")]).unwrap().0, b"[ScalabilityGroups]\nsg.ShadowQuality=0\nsg.FoliageQuality=0\n");
-        assert!(edit(Format::Ini, &[0xFF, 0xFE, b'[', 0], ARC).is_err(), "UTF-16 is refused");
+        assert_eq!(edit(Format::Ini, b"[ScalabilityGroups]\nsg.ShadowQuality=2", &best_edits(&ARC[..4])).unwrap().0, b"[ScalabilityGroups]\nsg.ShadowQuality=0\nsg.PostProcessQuality=0\nsg.EffectsQuality=0\nsg.FoliageQuality=0\n");
+        assert!(edit(Format::Ini, &[0xFF, 0xFE, b'[', 0], &best_edits(ARC)).is_err(), "UTF-16 is refused");
     }
 
     #[test]
     fn minecraft_options_change_only_profile_keys() {
         let src = b"version:3955\nenableVsync:true\nentityShadows:true\nparticles:0\nmaxFps:120\nkey_key.attack:key.mouse.left\nfullscreen:true\n";
-        let (out, found) = edit(Format::Colon, src, MC_JAVA).unwrap();
+        let (out, found) = edit(Format::Colon, src, &best_edits(MC_JAVA)).unwrap();
         assert_eq!(found, 3);
         assert_eq!(changed_lines(src, &out), ["enableVsync:false\n", "entityShadows:false\n", "particles:1\n"]);
-        assert_eq!(edit(Format::Colon, b"gfx_vsync:1\r\ngfx_field_of_view:70\r\n", MC_BEDROCK).unwrap().0, b"gfx_vsync:0\r\ngfx_field_of_view:70\r\n");
+        assert_eq!(edit(Format::Colon, b"gfx_vsync:1\r\ngfx_field_of_view:70\r\n", &best_edits(MC_BEDROCK)).unwrap().0, b"gfx_vsync:0\r\ngfx_field_of_view:70\r\n");
     }
 
     #[test]
     fn gta_xml_changes_attribute_values_only() {
         let src = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\r\n\r\n<Settings>\r\n  <graphics>\r\n    <ShadowQuality value=\"3\" />\r\n    <TextureQuality value=\"2\" />\r\n    <ParticleQuality value=\"2\" />\r\n    <GrassQuality value=\"3\" />\r\n    <PostFX value=\"3\" />\r\n    <DoF value=\"true\" />\r\n    <MotionBlurStrength value=\"0.500000\" />\r\n  </graphics>\r\n  <video>\r\n    <ScreenWidth value=\"1920\" />\r\n    <RefreshRate value=\"60\" />\r\n    <Windowed value=\"0\" />\r\n    <VSync value=\"2\" />\r\n  </video>\r\n</Settings>\r\n";
-        let (out, found) = edit(Format::Xml, src.as_bytes(), GTA).unwrap();
+        let (out, found) = edit(Format::Xml, src.as_bytes(), &best_edits(GTA)).unwrap();
         assert_eq!(found, 7);
         let want = src
             .replace("<ShadowQuality value=\"3\"", "<ShadowQuality value=\"1\"")
@@ -541,7 +675,7 @@ mod tests {
             .replace("<VSync value=\"2\"", "<VSync value=\"0\"");
         assert_eq!(String::from_utf8(out).unwrap(), want);
         // Enhanced keeps its numbers
-        assert_eq!(edit(Format::Xml, b"<DoF value=\"1\" />", GTA).unwrap(), (b"<DoF value=\"0\" />".to_vec(), 1));
+        assert_eq!(edit(Format::Xml, b"<DoF value=\"1\" />", &best_edits(GTA)).unwrap(), (b"<DoF value=\"0\" />".to_vec(), 1));
     }
 
     #[test]
@@ -559,8 +693,8 @@ mod tests {
 
     fn tweak(dir: &Path, running: &Arc<Fake>) -> (ConfigTweak, PathBuf) {
         let file = dir.join("GameUserSettings.ini");
-        let profile = Profile { changes: &[], targets: vec![Target { path: file.clone(), format: Format::Ini, edits: ARC }, Target { path: dir.join("absent.ini"), format: Format::Ini, edits: ARC }], procs: &[] };
-        (ConfigTweak { id: "game:g1:config".into(), title: "G: settings profile".into(), profile: Some(profile), procs: running.clone(), stems: vec!["Game".into()], backup_dir: dir.join("gameconfig") }, file)
+        let profile = Profile { targets: vec![Target { path: file.clone(), format: Format::Ini, settings: ARC }, Target { path: dir.join("absent.ini"), format: Format::Ini, settings: ARC }], procs: &[] };
+        (ConfigTweak { id: "game:g1:config".into(), title: "G: in-game settings".into(), profile: Some(profile), procs: running.clone(), stems: vec!["Game".into()], backup_dir: dir.join("gameconfig"), values: None }, file)
     }
 
     #[test]
@@ -652,5 +786,78 @@ mod tests {
         let mut p = fs::metadata(&file).unwrap().permissions();
         p.set_readonly(false);
         fs::set_permissions(&file, p).unwrap(); // so the temp folder can be removed
+    }
+
+    fn e(section: &'static str, key: &'static str, value: &str) -> Edit {
+        Edit { section, key, value: value.into(), add: false }
+    }
+    fn at(settings: &[Setting], key: &str) -> usize {
+        settings.iter().position(|s| s.key == key).unwrap()
+    }
+
+    #[test]
+    fn read_gives_each_formats_values_as_the_file_has_them() {
+        let v = read(Format::Ini, UE.as_bytes(), ARC);
+        let get = |key| v[at(ARC, key)].as_deref();
+        assert_eq!(get("sg.ShadowQuality"), Some("3"), "its own section, not [Other]");
+        assert_eq!(get("sg.FoliageQuality"), None);
+        assert_eq!((get("MotionBlurMode"), get("bUseVSync"), get("FrameRateLimit")), (Some("On"), Some("True"), Some("0.000000")));
+        assert_eq!(read(Format::Ini, b"[SystemSettings]\n UseVsync = TRUE \n", ROCKET_LEAGUE)[at(ROCKET_LEAGUE, "UseVsync")].as_deref(), Some("TRUE"));
+
+        let v = read(Format::Colon, b"version:3955\r\nenableVsync:true\r\nmaxFps:120\r\nkey_key.attack:key.mouse.left\r\n", MC_JAVA);
+        assert_eq!((v[at(MC_JAVA, "enableVsync")].as_deref(), v[at(MC_JAVA, "maxFps")].as_deref(), v[at(MC_JAVA, "particles")].as_deref()), (Some("true"), Some("120"), None));
+
+        let v = read(Format::Xml, b"<Settings>\r\n <DoF value=\"true\" />\r\n <VSync value=\"2\" />\r\n <MotionBlurStrength value=\"0.500000\" />\r\n</Settings>", GTA);
+        assert_eq!((v[at(GTA, "DoF")].as_deref(), v[at(GTA, "VSync")].as_deref(), v[at(GTA, "MotionBlurStrength")].as_deref()), (Some("1"), Some("2"), Some("0.500000")));
+        assert_eq!(v[at(GTA, "GrassQuality")], None);
+        assert!(read(Format::Ini, &[0xFF, 0xFE, b'[', 0], ARC).iter().all(Option::is_none), "UTF-16 is not read");
+    }
+
+    #[test]
+    fn chosen_values_are_written_in_each_format() {
+        let (out, found) = edit(Format::Ini, UE.as_bytes(), &[e("ScalabilityGroups", "sg.ShadowQuality", "2"), e(EMBARK, "FrameRateLimit", "144.000000"), e(EMBARK, "bUseVSync", "True")]).unwrap();
+        assert_eq!(found, 3);
+        assert_eq!(changed_lines(UE.as_bytes(), &out), ["sg.ShadowQuality=2\r\n", "FrameRateLimit=144.000000\r\n"], "a value the file already has changes nothing");
+        assert_eq!(read(Format::Ini, &out, ARC)[at(ARC, "FrameRateLimit")].as_deref(), Some("144.000000"));
+
+        let src = b"enableVsync:false\nmaxFps:120\nfov:0.5\n";
+        assert_eq!(edit(Format::Colon, src, &[e("", "maxFps", "60"), e("", "enableVsync", "true")]).unwrap().0, b"enableVsync:true\nmaxFps:60\nfov:0.5\n");
+
+        // a switch written as a word stays a word, also when it is turned on
+        let (out, _) = edit(Format::Xml, b"<DoF value=\"false\" /><ShadowQuality value=\"1\" /><Windowed value=\"0\" />", &[e("", "DoF", "1"), e("", "ShadowQuality", "3")]).unwrap();
+        assert_eq!(out, b"<DoF value=\"true\" /><ShadowQuality value=\"3\" /><Windowed value=\"0\" />");
+    }
+
+    #[test]
+    fn saving_again_keeps_the_first_backup_and_revert_restores_the_untouched_file() {
+        let d = tempfile::tempdir().unwrap();
+        let running = Arc::new(Fake(Mutex::new(vec![])));
+        let (t, file) = tweak(d.path(), &running);
+        fs::write(&file, UE).unwrap();
+        let engine = crate::engine::Engine::new(crate::store::Store::load(d.path()));
+        let shown: Vec<&str> = t.settings().iter().map(|i| i.setting.key).collect();
+        assert_eq!(shown.len(), ARC.len(), "the missing sg.FoliageQuality is listed too: it may be added");
+
+        let t = t.with_values(vec![(0, at(ARC, "sg.ShadowQuality"), "1".into()), (0, at(ARC, "sg.FoliageQuality"), "2".into()), (1, 0, "0".into()), (0, 99, "0".into()), (0, 0, "1\r\nX=1".into())]);
+        engine.apply(&t).unwrap();
+        let first = fs::read(&file).unwrap();
+        assert_eq!(changed_lines(UE.as_bytes(), &first), ["sg.ShadowQuality=1\r\n", "sg.FoliageQuality=2\r\n"], "only the chosen values; bad values are dropped");
+        let copy = PathBuf::from(engine.with_store(|s| s.get_backup(&t.id).cloned()).unwrap().data["backup0"].clone());
+        assert_eq!(fs::read(&copy).unwrap(), UE.as_bytes());
+
+        // the second save starts from the file MyTune already changed
+        let t = t.with_values(vec![(0, at(ARC, "FrameRateLimit"), "144.000000".into()), (0, at(ARC, "bUseVSync"), "False".into())]);
+        engine.apply(&t).unwrap();
+        let b = engine.with_store(|s| s.get_backup(&t.id).cloned()).unwrap();
+        assert_eq!((PathBuf::from(&b.data["backup0"]), b.data.contains_key("backup1")), (copy.clone(), false), "one copy, the first");
+        assert_eq!(fs::read(&copy).unwrap(), UE.as_bytes(), "still the file from before MyTune");
+        assert_eq!(changed_lines(&first, &fs::read(&file).unwrap()), ["bUseVSync=False\r\n", "FrameRateLimit=144.000000\r\n"]);
+        assert!(!changed_since_apply(&b));
+        let now = t.settings();
+        assert_eq!((now[at(ARC, "sg.ShadowQuality")].value.as_deref(), now[at(ARC, "FrameRateLimit")].value.as_deref()), (Some("1"), Some("144.000000")));
+
+        engine.revert(&ConfigTweak::for_revert(running.clone(), &t.id, &t.title)).unwrap();
+        assert_eq!(fs::read(&file).unwrap(), UE.as_bytes(), "byte for byte");
+        assert!(!copy.exists() && engine.with_store(|s| s.get_backup(&t.id).is_none()));
     }
 }

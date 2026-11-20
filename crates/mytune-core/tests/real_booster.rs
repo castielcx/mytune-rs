@@ -139,7 +139,7 @@ fn real_end_to_end_service_with_dummy_game() {
     std::fs::create_dir_all(&state_dir).unwrap();
     let games = serde_json::json!({
         "Settings": {"GameTimer": true, "QuietDuringGames": true, "AutoPowerPlan": true, "ThrottleBackground": true},
-        "Games": [{"Id": "dummy1", "Name": "Dummy", "ExePath": game_exe.to_string_lossy(), "PCoresOnly": true, "PlaySeconds": 5}]
+        "Games": [{"Id": "dummy1", "Name": "Dummy", "ExePath": game_exe.to_string_lossy(), "PlaySeconds": 5}]
     });
     std::fs::write(state_dir.join("state.json"), games.to_string()).unwrap();
     let store = Store::load(&state_dir);
@@ -154,8 +154,7 @@ fn real_end_to_end_service_with_dummy_game() {
     let mut booster = Booster::with_throttle(system_cmd(), Arc::new(NtTimer), throttle);
     booster.toast_key = scratch.clone();
     booster.plan_guid = temp_plan.clone();
-    let topo = CpuTopology::detect();
-    let mut service = GameService::new(store, GameWatcher::new(procs.clone(), topo), booster);
+    let mut service = GameService::new(store, GameWatcher::new(procs.clone()), booster);
     assert!(service.start().is_empty());
 
     // nothing running yet

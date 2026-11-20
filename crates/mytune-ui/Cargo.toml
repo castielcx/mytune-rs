@@ -10,9 +10,9 @@ path = "src/main.rs"
 
 [dependencies]
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "clipboard", "links", "default_fonts"] }
-mytune-core = { version = "0.1.0", path = "../mytune-core" }
-mytune-chat = { version = "0.1.0", path = "../mytune-chat" }
-mytune-sensors = { version = "0.1.0", path = "../mytune-sensors" }
+mytune-core = { path = "../mytune-core" }
+mytune-chat = { path = "../mytune-chat" }
+mytune-sensors = { path = "../mytune-sensors" }
 rfd = "0.15"
 ureq = "2" # fetch SoundCloud artwork thumbnails
 serde_json = "1" # SoundCloud write bodies and IPC parsing

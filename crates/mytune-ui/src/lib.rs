@@ -23,6 +23,7 @@ pub mod soundcloud_login;
 pub mod soundcloud_web;
 pub mod sharp;
 pub mod soundpage;
+pub mod speedgauge;
 pub mod storagecard;
 #[cfg(feature = "taskbar-look")]
 pub mod taskbarcard;

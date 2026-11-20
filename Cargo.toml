@@ -4,7 +4,7 @@ members = ["crates/mytune-core", "crates/mytune-ui", "crates/mytune-sensors", "c
 exclude = ["vendor-src"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 # Yapfast's own patches do not apply to a dependent workspace; copied from vendor-src/yapfast/Cargo.toml.

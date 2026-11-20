@@ -373,6 +373,9 @@ pub fn reset(store: &mut Store, dev: &str) -> Result<Option<i32>> {
 struct Wanted {
     profile: DisplayProfile,
     level: Option<i32>,
+    /// Program start: right after boot the driver may refuse the curve for a while, so a refusal is
+    /// retried every 5 s and not shown as a notice.
+    quiet: bool,
 }
 
 static QUEUE: Mutex<BTreeMap<String, Wanted>> = Mutex::new(BTreeMap::new());
@@ -387,12 +390,12 @@ pub fn take_problem() -> Option<String> {
 /// Asks the worker to give `dev` this look. Returns at once; a newer call for the same display replaces
 /// one the worker has not started yet, so a slider drag never queues up.
 pub fn want(dev: &str, profile: &DisplayProfile) {
-    queue(dev, Wanted { profile: profile.clone(), level: None });
+    queue(dev, Wanted { profile: profile.clone(), level: None, quiet: false });
 }
 
 /// Neutral curve, and the driver vibrance `level` when there is one (from `reset`).
 pub fn want_reset(dev: &str, level: Option<i32>) {
-    queue(dev, Wanted { profile: DisplayProfile::default(), level });
+    queue(dev, Wanted { profile: DisplayProfile::default(), level, quiet: false });
 }
 
 /// At program start: applies every saved profile of an attached display that changes something.
@@ -407,7 +410,7 @@ pub fn apply_saved(store: &Store) {
         for m in monitors() {
             if let Some(p) = all.iter().find(|(d, _)| d.eq_ignore_ascii_case(&m.device)).map(|(_, p)| p) {
                 if !p.is_neutral() {
-                    want(&m.device, p);
+                    queue(&m.device, Wanted { profile: p.clone(), level: None, quiet: true });
                 }
             }
         }
@@ -460,6 +463,7 @@ fn worker() {
         }
         for (dev, w) in jobs {
             let mut r = apply_ramp(&dev, &w.profile);
+            let ramp_ok = r.is_ok();
             let vib = match (w.level, number(&dev)) {
                 (Some(level), Some(n)) => vibrance::set(n, level),
                 _ => apply_vibrance(&dev, &w.profile),
@@ -469,7 +473,9 @@ fn worker() {
             }
             if let Err(e) = r {
                 log::error(&format!("display colours {dev}"), Some(&e));
-                *PROBLEM.lock().unwrap_or_else(|p| p.into_inner()) = Some(e.to_string());
+                if !w.quiet {
+                    *PROBLEM.lock().unwrap_or_else(|p| p.into_inner()) = Some(e.to_string());
+                }
             }
             let mut w = w;
             if let Err(e) = apply_saturation(&dev, &w.profile) {
@@ -480,7 +486,8 @@ fn worker() {
             if w.profile.ramp_is_default() && w.profile.saturation <= 0.0 {
                 kept.remove(&dev);
             } else {
-                let seen = current_ramp(&dev);
+                // after a refusal `None` makes the 5 s check try again
+                let seen = if ramp_ok { current_ramp(&dev) } else { None };
                 kept.insert(dev, (w.profile, seen));
             }
         }

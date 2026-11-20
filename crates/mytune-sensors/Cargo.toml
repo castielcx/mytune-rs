@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-mytune-core = { version = "0.1.0", path = "../mytune-core" }
+mytune-core = { path = "../mytune-core" }
 
 [dependencies.windows]
 version = "0.61"

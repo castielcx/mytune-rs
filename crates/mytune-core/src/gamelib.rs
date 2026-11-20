@@ -4,7 +4,7 @@
 //! (uninstall keys), GOG, EA, Rockstar (their registry keys), Riot (`ProgramData\Riot Games\Metadata`) and the
 //! Xbox app (`<drive>:\XboxGames\*\Content\MicrosoftGame.config`). Registry and files only, no programs run.
 //! `scan` walks install folders: call it on a thread. `merge` adds what is new to state.json's `Games` list
-//! (same schema as the C# app: Id, Name, ExePath, PCoresOnly, ...) and never touches an existing Id.
+//! (same schema as the C# app: Id, Name, ExePath, ...; an old `PCoresOnly` value is left alone and unused) and never touches an existing Id.
 
 use crate::reg::{self, Hive, RegValue};
 use crate::store::Store;
@@ -93,7 +93,7 @@ pub fn merge(games: &mut Vec<Value>, found: &[Found]) -> usize {
             }
             None => {
                 games.push(json!({
-                    "Id": new_id(), "Name": f.name, "ExePath": exe_s, "PCoresOnly": false, "InstallDir": dir_s,
+                    "Id": new_id(), "Name": f.name, "ExePath": exe_s, "InstallDir": dir_s,
                     "Launcher": f.launcher, "LaunchUri": f.uri, "Favorite": false, "PlaySeconds": 0,
                 }));
                 added += 1;
@@ -392,7 +392,6 @@ mod tests {
         assert_eq!(names, ["Grand Theft Auto V Legacy", "Minecraft Launcher"]);
         assert_eq!(games[0]["Id"].as_str().unwrap().len(), 32);
         assert_ne!(games[0]["Id"], games[1]["Id"]);
-        assert_eq!(games[0]["PCoresOnly"], false);
     }
 
     #[test]

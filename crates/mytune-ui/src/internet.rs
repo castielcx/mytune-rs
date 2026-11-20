@@ -45,6 +45,10 @@ pub struct InternetPage {
     speed_cancel: Arc<AtomicBool>,
     speed_live: Option<(Phase, f64)>,
     speed: Option<Result<SpeedResult, String>>,
+    /// Last download reading of the running test, kept once the upload starts.
+    speed_down: Option<f64>,
+    /// `ctx` time the running test started at (the gauge's needle sweeps once from it).
+    speed_started: Option<f64>,
 
     repair_rx: Rx<RepairMsg>,
     repair_log: String,
@@ -95,6 +99,8 @@ impl InternetPage {
             speed_cancel: Arc::new(AtomicBool::new(false)),
             speed_live: None,
             speed: None,
+            speed_down: None,
+            speed_started: None,
             repair_rx: None,
             repair_log: String::new(),
             test_rx: None,
@@ -150,6 +156,8 @@ impl InternetPage {
         self.speed_cancel = cancel.clone();
         self.speed = None;
         self.speed_live = Some((Phase::Ping, 0.0));
+        self.speed_down = None;
+        self.speed_started = Some(ctx.input(|i| i.time));
         let ctx = ctx.clone();
         std::thread::spawn(move || {
             let (t2, c2) = (tx.clone(), ctx.clone());
@@ -232,7 +240,12 @@ impl InternetPage {
         }
         for m in msgs {
             match m {
-                SpeedMsg::Live(ph, v) => self.speed_live = Some((ph, v)),
+                SpeedMsg::Live(ph, v) => {
+                    if let (Phase::Upload, Some((Phase::Download, d))) = (ph, self.speed_live) {
+                        self.speed_down = Some(d);
+                    }
+                    self.speed_live = Some((ph, v));
+                }
                 SpeedMsg::Done(r) => {
                     self.speed = Some(r);
                     self.speed_live = None;
@@ -365,56 +378,78 @@ impl InternetPage {
         }
     }
 
+    /// Shot tests: the page as it looks in the middle of a test.
+    #[doc(hidden)]
+    pub fn fake_speed(&mut self, phase: Phase, mbps: f64) {
+        self.speed_rx = Some(mpsc::channel().1);
+        self.speed_live = Some((phase, mbps));
+    }
+
     fn speed_ui(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+        use crate::speedgauge::{self as sg, Gauge};
         th::section(ui, "Speed test");
         let running = self.speed_rx.is_some();
+        let (mut start, mut stop) = (false, false);
         th::card(ui, (10, 16, 16, 16), |ui| {
-            ui.horizontal(|ui| {
-                ui.vertical(|ui| {
-                    ui.label(sb("Download, upload and ping", 14.0));
-                    let sub = match (&self.speed_live, &self.speed) {
-                        (Some((Phase::Ping, _)), _) => "Measuring ping…".to_string(),
-                        (Some((ph, v)), _) => format!("{}: {v:.0} Mbit/s", if *ph == Phase::Download { "Download" } else { "Upload" }),
-                        (None, Some(Err(e))) => e.clone(),
-                        (None, Some(Ok(_))) => "Done.".into(),
-                        _ => "Uses Cloudflare's public speed servers. About 20 seconds and some data.".into(),
-                    };
-                    let col = if matches!(self.speed, Some(Err(_))) { th::DANGER } else { text2() };
-                    ui.label(rt(sub, 12.0).color(col));
-                });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if running {
-                        if th::button(ui, "Stop", false, th::BTN).clicked() {
-                            self.speed_cancel.store(true, Relaxed);
-                        }
-                    } else if th::button(ui, "Start", true, th::BTN).clicked() {
-                        self.start_speed(ctx);
-                    }
-                });
-            });
-            if let Some(Ok(r)) = &self.speed {
+            ui.label(sb("Download, upload and ping", 14.0));
+            let result = self.speed.as_ref().and_then(|r| r.as_ref().ok());
+            let (value, color, phase) = match (self.speed_live, result) {
+                (Some((Phase::Ping, _)), _) => (0.0, text3(), "Ping"),
+                (Some((Phase::Download, v)), _) => (v, sg::DOWN, "Download"),
+                (Some((Phase::Upload, v)), _) => (v, sg::UP, "Upload"),
+                (None, Some(r)) => (r.down_mbps, sg::DOWN, "Download"),
+                _ => (0.0, text3(), ""),
+            };
+            start = sg::show(ui, &Gauge { open: running || result.is_some(), value, color, phase, started: self.speed_started.filter(|_| running) });
+            let wait = || "…".to_string();
+            let mbit = |v: f64| format!("{v:.0} Mbit/s");
+            let mut row = vec![];
+            if let Some(r) = result {
+                row.extend([
+                    ("Download", mbit(r.down_mbps), sg::DOWN),
+                    ("Upload", mbit(r.up_mbps), sg::UP),
+                    ("Ping", format!("{:.0} ms", r.ping_ms), text3()),
+                    ("Jitter", format!("{:.1} ms", r.jitter_ms), text3()),
+                    ("Ping under load", format!("{:.0} ms", r.loaded_ms), text3()),
+                ]);
+            } else if running {
+                // The ping comes with the result: the test reports no ping reading on the way.
+                row.extend([("Ping", wait(), text3()), ("Download", self.speed_down.map(mbit).unwrap_or_else(wait), sg::DOWN), ("Upload", wait(), sg::UP)]);
+            } else if let Some(Err(e)) = &self.speed {
+                ui.vertical_centered(|ui| ui.label(rt(e.as_str(), 12.0).color(th::DANGER)));
+            }
+            if !row.is_empty() {
                 ui.add_space(10.0);
                 ui.horizontal_wrapped(|ui| {
-                    for (label, val) in [
-                        ("Download", format!("{:.0} Mbit/s", r.down_mbps)),
-                        ("Upload", format!("{:.0} Mbit/s", r.up_mbps)),
-                        ("Ping", format!("{:.0} ms", r.ping_ms)),
-                        ("Jitter", format!("{:.1} ms", r.jitter_ms)),
-                        ("Ping under load", format!("{:.0} ms", r.loaded_ms)),
-                    ] {
+                    for (label, val, col) in row {
                         ui.vertical(|ui| {
                             ui.set_min_width(110.0);
-                            ui.label(rt(label, 11.0).color(text3()));
+                            ui.label(rt(label, 11.0).color(col));
                             ui.label(bd(val, 18.0));
                         });
                     }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if running {
+                            stop = th::button(ui, "Stop", false, th::BTN).clicked();
+                        } else {
+                            start |= th::button(ui, "Test again", false, th::BTN).clicked();
+                        }
+                    });
                 });
+            }
+            if let Some(r) = result {
                 if r.loaded_ms > r.ping_ms + 50.0 {
                     ui.add_space(6.0);
                     ui.label(rt("Ping rises a lot while the line is busy. A router with smart queue management (SQM) helps.", 12.0).color(th::WARNING));
                 }
             }
         });
+        if stop {
+            self.speed_cancel.store(true, Relaxed);
+        }
+        if start && !running {
+            self.start_speed(ctx);
+        }
     }
 
     fn repair_ui(&mut self, ui: &mut Ui, ctx: &egui::Context) {

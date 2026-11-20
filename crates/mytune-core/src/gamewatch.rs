@@ -1,12 +1,9 @@
 //! Game watcher + service loop (port of C# `GameService.Tick`, `CpuTopology`, and the start/stop wiring).
 //!
 //! Every tick (first after 2 s, then every 3 s) it takes ONE process list, matches the Game Hub games in
-//! `state.json` (`Games[].ExePath`, matched by exe name without extension, case-insensitive), applies the
-//! P-core affinity to games with `PCoresOnly`, adds play time, and when the SET of running games changes saves
-//! `state.json` and runs the booster.
-//!
-//! Affinity is tried once per pid (the pid is marked handled first), so anti-cheat games that refuse
-//! ("Access is denied") are logged once and not retried until that process exits.
+//! `state.json` (`Games[].ExePath`, matched by exe name without extension, case-insensitive), adds play time,
+//! and when the SET of running games changes saves `state.json` and runs the booster. A game's `PCoresOnly`
+//! value from older versions is ignored (no CPU affinity is set any more).
 //!
 //! Only one watcher/booster may run: the C# app would write `state.json` too. `run()` never starts it
 //! if you also run the C# MyTune.
@@ -17,7 +14,7 @@ use crate::log;
 use crate::procs::Procs;
 use crate::store::Store;
 use serde_json::Value;
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -116,30 +113,19 @@ impl CpuTopology {
         let n = std::thread::available_parallelism().map(|n| n.get() as u32).unwrap_or(1);
         CpuTopology::parse(&read(RelationProcessorCore), &read(RelationCache), n)
     }
-
-    /// Affinity mask for a game: the performance cores, or everything.
-    pub fn mask_for(&self, p_cores_only: bool) -> u64 {
-        if p_cores_only && self.performance_mask != 0 {
-            self.performance_mask
-        } else {
-            self.all_mask
-        }
-    }
 }
 
 // ---------------------------------------------------------------- watcher
 
 pub struct GameWatcher {
     procs: Arc<dyn Procs>,
-    topo: CpuTopology,
-    handled: HashSet<u32>,
     running: BTreeSet<String>,
     last_tick: Option<Instant>,
 }
 
 impl GameWatcher {
-    pub fn new(procs: Arc<dyn Procs>, topo: CpuTopology) -> GameWatcher {
-        GameWatcher { procs, topo, handled: HashSet::new(), running: BTreeSet::new(), last_tick: None }
+    pub fn new(procs: Arc<dyn Procs>) -> GameWatcher {
+        GameWatcher { procs, running: BTreeSet::new(), last_tick: None }
     }
 
     /// Ids of games that have a live process (as of the last tick).
@@ -147,42 +133,23 @@ impl GameWatcher {
         &self.running
     }
 
-    /// Forget which pids already got an affinity (call when a game's `PCoresOnly` changes).
-    pub fn reset_handled(&mut self) {
-        self.handled.clear();
-    }
-
     /// One watcher pass. Returns true when the set of running games changed (state already saved then).
     pub fn tick(&mut self, store: &mut Store) -> Result<bool> {
         let list = self.procs.list()?;
         let mut games: Vec<Value> = store.top("Games").and_then(Value::as_array).cloned().unwrap_or_default();
         let mut running = BTreeSet::new();
-        let mut alive = HashSet::new();
         let mut running_idx = Vec::new();
 
         for (i, g) in games.iter().enumerate() {
             let Some(exe_path) = g.get("ExePath").and_then(Value::as_str).filter(|p| !p.is_empty()) else { continue };
             let Some(stem) = Path::new(exe_path).file_stem().and_then(|s| s.to_str()) else { continue };
-            let pids: Vec<u32> = list.iter().filter(|p| p.name.eq_ignore_ascii_case(stem)).map(|p| p.pid).collect();
-            if pids.is_empty() {
+            if !list.iter().any(|p| p.name.eq_ignore_ascii_case(stem)) {
                 continue;
             }
             let Some(id) = g.get("Id").and_then(Value::as_str) else { continue };
             running.insert(id.to_string());
             running_idx.push(i);
-            let p_cores = g.get("PCoresOnly").and_then(Value::as_bool) == Some(true);
-            for pid in pids {
-                alive.insert(pid);
-                if p_cores && self.handled.insert(pid) {
-                    let mask = self.topo.mask_for(true);
-                    match self.procs.set_affinity(pid, mask) {
-                        Ok(()) => log::info(&format!("affinity {stem} pid {pid} -> {mask:#x}")),
-                        Err(e) => log::error(&format!("affinity {stem}"), Some(&e)), // anti-cheat: logged once per pid
-                    }
-                }
-            }
         }
-        self.handled.retain(|p| alive.contains(p));
 
         let now = Instant::now();
         let seconds = self.last_tick.map(|t| now.duration_since(t).as_secs_f64().min(10.0)).unwrap_or(0.0);
@@ -309,7 +276,6 @@ impl GameService {
 mod tests {
     use super::*;
     use crate::procs::fake::FakeProcs;
-    use crate::procs::ProcInfo;
 
     fn core_entry(eff: u8, mask: u64) -> Vec<u8> {
         let mut e = vec![0u8; 48];
@@ -342,8 +308,6 @@ mod tests {
         assert_eq!((t.all_mask, t.performance_mask), (0b11_1111, 0b1111));
         assert!(t.is_hybrid);
         assert_eq!((t.cores, t.p_cores), (4, 2));
-        assert_eq!(t.mask_for(true), 0b1111);
-        assert_eq!(t.mask_for(false), 0b11_1111);
     }
 
     #[test]
@@ -387,21 +351,15 @@ mod tests {
         (d, s)
     }
 
-    fn topo() -> CpuTopology {
-        CpuTopology { all_mask: 0xFF, performance_mask: 0x0F, is_hybrid: true, cores: 8, p_cores: 4, vcache_mask: 0 }
-    }
-
     #[test]
-    fn watcher_detects_games_sets_affinity_once_and_tracks_changes() {
+    fn watcher_detects_games_and_tracks_changes() {
         let (d, mut st) = store();
         let procs = FakeProcs::new(&[(10, "one"), (11, "ONE"), (20, "two"), (30, "notepad")]);
-        let mut w = GameWatcher::new(procs.clone(), topo());
+        let mut w = GameWatcher::new(procs.clone());
         assert!(w.tick(&mut st).unwrap(), "first sighting is a change");
         assert_eq!(w.running().iter().cloned().collect::<Vec<_>>(), ["g1", "g2"]);
-        let calls = procs.calls.lock().unwrap().clone();
-        assert_eq!(calls, ["affinity 10 0xf", "affinity 11 0xf"], "g1 has PCoresOnly, g2 not");
         assert!(!w.tick(&mut st).unwrap(), "same set: no change");
-        assert_eq!(procs.calls.lock().unwrap().len(), 2, "affinity not retried");
+        assert!(procs.calls.lock().unwrap().is_empty(), "an old PCoresOnly value changes no process");
         // saved on change, with the C# fields kept
         let disk = Store::load(d.path());
         let g1 = &disk.top("Games").unwrap()[0];
@@ -417,7 +375,7 @@ mod tests {
     fn watcher_play_time_adds_up_and_never_loses_other_games() {
         let (_d, mut st) = store();
         let procs = FakeProcs::new(&[(10, "One")]);
-        let mut w = GameWatcher::new(procs, topo());
+        let mut w = GameWatcher::new(procs);
         w.tick(&mut st).unwrap(); // first tick adds 0 s
         assert_eq!(st.top("Games").unwrap()[0]["PlaySeconds"], 100);
         std::thread::sleep(Duration::from_millis(1200));
@@ -425,35 +383,5 @@ mod tests {
         assert_eq!(st.top("Games").unwrap()[0]["PlaySeconds"], 101);
         assert!(st.top("Games").unwrap()[2]["LaunchUri"].is_string(), "URI-only game untouched");
         assert_eq!(st.top("Games").unwrap().as_array().unwrap().len(), 3);
-    }
-
-    #[test]
-    fn affinity_failure_is_tried_once_per_pid() {
-        struct Denied(Arc<FakeProcs>);
-        impl Procs for Denied {
-            fn list(&self) -> Result<Vec<ProcInfo>> {
-                self.0.list()
-            }
-            fn throttle(&self, p: u32) -> Result<Option<crate::procs::Held>> {
-                self.0.throttle(p)
-            }
-            fn restore(&self, p: u32, h: &crate::procs::Held) -> Result<()> {
-                self.0.restore(p, h)
-            }
-            fn set_affinity(&self, pid: u32, mask: u64) -> Result<()> {
-                self.0.calls.lock().unwrap().push(format!("affinity {pid} {mask:#x}"));
-                Err(Error::Os("Access is denied".into()))
-            }
-        }
-        let inner = FakeProcs::new(&[(10, "One")]);
-        let (_d, mut st) = store();
-        let mut w = GameWatcher::new(Arc::new(Denied(inner.clone())), topo());
-        w.tick(&mut st).unwrap();
-        w.tick(&mut st).unwrap();
-        w.tick(&mut st).unwrap();
-        assert_eq!(inner.calls.lock().unwrap().len(), 1, "anti-cheat refusal is not retried every tick");
-        w.reset_handled();
-        w.tick(&mut st).unwrap();
-        assert_eq!(inner.calls.lock().unwrap().len(), 2);
     }
 }

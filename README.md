@@ -79,8 +79,8 @@ Rustup stable (`x86_64-pc-windows-msvc`) + Visual Studio Build Tools (C++ worklo
 
 | `booster.rs` | game booster: 0.5 ms timer, quiet toasts, performance power plan, background throttle while a game runs; state saved before each change so a crash is undone on the next start |
 | `throttle.rs` | background throttle (browsers, launchers, updaters; never Steam / Discord / Riot): below-normal priority + efficiency mode, restored afterwards |
-| `procs.rs` | process access behind a trait (real: Toolhelp, `SetPriorityClass`, EcoQoS, affinity) |
-| `gamewatch.rs` | `CpuTopology` (P-cores / V-Cache), `GameWatcher` (running games from `state.json`, P-core affinity, play time), `GameService` loop |
+| `procs.rs` | process access behind a trait (real: Toolhelp, `SetPriorityClass`, EcoQoS) |
+| `gamewatch.rs` | `CpuTopology` (P-cores / V-Cache), `GameWatcher` (running games from `state.json`, play time), `GameService` loop |
 
 Everything in the C# catalog and the per-game builders is now ported, plus the game booster. Run it with
 `cargo run --release --example booster_service` (refuses to start while the C# MyTune runs; Ctrl+C puts everything back).

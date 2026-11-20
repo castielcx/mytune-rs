@@ -229,6 +229,12 @@ impl App {
         self.page = page;
     }
 
+    /// Shot tests: the Internet page in the middle of a speed test.
+    #[doc(hidden)]
+    pub fn fake_speed(&mut self, download_mbps: f64) {
+        self.internet.fake_speed(mytune_core::speedtest::Phase::Download, download_mbps);
+    }
+
     fn start_check(&mut self, ctx: &egui::Context) {
         let (tx, rx) = mpsc::channel();
         let ctx = ctx.clone();

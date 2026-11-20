@@ -6,7 +6,7 @@ use std::ffi::c_void;
 use windows::Win32::Foundation::{CloseHandle, FILETIME, HANDLE};
 use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
 use windows::Win32::System::Threading::{
-    GetPriorityClass, GetProcessTimes, OpenProcess, ProcessPowerThrottling, SetPriorityClass, SetProcessAffinityMask, SetProcessInformation,
+    GetPriorityClass, GetProcessTimes, OpenProcess, ProcessPowerThrottling, SetPriorityClass, SetProcessInformation,
     PROCESS_CREATION_FLAGS, PROCESS_POWER_THROTTLING_STATE, PROCESS_SET_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_ACCESS_RIGHTS,
 };
 
@@ -38,7 +38,6 @@ pub trait Procs: Send + Sync {
     fn throttle(&self, pid: u32) -> Result<Option<Held>>;
     /// Undoes `throttle`. A pid that now belongs to another program (creation time differs) is left alone.
     fn restore(&self, pid: u32, held: &Held) -> Result<()>;
-    fn set_affinity(&self, pid: u32, mask: u64) -> Result<()>;
 }
 
 struct Handle(HANDLE);
@@ -113,11 +112,6 @@ impl Procs for WinProcs {
         }
         Ok(())
     }
-
-    fn set_affinity(&self, pid: u32, mask: u64) -> Result<()> {
-        let h = open(pid, PROCESS_SET_INFORMATION).ok_or_else(|| Error::Os(format!("open process {pid} for affinity: access denied or gone")))?;
-        unsafe { SetProcessAffinityMask(h.0, mask as usize).map_err(|e| Error::Os(format!("set affinity of {pid}: {e}"))) }
-    }
 }
 
 /// Current priority class of a process (tests and diagnostics).
@@ -164,10 +158,6 @@ pub(crate) mod fake {
             } else {
                 Ok(())
             }
-        }
-        fn set_affinity(&self, pid: u32, mask: u64) -> Result<()> {
-            self.calls.lock().unwrap().push(format!("affinity {pid} {mask:#x}"));
-            Ok(())
         }
     }
 }

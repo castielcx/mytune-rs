@@ -1,6 +1,6 @@
 // MyTune taskbar look. Windows' XAML diagnostics (InitializeXamlDiagnosticsEx, called by
 // mytune-core/src/taskbar.rs) loads this DLL into explorer.exe. It finds the taskbar's background
-// rectangle and swaps its brush. MyTune says which look through the shared memory `Local\MyTuneTaskbar2`;
+// rectangle and swaps its brush. MyTune says which look through the shared memory `Local\MyTuneTaskbar3`;
 // when MyTune stops writing its heartbeat, the normal taskbar comes back.
 #include <unknwn.h>
 #include <windows.h>
@@ -11,6 +11,8 @@
 #include <winrt/Windows.UI.h>
 #include <winrt/Windows.UI.Xaml.h>
 #include <winrt/Windows.UI.Xaml.Controls.h>
+#include <winrt/Windows.UI.Xaml.Hosting.h>
+#include <windows.ui.xaml.hosting.desktopwindowxamlsource.h>
 #include <winrt/Windows.UI.Xaml.Media.h>
 #include <winrt/Windows.UI.Xaml.Shapes.h>
 #include <chrono>
@@ -26,6 +28,11 @@ struct Shared {
     volatile LONG look; // 0 normal, 1 colour (alpha 0 = clear)
     volatile LONG argb;
     volatile LONG bars; // taskbar backgrounds found, so MyTune can tell when Windows renamed them
+    volatile LONG max_look; // look and colour of a taskbar on a monitor listed in `max_mons`
+    volatile LONG max_argb;
+    volatile LONG max_count;
+    LONG pad;
+    volatile LONG64 max_mons[8]; // HMONITORs with a maximised window
 };
 static Shared* g_shared = nullptr;
 
@@ -54,6 +61,7 @@ struct Bar {
     Shapes::Shape shape;
     Media::Brush original{nullptr};
     Media::Brush ours{nullptr};
+    HWND island = nullptr; // the taskbar window it sits in, found from `t_sources`
 };
 struct Line {
     InstanceHandle handle;
@@ -74,13 +82,42 @@ struct Plate {
 thread_local std::vector<Plate> t_plates;
 thread_local std::vector<Bar> t_bars;
 thread_local std::vector<Line> t_lines;
+struct Source {
+    InstanceHandle handle;
+    Hosting::DesktopWindowXamlSource source;
+};
+thread_local std::vector<Source> t_sources; // one per taskbar (monitor)
 thread_local DispatcherTimer t_timer{nullptr};
-thread_local Media::Brush t_brush{nullptr};
-thread_local LONG t_look = 0, t_argb = 0, t_beat = 0;
+thread_local Media::Brush t_brush{nullptr}, t_max_brush{nullptr};
+thread_local LONG t_look = 0, t_argb = 0, t_beat = 0, t_max_look = 0, t_max_argb = 0;
 thread_local int t_stale = 1000;
 
 static Media::Brush make_brush(LONG argb) {
     return Media::SolidColorBrush(Windows::UI::Color{(uint8_t)(argb >> 24), (uint8_t)(argb >> 16), (uint8_t)(argb >> 8), (uint8_t)argb});
+}
+
+static HWND island_of(const Bar& b) {
+    auto root = b.shape.XamlRoot();
+    if (!root) return nullptr;
+    for (auto& [h, s] : t_sources) {
+        auto content = s.Content();
+        if (!content || content.XamlRoot() != root) continue;
+        HWND w = nullptr;
+        if (auto native = s.try_as<IDesktopWindowXamlSourceNative>()) native->get_WindowHandle(&w);
+        return w;
+    }
+    return nullptr;
+}
+
+// A maximised window on this bar's monitor. A bar whose window is not known (yet) counts any monitor.
+static bool on_max_monitor(Bar& b, LONG count) {
+    if (count <= 0) return false;
+    if (!b.island || !IsWindow(b.island)) b.island = island_of(b);
+    if (!b.island) return true;
+    auto mon = (LONG64)(INT_PTR)MonitorFromWindow(b.island, MONITOR_DEFAULTTONEAREST);
+    for (LONG i = 0; i < count && i < 8; i++)
+        if (g_shared->max_mons[i] == mon) return true;
+    return false;
 }
 
 static void tick() try {
@@ -95,22 +132,34 @@ static void tick() try {
     }
     bool stale = t_stale >= 30; // 3 s without a heartbeat: MyTune is gone
     if (stale != was_stale) t_timer.Interval(std::chrono::milliseconds(stale ? 1000 : 100));
-    LONG look = stale ? 0 : (LONG)g_shared->look, argb = g_shared->argb;
-    if (look != t_look || argb != t_argb) {
-        t_look = look;
+    LONG base = stale ? 0 : (LONG)g_shared->look, argb = g_shared->argb;
+    LONG max_look = stale ? 0 : (LONG)g_shared->max_look, max_argb = g_shared->max_argb;
+    LONG count = stale ? 0 : (LONG)g_shared->max_count;
+    if (base != t_look || argb != t_argb) {
+        t_look = base;
         t_argb = argb;
-        t_brush = look ? make_brush(argb) : nullptr;
+        t_brush = base ? make_brush(argb) : nullptr;
     }
+    if (max_look != t_max_look || max_argb != t_max_argb) {
+        t_max_look = max_look;
+        t_max_argb = max_argb;
+        t_max_brush = max_look ? make_brush(max_argb) : nullptr;
+    }
+    // Lines and plates follow "some taskbar has a look": they are not matched to a monitor.
+    LONG look = base || (count > 0 && max_look);
     for (auto& b : t_bars) {
+        bool max = on_max_monitor(b, count);
+        LONG look = max ? max_look : base;
+        auto& brush = max ? t_max_brush : t_brush;
         auto now = b.shape.Fill();
         if (!look) {
             if (b.ours && now == b.ours) b.shape.Fill(b.original);
             b.ours = nullptr;
-        } else if (now != t_brush) {
+        } else if (now != brush) {
             // The taskbar sets its own brush on theme changes: that one becomes the one to restore.
             if (!b.ours || now != b.ours) b.original = now;
-            b.shape.Fill(t_brush);
-            b.ours = t_brush;
+            b.shape.Fill(brush);
+            b.ours = brush;
         }
     }
     // Only what this DLL changed is put back: an idle copy (older version, MyTune closed) must not
@@ -183,6 +232,13 @@ struct Tap : implements<Tap, IObjectWithSite, IVisualTreeServiceCallback2, non_a
             if (g_shared && gone) InterlockedAdd(&g_shared->bars, -(LONG)gone);
             std::erase_if(t_lines, [&](auto& l) { return l.handle == e.Handle; });
             std::erase_if(t_plates, [&](auto& p) { return p.handle == e.Handle; });
+            std::erase_if(t_sources, [&](auto& s) { return s.handle == e.Handle; });
+            return S_OK;
+        }
+        if (e.Type && std::wstring_view(e.Type) == winrt::name_of<Hosting::DesktopWindowXamlSource>()) {
+            com_ptr<::IInspectable> raw;
+            if (SUCCEEDED(diag->GetIInspectableFromHandle(e.Handle, raw.put())))
+                if (auto s = raw.try_as<Hosting::DesktopWindowXamlSource>()) t_sources.push_back({e.Handle, s});
             return S_OK;
         }
         std::wstring_view name = e.Name ? e.Name : L"";
@@ -238,7 +294,7 @@ STDAPI DllGetClassObject(REFCLSID clsid, REFIID iid, void** out) try {
     if (clsid != CLSID_Tap) return CLASS_E_CLASSNOTAVAILABLE;
     if (!g_shared) {
         // Made here, not by MyTune: MyTune runs elevated and explorer could not open its objects.
-        HANDLE m = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(Shared), L"Local\\MyTuneTaskbar2");
+        HANDLE m = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(Shared), L"Local\\MyTuneTaskbar3");
         if (m) g_shared = static_cast<Shared*>(MapViewOfFile(m, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(Shared)));
         log(g_shared ? L"loaded" : L"no shared memory");
     }

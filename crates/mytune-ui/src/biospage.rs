@@ -64,7 +64,7 @@ impl BiosPage {
             }
         });
         if let Some(rep) = &rep {
-            ui.add_space(16.0);
+            ui.add_space(th::GAP);
             th::card(ui, (10, 16, 16, 6), |ui| {
                 for r in &rep.rows {
                     ui.horizontal(|ui| {

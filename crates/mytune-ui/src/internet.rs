@@ -415,7 +415,6 @@ impl InternetPage {
                 }
             }
         });
-        ui.add_space(8.0);
     }
 
     fn repair_ui(&mut self, ui: &mut Ui, ctx: &egui::Context) {
@@ -457,7 +456,6 @@ impl InternetPage {
                 ui.label(rt(&self.test_text, 12.0).color(text2()));
             });
         });
-        ui.add_space(8.0);
         if let Some(k) = start {
             self.repair_log.clear();
             self.start_repair(ctx, k);
@@ -491,7 +489,7 @@ impl InternetPage {
                 ui.label(rt(e, 12.0).color(th::DANGER));
             }
         });
-        ui.add_space(8.0);
+        ui.add_space(th::GAP);
         match &self.vpns {
             None => {}
             Some(l) if l.is_empty() => {
@@ -530,7 +528,7 @@ impl InternetPage {
                             });
                         });
                     });
-                    ui.add_space(8.0);
+                    ui.add_space(th::GAP);
                 }
             }
         }

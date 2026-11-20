@@ -458,14 +458,9 @@ impl SettingsPage {
     }
 }
 
-fn heading(ui: &mut Ui, text: &str, top: f32) {
-    if th::at_page_top(ui) {
-        return;
-    }
-    ui.add_space(top);
-    ui.add_visible(false, egui::Label::new(th::dsb(text, 13.0))); // headings hidden, space kept (user's choice)
-    ui.add_space(8.0);
-}
+/// Headings are hidden (user's choice) and add no space: the rows' own `th::GAP` is the gap between groups too,
+/// so every box on every page sits the same distance apart.
+fn heading(_ui: &mut Ui, _text: &str, _top: f32) {}
 
 /// One settings card: title and caption left (leaving `right_margin` px), controls right. `controls`
 /// returns true when the thing it drew was clicked (the first control's click is what `row` reports).
@@ -485,7 +480,7 @@ fn row(ui: &mut Ui, title: &str, desc: &str, right_margin: f32, controls: impl F
             });
         });
     });
-    ui.add_space(4.0);
+    ui.add_space(th::GAP);
     clicked
 }
 

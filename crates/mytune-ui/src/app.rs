@@ -797,7 +797,7 @@ impl App {
     /// Two columns (one under the other in a narrow window): left what to do, right what the PC is doing now,
     /// ending at the same height; this PC's parts across the full width below.
     fn home(&mut self, ui: &mut Ui) {
-        let (gap, full) = (16.0, ui.available_width());
+        let (gap, full) = (th::GAP, ui.available_width());
         if full < 720.0 {
             self.home_main(ui);
             self.home_side(ui, GRAPH_MIN, false);
@@ -1225,7 +1225,7 @@ impl App {
                 });
             });
         });
-        ui.add_space(12.0);
+        ui.add_space(th::GAP);
         th::group(ui, |ui| {
             for id in &self.ids_in_store {
                 let idx = self.tweaks.iter().position(|t| &t.id == id);
@@ -1361,7 +1361,7 @@ fn home_heading(ui: &mut Ui, text: &str, first: bool) {
     // The headline text is no longer drawn (user's choice): only the gap between cards is left.
     let _ = text;
     if !first {
-        ui.add_space(16.0);
+        ui.add_space(th::GAP);
     }
 }
 

@@ -61,7 +61,6 @@ impl TaskbarCard {
                 ui.label(rt(problem, 12.0).color(th::WARNING));
             }
         });
-        ui.add_space(8.0);
         if c != before {
             c.on = c.wanted(); // no switch: all Normal is off
             *self.live.lock().unwrap_or_else(|p| p.into_inner()) = c.clone();

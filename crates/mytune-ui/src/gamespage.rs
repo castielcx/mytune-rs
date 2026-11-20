@@ -211,7 +211,7 @@ impl GamesPage {
                 });
             });
         });
-        ui.add_space(12.0);
+        ui.add_space(th::GAP);
 
         // (row index, what was clicked)
         enum Act {

@@ -783,6 +783,9 @@ pub fn apply_visuals(ctx: &egui::Context) {
 
 // ---------------------------------------------------------------- widgets
 
+/// Space between two neighbouring boxes on every page.
+pub const GAP: f32 = 8.0;
+
 /// `Card` style: glass plate (16 px corners), padding is (left, top, right, bottom) as in XAML.
 pub fn card<R>(ui: &mut Ui, pad: (i8, i8, i8, i8), add: impl FnOnce(&mut Ui) -> R) -> R {
     card_fill(ui, pad, p().card_bg, add)
@@ -865,7 +868,7 @@ pub fn section_gap(ui: &mut Ui, _heading: &str) {
     if at_page_top(ui) {
         return;
     }
-    ui.add_space(28.0);
+    ui.add_space(GAP);
 }
 
 /// The space under every page title, remembered so the page's first `section_gap` does not add to it.

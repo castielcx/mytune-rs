@@ -311,7 +311,7 @@ impl SoundPage {
                     });
                 }
             });
-            ui.add_space(8.0);
+            ui.add_space(th::GAP);
         }
         if !cmds.is_empty() {
             self.error = None;

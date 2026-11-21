@@ -45,7 +45,8 @@ pub fn show(ctx: &Context, top: f32) {
     }
     let alpha = (age / FADE).min((life - age) / FADE).clamp(0.0, 1.0) as f32;
     let full = ctx.content_rect();
-    let rect = Rect::from_min_size(pos2(full.left(), full.top() + top), vec2(full.width(), 36.0));
+    let k = th::shell(); // the same pixels on the chat page
+    let rect = Rect::from_min_size(pos2(full.left(), full.top() + top), vec2(full.width(), 36.0 * k));
     let fill = if n.ok { Color32::from_rgb(0x1F, 0x7A, 0x34) } else { Color32::from_rgb(0xC4, 0x2B, 0x1C) };
     let closed = egui::Area::new(id()).order(Order::Foreground).fixed_pos(rect.min).show(ctx, |ui| {
         let resp = ui.allocate_rect(rect, Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -56,12 +57,12 @@ pub fn show(ctx: &Context, top: f32) {
         let white = if black && n.ok { th::SUCCESS } else if black { th::DANGER } else { Color32::WHITE }.gamma_multiply(alpha);
         // check mark, also on the red "turned off" bar; error badge for failures
         let glyph = if n.ok || n.text.starts_with(SUCCESS) { "\u{E73E}" } else { "\u{E783}" };
-        let font = |s: f32, f: egui::FontFamily| egui::FontId::new(s, f);
+        let font = |s: f32, f: egui::FontFamily| egui::FontId::new(s * k, f);
         let text_w = p.layout_no_wrap(n.text.clone(), font(13.0, th::semibold()), white).size().x;
-        let x = rect.center().x - (text_w + 24.0) / 2.0;
+        let x = rect.center().x - (text_w + 24.0 * k) / 2.0;
         p.text(pos2(x, rect.center().y), Align2::LEFT_CENTER, glyph, font(14.0, th::icons()), white);
-        p.text(pos2(x + 24.0, rect.center().y), Align2::LEFT_CENTER, &n.text, font(13.0, th::semibold()), white);
-        p.text(pos2(rect.right() - 18.0, rect.center().y), Align2::CENTER_CENTER, "\u{E711}", font(11.0, th::icons()), white);
+        p.text(pos2(x + 24.0 * k, rect.center().y), Align2::LEFT_CENTER, &n.text, font(13.0, th::semibold()), white);
+        p.text(pos2(rect.right() - 18.0 * k, rect.center().y), Align2::CENTER_CENTER, "\u{E711}", font(11.0, th::icons()), white);
         resp.clicked()
     });
     if closed.inner {

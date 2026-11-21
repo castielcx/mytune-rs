@@ -1,0 +1,23 @@
+<!-- Fresh throwaway Windows for trying the setup. Double click; needs the Windows Sandbox feature.
+     The setup folder shows on the Sandbox desktop, read-only. Closing the Sandbox deletes everything in it. -->
+<Configuration>
+  <!-- GPU sharing off: with it on, the Sandbox showed a black screen and "connection lost" on this PC. -->
+  <VGpu>Disable</VGpu>
+  <Networking>Enable</Networking>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>C:\Users\domin\Documents\MyTune\mytune-rs\installer\output</HostFolder>
+      <SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\MyTune-Setup</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <!-- Writable: files saved here in the Sandbox land in "MyTune Sandbox Files" on the real desktop. -->
+    <MappedFolder>
+      <HostFolder>C:\Users\domin\Desktop\MyTune Sandbox Files</HostFolder>
+      <SandboxFolder>C:\Users\WDAGUtilityAccount\Desktop\To-Main-PC</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>explorer.exe C:\Users\WDAGUtilityAccount\Desktop\MyTune-Setup</Command>
+  </LogonCommand>
+</Configuration>

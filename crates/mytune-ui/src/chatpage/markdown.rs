@@ -220,7 +220,7 @@ pub fn body(ui: &mut Ui, s: &AppState, m: &ChatMessage, size: f32, tex: &mut Has
             match b {
                 Block::Code(code) => {
                     egui::Frame::new().fill(k_rail()).stroke(egui::Stroke::new(1.0, k_edge())).corner_radius(10.0).inner_margin(egui::Margin::symmetric(10, 8)).show(ui, |ui| {
-                        ui.add(egui::Label::new(rt(&code, size - 1.0).monospace().color(color)).selectable(true));
+                        ui.add(egui::Label::new(egui::RichText::new(&code).size(size - 1.0).monospace().color(color)).selectable(true)); // not `rt`: its chat family would override monospace
                     });
                 }
                 Block::Quote(lines) => {
@@ -344,7 +344,7 @@ fn word(ui: &mut Ui, ctx: &egui::Context, w: &str, st: &St, size: f32, color: Co
     let bare = w.trim_end().trim_end_matches(['.', ',', '!', '?', ')', '>', ';', ':']);
     let url = st.link.clone().or_else(|| (bare.starts_with("http://") || bare.starts_with("https://")).then(|| bare.to_owned()));
     let hidden = st.spoiler && !*open;
-    let mut t = if st.bold { sb(w, size) } else { rt(w, size) };
+    let mut t = if st.bold { sb(w, size) } else if st.code { egui::RichText::new(w).size(size) } else { rt(w, size) }; // code: `rt`'s chat family would override monospace
     t = t.color(if url.is_some() { LINK } else { color });
     if st.italic.is_some() {
         t = t.italics();

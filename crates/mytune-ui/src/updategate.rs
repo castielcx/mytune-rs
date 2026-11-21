@@ -70,7 +70,7 @@ pub fn ui(root: &mut Ui, p: &Pending, can_revert: bool) -> bool {
 pub fn banner(ui: &mut Ui, bar: Rect, p: &Pending) {
     const PAD: (f32, f32, f32, f32) = (10.0, 3.0, 10.0, 4.0);
     const RESTARTS: &str = "Restarts MyTune. A running call ends.";
-    let s = 1.0_f32;
+    let s = th::shell();
     let area = Rect::from_min_max(pos2(bar.left(), bar.top() + 6.0 * s), pos2(bar.right() - 46.0 * s * 3.0 - 8.0 * s, bar.bottom() - 6.0 * s));
     let plate = ui.painter().add(egui::Shape::Noop);
     let text = |t: String| egui::Label::new(rt(t, 13.0).color(text2())).selectable(false);

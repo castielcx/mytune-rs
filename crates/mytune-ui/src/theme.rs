@@ -146,11 +146,27 @@ pub fn display_semibold() -> FontFamily { FontFamily::Name("dsemibold".into()) }
 pub fn display_bold() -> FontFamily { FontFamily::Name("dbold".into()) }
 /// Dark text on the accent fill: egui boosts glyph coverage for light-on-dark text, so a lighter weight keeps it looking Bold.
 pub fn on_light() -> FontFamily { FontFamily::Name("onlight".into()) }
-pub fn icons() -> FontFamily { FontFamily::Name("icons".into()) }
+pub fn icons() -> FontFamily { FontFamily::Name(if chat_fonts() { "chaticons" } else { "icons" }.into()) }
 
 /// Everything is drawn 15% larger than its points (user's choice): more pixels per letter and icon on a 100%
 /// scale screen, where egui's text has no ClearType. Ctrl+plus / Ctrl+minus still change it for the run.
 pub const UI_ZOOM: f32 = 1.15;
+
+thread_local! {
+    static SHELL: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+    static CHAT_FONTS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// What the title bar, sidebar and outer margins multiply their sizes by: `UI_ZOOM` while the main window draws
+/// the chat page at Discord's scale (`App::page_input`), so they keep their pixels on every page. 1 otherwise.
+pub fn shell() -> f32 { SHELL.with(|s| s.get()) }
+pub fn set_shell(k: f32) { SHELL.with(|s| s.set(k)); }
+/// On while the chat page draws at Discord's scale: its icons stay 20 px for 16 points, `rt` text takes the
+/// chat's slightly heavier Inter.
+pub fn set_chat_fonts(on: bool) { CHAT_FONTS.with(|c| c.set(on)); }
+fn chat_fonts() -> bool { CHAT_FONTS.with(|c| c.get()) }
+/// The regular text family: the chat's heavier Inter while the chat page draws at Discord's scale.
+pub fn body() -> FontFamily { if chat_fonts() { FontFamily::Name("chatbody".into()) } else { FontFamily::Proportional } }
 
 /// Inter (variable, SIL Open Font License, `assets/fonts`): the app's typeface, in the exe.
 const INTER: &[u8] = include_bytes!("../assets/fonts/InterVariable.ttf");
@@ -215,14 +231,20 @@ pub fn install_fonts(ctx: &egui::Context) {
         fonts.families.entry(family).or_default().insert(0, key);
     }
     let mut list = base;
+    let mut chat_list = list.clone();
     if let Some(b) = read("SegoeIcons.ttf") {
         // Segoe Fluent Icons are drawn for 16, 20 and 24 pixels: at the app's scale a 16-point icon came out
         // 18.4 pixels, between two of its sizes, and looked soft. Scaled so that 16 points is 20 pixels.
         let tweak = egui::FontTweak { scale: 20.0 / (16.0 * UI_ZOOM), ..Default::default() };
-        add(&mut fonts, "segoe-icons", egui::FontData::from_blob(b, 0).tweak(tweak));
+        add(&mut fonts, "segoe-icons", egui::FontData::from_blob(b.clone(), 0).tweak(tweak));
         list.insert(0, "segoe-icons".into());
+        // the same 20 px on the chat page, which draws at 1 pixel per point
+        let tweak = egui::FontTweak { scale: 20.0 / 16.0, ..Default::default() };
+        add(&mut fonts, "segoe-icons-chat", egui::FontData::from_blob(b, 0).tweak(tweak));
+        chat_list.insert(0, "segoe-icons-chat".into());
     }
     fonts.families.insert(FontFamily::Name("icons".into()), list);
+    fonts.families.insert(FontFamily::Name("chaticons".into()), chat_list);
     // Chat names and messages hold symbols Segoe UI lacks (e.g. U+271E): last-resort fallback, ~1 MB.
     if let Some(b) = read("seguisym.ttf") {
         add(&mut fonts, "segoe-symbols", egui::FontData::from_blob(b, 0));
@@ -241,10 +263,19 @@ pub fn install_fonts(ctx: &egui::Context) {
             }
         }
     }
+    // Discord's text looks a little heavier than egui's at the same weight: the chat page's regular text
+    let tweak = egui::FontTweak { scale: 0.94, coords: VariationCoords::new([(b"wght", 450.0), (b"opsz", 14.0)]), ..Default::default() };
+    add(&mut fonts, "inter-chat", egui::FontData::from_static(INTER).tweak(tweak));
+    let mut chat_body = fonts.families[&FontFamily::Proportional].clone();
+    chat_body[0] = "inter-chat".into();
+    fonts.families.insert(FontFamily::Name("chatbody".into()), chat_body);
     ctx.set_fonts(fonts);
 }
 
-pub fn rt(s: impl Into<String>, size: f32) -> RichText { RichText::new(s).size(size) }
+pub fn rt(s: impl Into<String>, size: f32) -> RichText {
+    let t = RichText::new(s).size(size);
+    if chat_fonts() { t.family(body()) } else { t }
+}
 pub fn md(s: impl Into<String>, size: f32) -> RichText { RichText::new(s).size(size).family(medium()) }
 pub fn sb(s: impl Into<String>, size: f32) -> RichText { RichText::new(s).size(size).family(semibold()) }
 pub fn bd(s: impl Into<String>, size: f32) -> RichText { RichText::new(s).size(size).family(bold()) }
@@ -346,7 +377,9 @@ pub fn backdrop(ctx: &egui::Context, p: &egui::Painter, rect: Rect) {
     if self::p().black {
         return;
     }
-    let (w, h) = (((rect.width() / 16.0).ceil() as usize).max(1), ((rect.height() / 16.0).ceil() as usize).max(1));
+    // sized without the chat page's scale: the same picture on every page, not remade on each page switch
+    let unit = 16.0 * shell();
+    let (w, h) = (((rect.width() / unit).ceil() as usize).max(1), ((rect.height() / unit).ceil() as usize).max(1));
     let key = (w, h, self::p().accent.to_array(), self::p().layer_bg.to_array());
     let id = egui::Id::new("backdrop_tex");
     let cached = ctx.data(|d| d.get_temp::<((usize, usize, [u8; 4], [u8; 4]), egui::TextureHandle)>(id));
@@ -378,7 +411,7 @@ thread_local! {
 /// The light inside a glass plate fades from its top to its bottom. On a tall plate that is one 8-bit step
 /// every 40 px or so, which showed as stripes, so the fade is a picture rounded with noise: white, strongest
 /// in its first row and clear in its last, repeating sideways. Made once per strength; call every frame.
-fn glow_textures(ctx: &egui::Context) {
+pub(crate) fn glow_textures(ctx: &egui::Context) {
     let id = egui::Id::new("glow_tex");
     let tex = ctx.data(|d| d.get_temp::<std::sync::Arc<Vec<(u8, egui::TextureHandle)>>>(id)).unwrap_or_else(|| {
         let opts = egui::TextureOptions { magnification: egui::TextureFilter::Nearest, minification: egui::TextureFilter::Nearest, wrap_mode: egui::TextureWrapMode::Repeat, mipmap_mode: None };
@@ -1135,17 +1168,16 @@ pub fn switch(ui: &mut Ui, on: bool) -> egui::Response {
     let held = anim(&ctx, resp.id.with("held"), resp.is_pointer_button_down_on(), PRESS);
     let paint = ui.painter();
     let rad = rect.height() / 2.0;
-    let off_bg = Color32::from_white_alpha(0x26 + (10.0 * hov) as u8);
-    if !pal.black {
-        paint.rect_filled(rect, rad, off_bg.lerp_to_gamma(pal.accent, k));
-        paint.rect_stroke(rect, rad, Stroke::new(px(), Color32::from_white_alpha(0x20)), StrokeKind::Inside);
-    }
+    // Black: 0x60 is the weakest fill `Bare` keeps, so the off track survives it
+    let off_bg = Color32::from_white_alpha(if pal.black { 0x60 } else { 0x26 } + (10.0 * hov) as u8);
+    paint.rect_filled(rect, rad, off_bg.lerp_to_gamma(pal.accent, k));
+    paint.rect_stroke(rect, rad, Stroke::new(px(), Color32::from_white_alpha(0x20)), StrokeKind::Inside);
     // the knob keeps 2 px from the track's edge; held, it grows 6 px towards the other side
     let stretch = 6.0 * held;
     let left = rect.left() + 2.0 + (rect.width() - 4.0 - KNOB) * t - stretch * k;
     let knob = Rect::from_min_size(pos2(left, rect.top() + 2.0), vec2(KNOB + stretch, KNOB));
-    // Black: with no track, the side and the brightness of the knob are the whole state
-    let fill = if pal.black { Color32::from_gray(0x80).lerp_to_gamma(Color32::WHITE, k) } else { Color32::WHITE.lerp_to_gamma(pal.on_accent, k) };
+    // Black: the on track is near white, so the knob turns black to stay visible on it
+    let fill = Color32::WHITE.lerp_to_gamma(if pal.black { Color32::BLACK } else { pal.on_accent }, k);
     paint.add(egui::Shadow { offset: [0, 1], blur: 4, spread: 0, color: Color32::from_black_alpha(90) }.as_shape(knob, CornerRadius::from(KNOB / 2.0)));
     // held, the knob turns to clear glass: the track under it shows through, magnified and bent at the rim
     if held > 0.01 {

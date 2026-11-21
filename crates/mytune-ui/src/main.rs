@@ -161,6 +161,7 @@ fn main() -> eframe::Result {
             mytune_core::updater::start(std::env::args().any(|a| a == "--update-failed"), move || ctx.request_repaint());
         }
         cc.egui_ctx.set_zoom_factor(UI_ZOOM);
+        app.page_zoom = true; // never in the shot tests: they draw at the scale they ask for
         mytune_ui::theme::install_fonts(&cc.egui_ctx);
         mytune_ui::theme::apply_visuals(&cc.egui_ctx);
         app.keep_in_tray = tray.is_ok();

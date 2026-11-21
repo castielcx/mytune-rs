@@ -26,7 +26,7 @@ fn window(ctx: &egui::Context, key: &str, title: &str, size: egui::Vec2, resizab
     // make egui move the window back while it is dragged
     let start_id = Id::new(("pop_start", key));
     let start: (Option<egui::Pos2>, egui::Vec2) = ctx.data(|d| d.get_temp(start_id)).unwrap_or_else(|| {
-        let ppp = ctx.pixels_per_point();
+        let ppp = ctx.pixels_per_point() * th::shell(); // this window's scale, not the chat page's
         let pos = widths.get(&k("x")).zip(widths.get(&k("y"))).map(|(x, y)| pos2(*x, *y)).filter(|p| on_a_screen(p.x * ppp, p.y * ppp));
         let size = widths.get(&k("w")).zip(widths.get(&k("h"))).filter(|_| resizable).map_or(size, |(w, h)| vec2(*w, *h));
         (pos, size)
@@ -46,6 +46,7 @@ fn window(ctx: &egui::Context, key: &str, title: &str, size: egui::Vec2, resizab
     let mut open = true;
     ctx.show_viewport_immediate(egui::ViewportId::from_hash_of(key), builder, |ui, _| {
         let c = ui.ctx().clone();
+        th::glow_textures(&c); // this window's pixel grid; `App::ui` sets the main window's back after it
         let rect = ui.max_rect();
         open = !c.input(|i| i.viewport().close_requested());
         if ui.interact(rect, Id::new("pop_move"), Sense::drag()).drag_started() {

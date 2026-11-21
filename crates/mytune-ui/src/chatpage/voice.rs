@@ -169,7 +169,7 @@ enum Look {
 }
 
 /// Yapfast's IconButton: a round 52 px button (or `size`), raised fill, a quick hover fade.
-fn round_button(ui: &mut Ui, size: f32, g: &str, slash: bool, look: Look, tip: &str) -> egui::Response {
+fn round_button(ui: &mut Ui, size: f32, g: &str, slash: bool, look: Look) -> egui::Response {
     let (rect, mut resp) = ui.allocate_exact_size(vec2(size, size), Sense::click_and_drag());
     let rect = crate::theme::pulled(rect, crate::theme::pull(ui, &mut resp));
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
@@ -182,7 +182,7 @@ fn round_button(ui: &mut Ui, size: f32, g: &str, slash: bool, look: Look, tip: &
     let icon = if look == Look::Plain { icon.lerp_to_gamma(TEXT, t) } else { icon };
     crate::theme::capsule(ui.painter(), rect, fill, 0x30);
     glyph(ui.painter(), rect.center(), g, size * 0.42, icon, slash);
-    resp.on_hover_text(tip)
+    resp
 }
 
 /// Yapfast's Leave button: a red pill with the hang-up glyph.
@@ -193,7 +193,7 @@ fn leave_button(ui: &mut Ui, w: f32, h: f32, leaving: bool) -> egui::Response {
     let fill = DANGER.lerp_to_gamma(DANGER_HOVER, t).gamma_multiply(if leaving { 0.5 } else { 1.0 });
     crate::theme::capsule(ui.painter(), rect, fill, 0x50);
     glyph(ui.painter(), rect.center(), I_HANGUP, h * 0.42, if th::p().black { DANGER } else { Color32::WHITE }, false);
-    resp.on_hover_text("Leave call")
+    resp
 }
 
 /// Yapfast's CallButton: a 64x48 pill with a label under it (Accept / Decline / Join).
@@ -530,20 +530,20 @@ pub fn stage(ui: &mut Ui, rect: Rect, cu: &mut CallUi, s: &AppState, tex: &mut H
 /// Mute, Deafen, Camera (when the call carries video) and Share, as round buttons of `size`.
 fn controls_row(ui: &mut Ui, cu: &mut CallUi, v: &voice::State, acts: &mut Vec<Action>, size: f32) {
     let alert = |on: bool| if on { Look::Alert } else { Look::Plain };
-    if round_button(ui, size, I_MIC, v.muted, alert(v.muted), if v.muted { "Unmute" } else { "Mute" }).clicked() {
+    if round_button(ui, size, I_MIC, v.muted, alert(v.muted)).clicked() {
         acts.push(Action::Voice(Vc::Mute(!v.muted)));
     }
-    if round_button(ui, size, I_HEADPHONES, v.deafened, alert(v.deafened), if v.deafened { "Undeafen" } else { "Deafen" }).clicked() {
+    if round_button(ui, size, I_HEADPHONES, v.deafened, alert(v.deafened)).clicked() {
         acts.push(Action::Voice(Vc::Deafen(!v.deafened)));
     }
     if v.can_film {
         let on = v.camera_phase != CameraPhase::Off;
-        if round_button(ui, size, I_VIDEO, !on, if on { Look::On } else { Look::Plain }, if on { "Turn camera off" } else { "Turn camera on" }).clicked() {
+        if round_button(ui, size, I_VIDEO, !on, if on { Look::On } else { Look::Plain }).clicked() {
             acts.push(Action::Voice(Vc::Video(!on)));
         }
     }
     let sharing = v.sharing.is_some();
-    if round_button(ui, size, I_SCREEN, false, if sharing { Look::On } else { Look::Plain }, if sharing { "Stop sharing" } else { "Share your screen" }).clicked() {
+    if round_button(ui, size, I_SCREEN, false, if sharing { Look::On } else { Look::Plain }).clicked() {
         if sharing {
             acts.push(Action::Voice(Vc::StopLive));
         } else {
@@ -592,19 +592,19 @@ pub fn dock(ui: &mut Ui, cu: &mut CallUi, s: &AppState, acts: &mut Vec<Action>) 
         let w = (ui.available_width() - 4.0 * 6.0) / 5.0;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 6.0;
-            let mut b = |ui: &mut Ui, g: &str, slash: bool, on: bool, alert: bool, tip: &str| dock_button(ui, w, g, slash, on, alert, tip);
-            if b(ui, I_MIC, v.muted, false, v.muted, if v.muted { "Unmute" } else { "Mute" }).clicked() {
+            let mut b = |ui: &mut Ui, g: &str, slash: bool, on: bool, alert: bool| dock_button(ui, w, g, slash, on, alert);
+            if b(ui, I_MIC, v.muted, false, v.muted).clicked() {
                 acts.push(Action::Voice(Vc::Mute(!v.muted)));
             }
-            if b(ui, I_HEADPHONES, v.deafened, false, v.deafened, if v.deafened { "Undeafen" } else { "Deafen" }).clicked() {
+            if b(ui, I_HEADPHONES, v.deafened, false, v.deafened).clicked() {
                 acts.push(Action::Voice(Vc::Deafen(!v.deafened)));
             }
             let cam = v.camera_phase != CameraPhase::Off;
-            if v.can_film && b(ui, I_VIDEO, !cam, cam, false, "Camera").clicked() {
+            if v.can_film && b(ui, I_VIDEO, !cam, cam, false).clicked() {
                 acts.push(Action::Voice(Vc::Video(!cam)));
             }
             let sharing = v.sharing.is_some();
-            if b(ui, I_SCREEN, false, sharing, false, if sharing { "Stop sharing" } else { "Share your screen" }).clicked() {
+            if b(ui, I_SCREEN, false, sharing, false).clicked() {
                 if sharing {
                     acts.push(Action::Voice(Vc::StopLive));
                 } else {
@@ -619,7 +619,7 @@ pub fn dock(ui: &mut Ui, cu: &mut CallUi, s: &AppState, acts: &mut Vec<Action>) 
 }
 
 /// Yapfast's DockButton: 32 px high, radius 8; green when on, red glyph when it alerts.
-fn dock_button(ui: &mut Ui, w: f32, g: &str, slash: bool, on: bool, alert: bool, tip: &str) -> egui::Response {
+fn dock_button(ui: &mut Ui, w: f32, g: &str, slash: bool, on: bool, alert: bool) -> egui::Response {
     let (rect, mut resp) = ui.allocate_exact_size(vec2(w, 32.0), Sense::click_and_drag());
     let rect = crate::theme::pulled(rect, crate::theme::pull(ui, &mut resp));
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
@@ -627,7 +627,7 @@ fn dock_button(ui: &mut Ui, w: f32, g: &str, slash: bool, on: bool, alert: bool,
     crate::theme::plate(ui.painter(), rect, th::R_CTL, fill, 0x2C);
     let icon = if alert { DANGER } else if on { LIVE } else { SECONDARY.lerp_to_gamma(TEXT, t) };
     glyph(ui.painter(), rect.center(), g, 17.0, icon, slash);
-    resp.on_hover_text(tip)
+    resp
 }
 
 /// The dock's leave button: same 32 px square as its neighbours, red with a white hang-up glyph.
@@ -637,7 +637,7 @@ fn dock_leave(ui: &mut Ui, w: f32) -> egui::Response {
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
     crate::theme::plate(ui.painter(), rect, th::R_CTL, DANGER.lerp_to_gamma(Color32::WHITE, 0.12 * t), 0x50);
     glyph(ui.painter(), rect.center(), I_HANGUP, 17.0, Color32::WHITE, false);
-    resp.on_hover_text("Leave call")
+    resp
 }
 
 /// The rooms whose DM call rings this account and which it is not in.

@@ -5,6 +5,7 @@ use mytune_core::alltweaks::{self, TweakItem};
 use mytune_core::catalog::TweakFlags;
 use mytune_core::engine::{Engine, Tweak};
 use mytune_core::pccheck::{self, Check, Level, ThisPc};
+use mytune_core::selcolor;
 use mytune_core::store::Store;
 use std::collections::HashMap;
 use std::sync::{mpsc, Arc};
@@ -56,6 +57,7 @@ pub struct App {
     mouse: crate::mouse::MousePage,
     sound: crate::soundpage::SoundPage,
     flyout: crate::soundpage::Flyout,
+    search_stats: crate::searchstats::StatsPanel,
     diagnostics: crate::diagnosticspage::DiagnosticsPage,
     display: crate::displaypage::DisplayPage,
     vibrance: crate::vibrancepage::VibrancePage,
@@ -85,6 +87,8 @@ pub struct App {
     /// Tweaks whose last revert failed only because an adapter is not connected: Restore offers Forget for these.
     adapter_gone: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     confirm_forget: Option<usize>,
+    /// The open Selection border color window: (tweak index, marked color, its swatches).
+    color_pick: Option<(usize, selcolor::Rgb, [selcolor::Rgb; 24])>,
     ids_in_store: Vec<String>,
     checks: Option<Vec<Check>>,
     check_rx: Option<mpsc::Receiver<Vec<Check>>>,
@@ -107,6 +111,15 @@ pub struct App {
     pill_y: f32,
     /// Closing the window hides it instead of exiting (set by main when a tray icon exists).
     pub keep_in_tray: bool,
+    /// The chat page draws at Discord's scale (`page_input`); set by main, off in shot tests.
+    pub page_zoom: bool,
+    /// The page this frame's scale was chosen for, and a page clicked during it that needs the other scale.
+    zoom_page: Page,
+    page_after: Option<Page>,
+    /// Input events already scaled: eframe keeps a hidden window's input and hands it to `page_input` again.
+    zoomed_events: usize,
+    /// The sidebar list's scroll offset without the shell scale, and the scale it was last drawn at.
+    side_scroll: (f32, f32),
 }
 
 /// Which page a catalog id belongs to (the dump has no page info).
@@ -177,6 +190,8 @@ impl App {
             let _ = tx.send(pccheck::this_pc());
         });
         mytune_core::display::apply_saved(&store); // saved display colours, kept on by the colour worker
+        selcolor::load(&store);
+        mytune_core::searchstats::load(&store);
         let engine = Arc::new(Engine::new(store));
         let mut app = App {
             page: Page::Chat,
@@ -186,6 +201,7 @@ impl App {
             mouse: crate::mouse::MousePage::new(),
             sound: crate::soundpage::SoundPage::new(),
             flyout: crate::soundpage::Flyout::new(),
+            search_stats: Default::default(),
             diagnostics: crate::diagnosticspage::DiagnosticsPage::new(engine.clone()),
             display: crate::displaypage::DisplayPage::new(engine.clone()),
             vibrance: crate::vibrancepage::VibrancePage::new(engine.clone()),
@@ -210,6 +226,7 @@ impl App {
             confirm_revert_all: false,
             adapter_gone: Default::default(),
             confirm_forget: None,
+            color_pick: None,
             ids_in_store: vec![],
             checks: None,
             check_rx: None,
@@ -227,9 +244,60 @@ impl App {
             suppress_hover: false,
             pill_y: 0.0,
             keep_in_tray: false,
+            page_zoom: false,
+            zoom_page: Page::Chat,
+            page_after: None,
+            zoomed_events: 0,
+            side_scroll: (0.0, 1.0),
         };
         app.refresh();
         app
+    }
+
+    /// Before each frame of the main window: the chat page draws at 1/`UI_ZOOM` of the app's scale, Discord's
+    /// sizes. egui's zoom is shared by all windows, so only this window's scale is lowered, through its native
+    /// pixels per point; the volume flyout and pop-outs keep theirs. egui-winit still converts this window's
+    /// input with the shared zoom, so its positions are converted here.
+    pub fn page_input(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if !self.page_zoom {
+            return;
+        }
+        if let Some(p) = self.page_after.take() {
+            self.page = p;
+        }
+        self.zoom_page = self.page;
+        let chat = self.page == Page::Chat;
+        #[cfg(feature = "license")]
+        let chat = chat && mytune_core::license::status() == mytune_core::license::Status::Unlocked; // the key screen is no chat
+        #[cfg(feature = "license")]
+        let chat = chat && (!mytune_core::updater::pending().is_some_and(|p| p.blocks) || self.chat.call_busy()); // nor is the update screen
+        let (was, k) = (th::shell(), if chat { th::UI_ZOOM } else { 1.0 });
+        th::set_shell(k);
+        if k == 1.0 && was == 1.0 {
+            return;
+        }
+        let scaled = |p: egui::Pos2, f: f32| pos2(p.x * f, p.y * f);
+        let from = self.zoomed_events.min(raw.events.len());
+        for e in &mut raw.events[from..] {
+            match e {
+                egui::Event::PointerMoved(p) | egui::Event::PointerButton { pos: p, .. } | egui::Event::Touch { pos: p, .. } => *p = scaled(*p, k),
+                egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta, .. } => *delta *= k,
+                _ => {}
+            }
+        }
+        if k != was {
+            // the pointer has not moved on screen, but its point has
+            if let Some(p) = ctx.input(|i| i.pointer.latest_pos()) {
+                raw.events.insert(0, egui::Event::PointerMoved(scaled(p, k / was)));
+            }
+        }
+        self.zoomed_events = raw.events.len();
+        if let Some(r) = &mut raw.screen_rect {
+            *r = Rect::from_min_max(scaled(r.min, k), scaled(r.max, k));
+        }
+        if let Some(v) = raw.viewports.get_mut(&raw.viewport_id) {
+            v.native_pixels_per_point = v.native_pixels_per_point.map(|n| n / k);
+        }
     }
 
     /// Starts the crosshair overlay thread (restores it when it was on); the hotkey saves and repaints.
@@ -297,6 +365,7 @@ impl App {
                 // game tweaks and the PC check fix are not in the tweak list: their revert needs the backup alone
                 let others = engine.with_store(|s| mytune_core::pergame::pending_reverts(s));
                 let left = engine.recover(|id| tweaks.iter().find(|t| t.id == id).map(|t| t as &dyn Tweak).or_else(|| others.iter().find(|o| o.id() == id).map(|o| &**o)));
+                selcolor::upgrade(&engine);
                 let applied = tweaks.iter().map(|t| (t.id.clone(), t.is_applied().unwrap_or(false))).collect();
                 let _ = tx.send((applied, engine.with_store(|s| s.applied_ids())));
                 if let Some((text, ok)) = recovered_text(&left) {
@@ -455,6 +524,12 @@ impl App {
         self.poll(ctx);
         self.flyout.show(ctx); // the tray speaker's volume window, also while this window is hidden
         self.chat.popouts(ctx); // the song and stream windows, also while this window is hidden
+        // with the main window hidden, a frame for the stats panel draws no page
+        if self.search_stats.show(ctx, self.sensors.as_ref()) && !window_shown() {
+            return;
+        }
+        // first thing drawn here: it also sets this window's pixel grid for `th::glass`, `plate` and `px`
+        th::backdrop(ctx, &ctx.layer_painter(egui::LayerId::background()), ctx.content_rect());
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
             ctx.memory_mut(|m| m.request_focus(Id::new("search")));
         }
@@ -467,7 +542,7 @@ impl App {
                 mytune_core::process::trim_working_set();
             });
         }
-        // public setup: a newer version blocks everything, the licence screen too
+        // public setup: a newer version blocks everything, the licence screen too; `backdrop` is already drawn above
         #[cfg(feature = "license")]
         if let Some(up) = mytune_core::updater::pending().filter(|p| p.blocks) {
             if self.chat.in_call() {
@@ -476,12 +551,11 @@ impl App {
                 // no page runs behind this screen, so none of them may keep reading or sampling
                 self.chat.hidden();
                 if let Some(s) = &self.sensors {
-                    s.set_watched(false);
+                    s.set_watched(mytune_core::searchstats::is_open());
                 }
                 self.mouse.cancel();
                 self.sound.stop();
                 self.diagnostics.stop();
-                th::backdrop(ctx, &ctx.layer_painter(egui::LayerId::background()), ctx.content_rect());
                 self.title_bar(root, 248.0);
                 let can_revert = self.states_loaded && self.work_rx.is_none() && !self.games.busy() && !self.ids_in_store.is_empty();
                 if crate::updategate::ui(root, &up, can_revert) {
@@ -493,7 +567,7 @@ impl App {
                 if let Some((msg, ok)) = self.status.take() {
                     crate::notice::post(ctx, msg, ok);
                 }
-                crate::notice::show(ctx, 44.0);
+                crate::notice::show(ctx, 44.0 * th::shell());
                 crate::fade::end_frame(ctx);
                 return;
             }
@@ -501,7 +575,6 @@ impl App {
         // public setup: no sidebar and no pages until a licence key is active on this PC
         #[cfg(feature = "license")]
         if mytune_core::license::status() != mytune_core::license::Status::Unlocked {
-            th::backdrop(ctx, &ctx.layer_painter(egui::LayerId::background()), ctx.content_rect());
             self.title_bar(root, 248.0);
             crate::licensegate::ui(root);
             crate::fade::end_frame(ctx);
@@ -522,7 +595,7 @@ impl App {
         // Home's live tiles only while the window can be seen: in the tray this kept 1 s sensor reads and a frame a second
         let home = self.page == Page::Dashboard && window_shown();
         if let Some(s) = &self.sensors {
-            s.set_watched(home); // 1 s samples only while Home is on screen
+            s.set_watched(home || mytune_core::searchstats::is_open()); // 1 s samples only while Home or the Search panel shows
         }
         if home {
             self.sample();
@@ -546,15 +619,21 @@ impl App {
         }
         // Restore lives in Settings (its Restore tab), not the sidebar: Settings and Restore are the two tabs
         // the sidebar runs first, so a click on it shows the new page in this same frame (44 = title bar)
-        self.sidebar(ctx, ctx.content_rect().top() + 44.0);
+        let s = th::shell();
+        self.sidebar(ctx, ctx.content_rect().top() + 44.0 * s);
+        // a frame's scale is fixed before it starts: a click into or out of the chat shows from the next frame,
+        // or the new page is drawn once at the old scale
+        if self.page_zoom && (self.page == Page::Chat) != (self.zoom_page == Page::Chat) {
+            self.page_after = Some(std::mem::replace(&mut self.page, self.zoom_page));
+            ctx.request_repaint();
+        }
         let home = self.page == Page::Dashboard;
-        th::backdrop(ctx, &ctx.layer_painter(egui::LayerId::background()), ctx.content_rect());
         let base_w = th::spring(ctx, Id::new("base-w"), if home { 248.0 } else { 64.0 }, th::TRAVEL, 1.0).round();
         self.title_bar(root, base_w);
         // Leaving Home, the page takes its final width at once and the folding sidebar uncovers it:
         // laying the page out again for every width in between cost frames.
         let gap = if home { base_w } else { 64.0 };
-        egui::Panel::left("gap").exact_size(gap).resizable(false).frame(egui::Frame::new()).show_separator_line(false).show(root, |_| {});
+        egui::Panel::left("gap").exact_size(gap * s).resizable(false).frame(egui::Frame::new()).show_separator_line(false).show(root, |_| {});
         if self.page != self.shown_page {
             self.shown_page = self.page;
             self.status = None;
@@ -571,17 +650,19 @@ impl App {
                 egui::CentralPanel::default().frame(egui::Frame::new()).show(root, |ui| {
             // nothing shows through the glass sidebar while it still covers the page
             let mut clip = ui.clip_rect();
-            clip.min.x = clip.min.x.max(self.side_w);
+            clip.min.x = clip.min.x.max(self.side_w * s);
             ui.set_clip_rect(clip);
             if self.page == Page::Chat {
                 // the chat sits in a rounded card inside the window: its square corners are covered with the base colour
-                let mut card = ui.max_rect().shrink2(vec2(10.0, 8.0));
-                card.max.y -= 8.0; // extra air under the card
-                ui.painter().add(th::glass(card, th::R_PANEL, Color32::TRANSPARENT));
+                let mut card = ui.max_rect().shrink2(vec2(10.0, 8.0) * s);
+                card.max.y -= 8.0 * s; // extra air under the card
+                ui.painter().add(th::glass(card, th::R_PANEL * s, Color32::TRANSPARENT));
+                th::set_chat_fonts(s != 1.0);
                 ui.scope_builder(UiBuilder::new().max_rect(card), |ui| self.chat.ui(ui));
+                th::set_chat_fonts(false);
                 let full = ctx.content_rect();
-                th::round_corners(ui.painter(), card, th::R_PANEL, &|q| th::backdrop_at(full, q));
-                th::sheen(ui.painter(), card, th::R_PANEL, th::Glass::Base);
+                th::round_corners(ui.painter(), card, th::R_PANEL * s, &|q| th::backdrop_at(full, q));
+                th::sheen(ui.painter(), card, th::R_PANEL * s, th::Glass::Base);
                 return;
             }
             egui::ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
@@ -677,8 +758,11 @@ impl App {
         if let Some(i) = self.confirm_forget {
             self.forget_adapter_modal(ctx, i);
         }
+        if self.color_pick.is_some() {
+            self.color_modal(ctx);
+        }
         self.games.modals(ctx);
-        crate::notice::show(ctx, 44.0); // under the title bar
+        crate::notice::show(ctx, 44.0 * s); // under the title bar
         crate::fade::end_frame(ctx);
         crate::sharp::scan(ctx);
     }
@@ -687,7 +771,8 @@ impl App {
 
     fn title_bar(&mut self, root: &mut Ui, base_w: f32) {
         let ctx = root.ctx().clone();
-        egui::Panel::top("title").exact_size(44.0).resizable(false).frame(egui::Frame::new()).show_separator_line(false).show(root, |ui| {
+        let s = th::shell();
+        egui::Panel::top("title").exact_size(44.0 * s).resizable(false).frame(egui::Frame::new()).show_separator_line(false).show(root, |ui| {
             let bar = ui.max_rect();
             let pal = p();
             let drag = ui.interact(bar, Id::new("drag"), Sense::click_and_drag());
@@ -700,25 +785,25 @@ impl App {
             }
             // logo 18x18 at left 16, centred: accent to darker gradient, white M
             // centred over the nav icons
-            let cx = 32.0; // same column as the nav icons, open or folded
-            let logo = Rect::from_center_size(pos2(bar.left() + cx, bar.center().y), vec2(18.0, 18.0));
+            let cx = 32.0 * s; // same column as the nav icons, open or folded
+            let logo = Rect::from_center_size(pos2(bar.left() + cx, bar.center().y), vec2(18.0, 18.0) * s);
             if !pal.black {
-                ui.painter().rect_filled(logo, 5.0, pal.accent);
+                ui.painter().rect_filled(logo, 5.0 * s, pal.accent);
             }
-            let m = |x: f32, y: f32| logo.min + vec2(x, y) * (18.0 / 256.0);
+            let m = |x: f32, y: f32| logo.min + vec2(x, y) * (18.0 * s / 256.0);
             let pts: Vec<_> = [(65., 187.), (65., 69.), (90., 69.), (128., 123.), (166., 69.), (191., 69.), (191., 187.), (167., 187.), (167., 119.), (133., 157.), (123., 157.), (89., 119.), (89., 187.)]
                 .iter()
                 .map(|&(x, y)| m(x, y))
                 .collect();
             // the M outline is concave: draw it as two stems and a V
             let _ = pts;
-            let w = Stroke::new(2.0, pal.on_accent);
+            let w = Stroke::new(2.0 * s, pal.on_accent);
             ui.painter().line_segment([m(77., 187.), m(77., 69.)], w);
             ui.painter().line_segment([m(179., 187.), m(179., 69.)], w);
             ui.painter().line_segment([m(77., 75.), m(128., 140.)], w);
             ui.painter().line_segment([m(179., 75.), m(128., 140.)], w);
             if base_w > 120.0 {
-                ui.painter().text(pos2(logo.right() + 10.0, bar.center().y), egui::Align2::LEFT_CENTER, "MyTune", FontId::new(13.0, th::semibold()), pal.side_text.gamma_multiply(((base_w - 120.0) / 128.0).clamp(0.0, 1.0)));
+                ui.painter().text(pos2(logo.right() + 10.0 * s, bar.center().y), egui::Align2::LEFT_CENTER, "MyTune", FontId::new(13.0 * s, th::semibold()), pal.side_text.gamma_multiply(((base_w - 120.0) / 128.0).clamp(0.0, 1.0)));
             }
             // caption buttons 46x32, glyphs 10 px
             let right = bar.right();
@@ -728,14 +813,14 @@ impl App {
                 ("\u{E921}", egui::ViewportCommand::Minimized(true), false),
             ];
             for (i, (glyph, cmd, close)) in buttons.into_iter().enumerate() {
-                let r = Rect::from_min_size(pos2(right - 46.0 * (i as f32 + 1.0), bar.top()), vec2(46.0, 32.0));
+                let r = Rect::from_min_size(pos2(right - 46.0 * s * (i as f32 + 1.0), bar.top()), vec2(46.0, 32.0) * s);
                 let resp = ui.interact(r, Id::new(("cap", i)), Sense::click());
                 let hov = th::anim(&ctx, resp.id.with("hover"), resp.hovered(), th::HOVER);
                 if hov > 0.0 && !pal.black {
                     let tint = if close { pal.block[1] } else { Color32::from_white_alpha(0x24) };
-                    ui.painter().rect_filled(r.shrink2(vec2(5.0, 3.0)), 8.0, tint.gamma_multiply(hov));
+                    ui.painter().rect_filled(r.shrink2(vec2(5.0, 3.0) * s), 8.0 * s, tint.gamma_multiply(hov));
                 }
-                ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, glyph, FontId::new(10.0, th::icons()), if pal.black { th::text2().lerp_to_gamma(Color32::WHITE, hov) } else if close { pal.side_text.lerp_to_gamma(Color32::WHITE, hov) } else { pal.side_text });
+                ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, glyph, FontId::new(10.0 * s, th::icons()), if pal.black { th::text2().lerp_to_gamma(Color32::WHITE, hov) } else if close { pal.side_text.lerp_to_gamma(Color32::WHITE, hov) } else { pal.side_text });
                 if resp.clicked() {
                     ctx.send_viewport_cmd(cmd);
                 }
@@ -751,9 +836,10 @@ impl App {
         let pal = p();
         let screen = ctx.content_rect();
         let home = self.page == Page::Dashboard;
+        let s = th::shell();
         // On the chat page the open sidebar would cover the server icons right of it, so it stays open only
         // while the pointer is on the 64 px rail itself.
-        let reach = if self.page == Page::Chat { 64.0 } else { self.side_w };
+        let reach = if self.page == Page::Chat { 64.0 * s } else { self.side_w * s };
         let in_rail = ctx.input(|i| i.pointer.hover_pos()).is_some_and(|q| q.y > top && q.x < reach);
         if !in_rail {
             self.suppress_hover = false;
@@ -776,7 +862,7 @@ impl App {
         // 1 px steps stutter.
         let w = th::spring(ctx, Id::new("side-w"), if home || hovered { 248.0 } else { 64.0 }, th::TRAVEL, 1.0);
         self.side_w = w;
-        let rect = Rect::from_min_size(pos2(0.0, top), vec2(w, screen.height() - top));
+        let rect = Rect::from_min_size(pos2(0.0, top), vec2(w * s, screen.height() - top));
         let fade = ((w - 64.0) / 184.0).clamp(0.0, 1.0);
         let prev_pill = self.pill_y;
         self.pill_y = 0.0;
@@ -784,49 +870,53 @@ impl App {
         egui::Area::new(Id::new("sidebar")).fixed_pos(rect.min).order(egui::Order::Middle).show(ctx, |ui| {
             ui.allocate_rect(rect, Sense::hover());
             let paint = ui.painter().clone();
-            paint.add(th::glass(Rect::from_min_max(rect.min + vec2(6.0, 4.0), rect.max - vec2(6.0, 12.0)), th::R_PANEL, pal.side));
-            let inner = Rect::from_min_max(rect.min + vec2(8.0, 4.0), rect.max - vec2(8.0, 20.0));
+            paint.add(th::glass(Rect::from_min_max(rect.min + vec2(6.0, 4.0) * s, rect.max - vec2(6.0, 12.0) * s), th::R_PANEL * s, pal.side));
+            let inner = Rect::from_min_max(rect.min + vec2(8.0, 4.0) * s, rect.max - vec2(8.0, 20.0) * s);
             ui.scope_builder(UiBuilder::new().max_rect(inner), |ui| {
                 ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
-                let scroll_h = (inner.height() - 40.0).max(0.0);
-                egui::ScrollArea::vertical().max_height(scroll_h).auto_shrink([false, true]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden).show(ui, |ui| {
+                let scroll_h = (inner.height() - 40.0 * s).max(0.0);
+                let mut list = egui::ScrollArea::vertical().max_height(scroll_h).auto_shrink([false, true]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden);
+                if self.side_scroll.1 != s {
+                    list = list.vertical_scroll_offset(self.side_scroll.0 * s); // same pixels when the scale changes
+                }
+                let shown = list.show(ui, |ui| {
                     ui.set_width(inner.width());
                     // Same row in the rail and the full sidebar, so the icons below never move.
-                    ui.add_space(2.0);
-                    let r = Rect::from_min_size(ui.cursor().min, vec2(inner.width(), ROW));
-                    ui.allocate_space(vec2(inner.width(), ROW));
+                    ui.add_space(2.0 * s);
+                    let r = Rect::from_min_size(ui.cursor().min, vec2(inner.width(), ROW * s));
+                    ui.allocate_space(vec2(inner.width(), ROW * s));
                     let focused = ui.memory(|m| m.has_focus(Id::new("search")));
                     // same row as every nav item: hover tint, icon in the same column; an accent edge while typing
                     if focused {
-                        ui.painter().rect_stroke(r, ROW_R, Stroke::new(1.0, pal.accent), StrokeKind::Inside);
+                        ui.painter().rect_stroke(r, ROW_R * s, Stroke::new(s, pal.accent), StrokeKind::Inside);
                     }
                     if ui.rect_contains_pointer(r) {
-                        ui.painter().rect_filled(r, ROW_R, Color32::from_white_alpha(22));
+                        ui.painter().rect_filled(r, ROW_R * s, Color32::from_white_alpha(22));
                     }
-                    let gx = r.left() + 24.0; // fixed column: the icon never moves while the sidebar opens or folds
-                    ui.painter().text(pos2(gx, r.center().y.round()), egui::Align2::CENTER_CENTER, "\u{E721}", FontId::new(16.0, th::icons()), pal.side_muted);
+                    let gx = r.left() + 24.0 * s; // fixed column: the icon never moves while the sidebar opens or folds
+                    ui.painter().text(pos2(gx, (r.center().y / s).round() * s), egui::Align2::CENTER_CENTER, "\u{E721}", FontId::new(16.0 * s, th::icons()), pal.side_muted);
                     if w <= 150.0 {
                         let resp = ui.interact(r, Id::new("search-icon"), Sense::click());
-                        if resp.on_hover_text("Search every setting (Ctrl+F)").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                        if shell_tip(resp, "Search every setting (Ctrl+F)").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                             self.suppress_hover = false;
                             ui.memory_mut(|m| m.request_focus(Id::new("search")));
                         }
                     } else {
                         // a child ui, not `ui.put`: put moved the cursor up to the text box's bottom, so every
                         // row below sat a few px higher while the sidebar was open and dropped when it folded
-                        let field = Rect::from_min_max(r.min + vec2(46.0, 1.0), r.max - vec2(8.0, 1.0)); // text column of the nav labels
+                        let field = Rect::from_min_max(r.min + vec2(46.0, 1.0) * s, r.max - vec2(8.0, 1.0) * s); // text column of the nav labels
                         ui.new_child(UiBuilder::new().max_rect(field).layout(egui::Layout::centered_and_justified(egui::Direction::LeftToRight))).add(
                             egui::TextEdit::singleline(&mut self.search)
                                 .id(Id::new("search"))
                                 .frame(egui::Frame::NONE)
-                                .font(FontId::proportional(14.0))
+                                .font(FontId::proportional(14.0 * s))
                                 .text_color(pal.side_text)
-                                .hint_text(rt("Search", 14.0).color(pal.side_text))
+                                .hint_text(rt("Search", 14.0 * s).color(pal.side_text))
                                 .vertical_align(Align::Center)
                                 .desired_width(f32::INFINITY),
                         );
                     }
-                    ui.add_space(2.0);
+                    ui.add_space(2.0 * s);
                     let q = self.search.to_lowercase();
                     for g in GROUPS {
                         let items: Vec<&Item> = g.items.iter().filter(|i| q.is_empty() || i.label.to_lowercase().contains(&q) || i.tip.to_lowercase().contains(&q)).collect();
@@ -834,25 +924,26 @@ impl App {
                             continue;
                         }
                         if let Some(t) = g.title {
-                            ui.add_space(12.0);
+                            ui.add_space(12.0 * s);
                             // painted, not a label: a label kept the sidebar layer ~117 px wide while folded,
                             // so its invisible part ate clicks meant for the chat page's server icons
-                            let (tr, _) = ui.allocate_exact_size(vec2(inner.width(), 16.0), Sense::hover());
-                            ui.painter().with_clip_rect(tr).text(pos2(tr.left() + 14.0, tr.center().y), egui::Align2::LEFT_CENTER, t, FontId::new(12.0, th::medium()), th::text3().gamma_multiply(fade));
+                            let (tr, _) = ui.allocate_exact_size(vec2(inner.width(), 16.0 * s), Sense::hover());
+                            ui.painter().with_clip_rect(tr).text(pos2(tr.left() + 14.0 * s, tr.center().y), egui::Align2::LEFT_CENTER, t, FontId::new(12.0 * s, th::medium()), th::text3().gamma_multiply(fade));
                             // folded, the names are gone: a short line keeps the groups apart
                             if fade < 1.0 {
-                                let y = tr.center().y.round();
-                                ui.painter().line_segment([pos2(tr.left() + 16.0, y), pos2(tr.left() + 32.0, y)], Stroke::new(th::px(), Color32::from_white_alpha((36.0 * (1.0 - fade)) as u8)));
+                                let y = (tr.center().y / s).round() * s;
+                                ui.painter().line_segment([pos2(tr.left() + 16.0 * s, y), pos2(tr.left() + 32.0 * s, y)], Stroke::new(th::px(), Color32::from_white_alpha((36.0 * (1.0 - fade)) as u8)));
                             }
-                            ui.add_space(2.0);
+                            ui.add_space(2.0 * s);
                         }
                         for i in items {
                             self.nav_item(ui, i, inner.width(), w);
                         }
                     }
                 });
-                let y = inner.bottom() - 40.0;
-                ui.scope_builder(UiBuilder::new().max_rect(Rect::from_min_size(pos2(inner.left(), y), vec2(inner.width(), 40.0))), |ui| {
+                self.side_scroll = (shown.state.offset().y / s, s);
+                let y = inner.bottom() - 40.0 * s;
+                ui.scope_builder(UiBuilder::new().max_rect(Rect::from_min_size(pos2(inner.left(), y), vec2(inner.width(), 40.0 * s))), |ui| {
                     ui.spacing_mut().item_spacing = vec2(0.0, 0.0);
                     self.nav_item(ui, &SETTINGS, inner.width(), w);
                 });
@@ -863,9 +954,10 @@ impl App {
 
     fn nav_item(&mut self, ui: &mut Ui, item: &Item, width: f32, w: f32) {
         let pal = p();
-        ui.add_space(1.0);
-        let (rect, resp) = ui.allocate_exact_size(vec2(width, ROW), Sense::click());
-        ui.add_space(1.0);
+        let s = th::shell();
+        ui.add_space(s);
+        let (rect, resp) = ui.allocate_exact_size(vec2(width, ROW * s), Sense::click());
+        ui.add_space(s);
         let sel = self.page == item.page || (item.page == Page::Settings && self.page == Page::Restore); // Restore is a Settings tab
         let paint = ui.painter();
         // Same springs as `th::button`: the plate under the pointer fades in, gives way 3% while pressed, and
@@ -877,23 +969,24 @@ impl App {
         let plate = |k: f32| Rect::from_center_size(rect.center(), rect.size() * k);
         if on > 0.0 {
             // raised glass on the sidebar's base glass
-            th::plate(paint, plate(0.94 + 0.06 * on - 0.03 * down), ROW_R, pal.side_selected.gamma_multiply(on), (0x44 as f32 * on) as u8);
+            th::plate(paint, plate(0.94 + 0.06 * on - 0.03 * down), ROW_R * s, pal.side_selected.gamma_multiply(on), (0x44 as f32 * on) as u8);
         }
         if sel {
             self.pill_y = rect.center().y;
         }
         if hov > 0.0 || down > 0.0 {
-            paint.rect_filled(plate(1.0 - 0.03 * down), ROW_R, Color32::from_white_alpha((20.0 * hov * (1.0 - on) + 14.0 * down) as u8));
+            paint.rect_filled(plate(1.0 - 0.03 * down), ROW_R * s, Color32::from_white_alpha((20.0 * hov * (1.0 - on) + 14.0 * down) as u8));
         }
         let glyph_col = if sel || (pal.black && resp.hovered()) { Color32::WHITE } else { pal.side_muted };
         let text_col = if sel { Color32::WHITE } else { th::hover_text(pal.side_text, resp.hovered()) };
-        let gx = rect.left() + 24.0; // fixed column: icon and name stay put, the sidebar edge uncovers the name
-        paint.text(pos2(gx, rect.center().y.round()), egui::Align2::CENTER_CENTER, item.glyph, FontId::new(16.0, th::icons()), glyph_col);
+        let gx = rect.left() + 24.0 * s; // fixed column: icon and name stay put, the sidebar edge uncovers the name
+        let cy = (rect.center().y / s).round() * s;
+        paint.text(pos2(gx, cy), egui::Align2::CENTER_CENTER, item.glyph, FontId::new(16.0 * s, th::icons()), glyph_col);
         if w > 120.0 {
-            let font = FontId::new(14.0, if sel { th::semibold() } else { th::medium() });
-            paint.with_clip_rect(rect).text(pos2(rect.left() + 46.0, rect.center().y.round()), egui::Align2::LEFT_CENTER, item.label, font, text_col.gamma_multiply(((w - 120.0) / 128.0).clamp(0.0, 1.0)));
+            let font = FontId::new(14.0 * s, if sel { th::semibold() } else { th::medium() });
+            paint.with_clip_rect(rect).text(pos2(rect.left() + 46.0 * s, cy), egui::Align2::LEFT_CENTER, item.label, font, text_col.gamma_multiply(((w - 120.0) / 128.0).clamp(0.0, 1.0)));
         }
-        if resp.on_hover_text(item.tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        if shell_tip(resp, item.tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             self.page = item.page;
             self.suppress_hover = true;
         }
@@ -1243,6 +1336,51 @@ impl App {
         }
     }
 
+    /// Selection border color: a pick is saved, and applied at once while the tweak is on.
+    fn color_modal(&mut self, ctx: &egui::Context) {
+        let Some((i, marked, cells)) = self.color_pick else { return };
+        // `run_work` drops a request while another runs: the saved choice and the screen would then differ
+        let busy = self.work_rx.is_some() || !self.states_loaded;
+        let m = egui::Modal::new(Id::new("selection-color")).show(ctx, |ui| {
+            ui.set_width(316.0);
+            ui.label(dsb("Selection border color", 20.0));
+            ui.add_space(4.0);
+            ui.label(rt("Also recolors selected text and menu highlights in many apps.", 12.0).color(text2()));
+            ui.add_space(12.0);
+            let mut picked = None;
+            for row in cells.chunks(6) {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    for &c in row {
+                        if color_swatch(ui, c, c == marked, busy).clicked() {
+                            picked = Some(c);
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+            }
+            ui.add_space(8.0);
+            if th::button(ui, "Close", false, (14.0, 8.0, 14.0, 9.0)).clicked() {
+                ui.close();
+            }
+            picked
+        });
+        if let Some(c) = m.inner.filter(|&c| c != marked) {
+            match self.engine.with_store(|s| selcolor::choose(s, c)) {
+                Ok(()) => {
+                    self.color_pick = Some((i, c, cells));
+                    if self.applied.get(selcolor::ID).copied().unwrap_or(false) {
+                        self.run_work(vec![i], true);
+                    }
+                }
+                Err(e) => crate::notice::post(ctx, format!("Color not saved: {e}"), false),
+            }
+        }
+        if m.should_close() {
+            self.color_pick = None;
+        }
+    }
+
     /// Every tweak MyTune has a backup for, in the order the Restore list shows them.
     fn revert_all_modal(&mut self, ctx: &egui::Context) {
         let idxs: Vec<usize> = self.ids_in_store.iter().filter_map(|id| self.tweaks.iter().position(|t| &t.id == id)).collect();
@@ -1330,6 +1468,7 @@ impl App {
     fn tweak_list(&mut self, ui: &mut Ui) {
         let q = self.search.to_lowercase();
         let mut click = None;
+        let mut open_colors = None;
         // Optimize is split into normal, risky (security risk) and experimental tweaks, in that order.
         let categorized = self.page == Page::Optimize;
         // Same order and group headings as C# `Layout.cs`.
@@ -1375,7 +1514,7 @@ impl App {
                         ui.horizontal(|ui| {
                             let avail = ui.available_width();
                             ui.vertical(|ui| {
-                                ui.set_max_width((avail - 64.0).max(120.0));
+                                ui.set_max_width((avail - if t.id == selcolor::ID { 104.0 } else { 64.0 }).max(120.0));
                                 ui.label(th::md(&t.title, 14.0));
                                 ui.add_space(2.0);
                                 if partly.contains(&t.id) {
@@ -1388,6 +1527,12 @@ impl App {
                                 if th::switch(ui, on).on_hover_text(&t.details).clicked() {
                                     click = Some((i, !on));
                                 }
+                                if t.id == selcolor::ID {
+                                    ui.add_space(4.0);
+                                    if brush_button(ui).on_hover_text("Choose the color").clicked() {
+                                        open_colors = Some(i);
+                                    }
+                                }
                             });
                         });
                     });
@@ -1396,6 +1541,10 @@ impl App {
         }
         if let Some((i, on)) = click {
             self.set(i, on);
+        }
+        if let Some(i) = open_colors {
+            let c = selcolor::current();
+            self.color_pick = Some((i, c, selcolor::palette_with(c)));
         }
     }
 
@@ -1469,6 +1618,37 @@ impl App {
             self.confirm_forget = forget_adapter;
         }
     }
+}
+
+/// The brush left of the Selection border color switch.
+fn brush_button(ui: &mut Ui) -> egui::Response {
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(32.0, 28.0), Sense::click_and_drag());
+    let off = th::pull(ui, &mut resp);
+    let hov = th::anim(ui.ctx(), resp.id.with("hover"), resp.hovered(), th::HOVER);
+    let r = th::pulled(rect, off);
+    th::plate(ui.painter(), r, th::R_CTL, Color32::from_white_alpha((0x12 as f32 + 16.0 * hov) as u8), 0x30 + (16.0 * hov) as u8);
+    ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, "\u{E771}", FontId::new(16.0, th::icons()), th::TEXT);
+    resp.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// One solid color of the Selection border color window; the marked one has a white ring and a check.
+fn color_swatch(ui: &mut Ui, c: selcolor::Rgb, marked: bool, busy: bool) -> egui::Response {
+    let sense = if busy { Sense::hover() } else { Sense::click_and_drag() };
+    let (rect, mut resp) = ui.allocate_exact_size(vec2(46.0, 46.0), sense);
+    let off = th::pull(ui, &mut resp);
+    let hov = th::anim(ui.ctx(), resp.id.with("hover"), resp.hovered() && !busy, th::HOVER);
+    let r = th::pulled(rect.shrink(2.0 - 2.0 * hov), off);
+    let fill = Color32::from_rgb(c[0], c[1], c[2]);
+    let paint = ui.painter();
+    paint.rect_filled(r, th::R_CTL, fill);
+    let ring = if marked { Stroke::new(2.0, Color32::WHITE) } else { Stroke::new(1.0, Color32::from_white_alpha(0x30)) };
+    paint.rect_stroke(r, th::R_CTL, ring, StrokeKind::Inside);
+    if marked {
+        // perceived brightness, so the check stays readable on white and on black
+        let light = 299 * c[0] as u32 + 587 * c[1] as u32 + 114 * c[2] as u32 > 150_000;
+        paint.text(r.center(), egui::Align2::CENTER_CENTER, "\u{E73E}", FontId::new(16.0, th::icons()), if light { Color32::BLACK } else { Color32::WHITE });
+    }
+    if busy { resp } else { resp.on_hover_cursor(egui::CursorIcon::PointingHand) }
 }
 
 /// Height of a `th::BTN` button. A row that starts with a title and ends with a button takes this height first:
@@ -1552,10 +1732,55 @@ fn perf_log(ctx: &egui::Context) {
 static FRAME_US: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 impl eframe::App for App {
+    // eframe skips `ui` while the main window is hidden, until a visible child viewport exists
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if self.search_stats.needs_frame() && !window_shown() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::RequestPaintWhileHidden);
+            ctx.request_repaint();
+        }
+    }
+
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        self.page_input(ctx, raw);
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         FRAME_US.store((_frame.info().cpu_usage.unwrap_or(0.0) * 1e6) as u32, std::sync::atomic::Ordering::Relaxed);
+        self.zoomed_events = 0;
         self.ui(ui);
+        // egui-winit places the text cursor's IME box with the shared zoom
+        let k = th::shell();
+        if k != 1.0 {
+            ui.ctx().output_mut(|o| {
+                if let Some(ime) = &mut o.ime {
+                    let f = |r: Rect| Rect::from_min_max(pos2(r.min.x / k, r.min.y / k), pos2(r.max.x / k, r.max.y / k));
+                    ime.rect = f(ime.rect);
+                    ime.cursor_rect = f(ime.cursor_rect);
+                }
+            });
+        }
     }
+}
+
+/// A sidebar tooltip: the same pixels on the chat page, whose points are smaller.
+fn shell_tip(resp: egui::Response, text: &str) -> egui::Response {
+    let s = th::shell();
+    if s == 1.0 {
+        return resp.on_hover_text(text);
+    }
+    let width = resp.ctx.global_style().spacing.tooltip_width * s;
+    let mut tip = egui::Tooltip::for_enabled(&resp).width(width).accessible_name(text);
+    tip.popup = tip.popup.style(move |st: &mut egui::Style| {
+        st.text_styles.values_mut().for_each(|f| f.size *= s);
+        st.spacing.menu_margin = st.spacing.menu_margin * s;
+        st.spacing.tooltip_width = width;
+        st.visuals.menu_corner_radius = st.visuals.menu_corner_radius * s;
+    });
+    tip.show(|ui| {
+        ui.set_max_width(width);
+        ui.label(text);
+    });
+    resp
 }
 
 /// Smallest height of a history graph on Home.

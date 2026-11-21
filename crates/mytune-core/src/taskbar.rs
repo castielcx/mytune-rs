@@ -4,7 +4,7 @@
 //! (`SetWindowCompositionAttribute`) does nothing (measured on build 26200). Instead Windows' XAML
 //! diagnostics load `taskbar/tap.cpp` (built by `build.rs`, embedded here) into explorer.exe, where it
 //! swaps the background brush. This module tells that DLL which look to show through the shared memory
-//! `Local\MyTuneTaskbar7` and counts a heartbeat; 3 s without one and the DLL shows the normal taskbar.
+//! `Local\MyTuneTaskbar10` and counts a heartbeat; 3 s without one and the DLL shows the normal taskbar.
 //! The same DLL hides Windows' own volume icon in the tray while `Config.hide_volume` (Sound page switch
 //! "Use MyTune advanced sound settings"); the `HideSCAVolume` policy is ignored on build 26200.
 //!
@@ -184,7 +184,7 @@ struct StartShared {
     panels: i32,
 }
 
-const TASKBAR_MAP: PCWSTR = w!("Local\\MyTuneTaskbar7");
+const TASKBAR_MAP: PCWSTR = w!("Local\\MyTuneTaskbar10");
 /// The processes start.cpp goes into, each with the prefix of the name MyTune opens its shared memory by
 /// (the process id follows). SearchHost is an app container: its `Local\` names sit under the container's
 /// SID, which Windows derives from the package name `MicrosoftWindows.Client.CBS_cw5n1h2txyewy` (the same on
@@ -451,9 +451,10 @@ pub fn start(config: Arc<Mutex<Config>>, gave_up: impl Fn() + Send + 'static) {
         let mut strikes = 0;
         let mut beat = 0i32;
         let mut front = (0isize, State::Desktop);
+        let mut gave_up_load = false; // until MyTune restarts: the selection color alone must not load the DLL again
         loop {
             let now = config.lock().unwrap_or_else(|p| p.into_inner()).clone();
-            let outline = OUTLINE_SELECT.load(Ordering::Relaxed);
+            let outline = fill_hook_wanted(OUTLINE_SELECT.load(Ordering::Relaxed), crate::selcolor::is_on(), gave_up_load);
             if !now.on && !now.hide_volume && !outline {
                 if let Some(l) = link.take() {
                     l.write(&Wire::default(), false, false, beat.wrapping_add(1)); // normal taskbar at once, not after the 3 s
@@ -481,6 +482,7 @@ pub fn start(config: Arc<Mutex<Config>>, gave_up: impl Fn() + Send + 'static) {
                 *config.lock().unwrap_or_else(|p| p.into_inner()) = Config::default(); // every look back to Normal
                 set_problem(Some("Turned off: Windows Explorer restarted twice right after the taskbar look was loaded."));
                 crate::log::error("Taskbar look turned off: Explorer restarted twice after loading it", None);
+                gave_up_load = true;
                 gave_up();
                 continue;
             }
@@ -491,6 +493,7 @@ pub fn start(config: Arc<Mutex<Config>>, gave_up: impl Fn() + Send + 'static) {
                     *config.lock().unwrap_or_else(|p| p.into_inner()) = Config::default(); // every look back to Normal
                     set_problem(Some("Turned off: Windows Explorer kept restarting after the taskbar look was loaded."));
                     crate::log::error("Taskbar look turned off: loaded 3 times within 2 minutes (Explorer kept restarting)", None);
+                    gave_up_load = true;
                     gave_up();
                     continue;
                 }
@@ -592,6 +595,12 @@ impl crate::engine::Tweak for ClearStartTweak {
 static OUTLINE_SELECT: AtomicBool = AtomicBool::new(false);
 /// The last load into Explorer failed, so the switch must not read on.
 static OUTLINE_FAILED: AtomicBool = AtomicBool::new(false);
+
+/// The fill hook runs for either switch. After a crash-loop give-up only the outline switch, which the give-up
+/// turns off itself, may still ask for it.
+fn fill_hook_wanted(outline: bool, color: bool, gave_up: bool) -> bool {
+    outline || (color && !gave_up)
+}
 
 /// At start: what `Settings.OutlineSelect` in state.json says.
 pub fn set_outline_select(on: bool) {
@@ -788,6 +797,13 @@ mod tests {
         assert!(ClearStartTweak.is_applied().unwrap());
         ClearStartTweak.revert(&b).unwrap();
         assert!(!ClearStartTweak.is_applied().unwrap());
+    }
+
+    #[test]
+    fn fill_hook_stays_for_either_switch() {
+        assert!(fill_hook_wanted(true, false, false) && fill_hook_wanted(false, true, false) && fill_hook_wanted(true, true, false));
+        assert!(!fill_hook_wanted(false, false, false));
+        assert!(!fill_hook_wanted(false, true, true), "the color must not reload the DLL after a give-up");
     }
 
     #[test]

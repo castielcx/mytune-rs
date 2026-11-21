@@ -174,7 +174,7 @@ impl Flyout {
                 // (the icon click that took the focus away has just closed it: do not open it again)
                 // shortcut: uses the main window's scale and screen size, so a taskbar on a second screen
                 // with another scale gets a slightly off position; use that monitor's values if it matters
-                let ppp = ctx.pixels_per_point();
+                let ppp = ctx.pixels_per_point() * th::shell(); // this window's scale, not the chat page's
                 self.open = Some((x / ppp, top / ppp));
                 self.had_focus = false;
                 self.frames = 0;
@@ -209,6 +209,7 @@ impl Flyout {
             if self.open.is_none() {
                 return;
             }
+            th::glow_textures(ui.ctx()); // this window's pixel grid; `App::ui` sets the main window's back after it
             let (focused, esc, asked) = ui.ctx().input(|i| (i.viewport().focused, i.key_pressed(egui::Key::Escape), i.viewport().close_requested()));
             self.had_focus |= focused == Some(true);
             close = esc || asked || (self.had_focus && focused == Some(false));

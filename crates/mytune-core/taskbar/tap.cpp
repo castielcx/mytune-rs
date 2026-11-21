@@ -1,7 +1,7 @@
 // MyTune taskbar look. Windows' XAML diagnostics (InitializeXamlDiagnosticsEx, called by
 // mytune-core/src/taskbar.rs) loads this DLL into explorer.exe. It finds the taskbar's background
 // rectangle and swaps its brush, and can hide Windows' own volume icon in the tray. MyTune says what to
-// do through the shared memory `Local\MyTuneTaskbar7`; when MyTune stops writing its heartbeat, the
+// do through the shared memory `Local\MyTuneTaskbar10`; when MyTune stops writing its heartbeat, the
 // normal taskbar comes back.
 #include <unknwn.h>
 #include <windows.h>
@@ -395,22 +395,17 @@ struct Tap : implements<Tap, IObjectWithSite, IVisualTreeServiceCallback2, non_a
     HRESULT __stdcall OnElementStateChanged(InstanceHandle, VisualElementState, LPCWSTR) noexcept override { return S_OK; }
 };
 
-// Outline-only selection. comctl32 (6.0.26100.8972, 0x1800c9244) paints the drag box as a 1x1 DIB of alpha
-// 0x46 stretched by GdiAlphaBlend over the part of the box being repainted, then draws its own 1 px frame in
-// COLOR_HIGHLIGHT: alpha 255 blends in folder views, ExtTextOut on the desktop. So only the fill is skipped;
-// a frame drawn here would follow the repaint rectangle and leave lines inside the box.
+// Outline-only selection, list views. With ListviewAlphaSelect=1, comctl32 (6.0.26100.8972, 0x1800c9244) paints
+// the drag box as a 1x1 DIB of alpha 0x46 stretched by GdiAlphaBlend over the part being repainted, then draws
+// its own 1 px COLOR_HIGHLIGHT frame. So only the fill is skipped; a frame drawn here would follow the repaint
+// rectangle and leave lines inside the box.
 static decltype(&GdiAlphaBlend) g_real_blend = nullptr;
 
 static bool is_selection_fill(HDC src) {
     BITMAP bm;
     HGDIOBJ h = GetCurrentObject(src, OBJ_BITMAP);
-    if (!h || GetObjectW(h, sizeof bm, &bm) != sizeof bm) return false;
-    if (bm.bmWidth != 1 || bm.bmHeight != 1 || bm.bmBitsPixel != 32 || !bm.bmBits) return false;
-    __try {
-        return static_cast<BYTE*>(bm.bmBits)[3] == 0x46;
-    } __except (EXCEPTION_EXECUTE_HANDLER) {
-        return false;
-    }
+    return h && GetObjectW(h, sizeof bm, &bm) == sizeof bm && bm.bmWidth == 1 && bm.bmHeight == 1 && bm.bmBitsPixel == 32 &&
+           bm.bmBits && static_cast<const BYTE*>(bm.bmBits)[3] == 0x46;
 }
 
 static BOOL WINAPI selection_blend(HDC dest, int x, int y, int w, int h, HDC src, int sx, int sy, int sw, int sh, BLENDFUNCTION blend) {
@@ -450,22 +445,112 @@ static void patch_blend_import(HMODULE module) {
     }
 }
 
+// Outline-only selection, folder windows. ExplorerFrame makes one DirectUI `UIMarqueeSelector` (id `Marquee`)
+// per view, when the view opens. Element::Paint fills its Background (style value `hotlight`) and takes the border colour from
+// BorderColor, so a transparent local Background removes the fill only. COLOR_HOTLIGHT itself stays untouched.
+static const char k_create_element[] = "?CreateElement@DUIXmlParser@DirectUI@@QEAAJPEBGPEAVElement@2@1PEAKPEAPEAV32@@Z";
+using CreateElementFn = HRESULT(__fastcall*)(void*, const wchar_t*, void*, void*, unsigned long*, void**);
+using SetBackgroundFn = HRESULT(__fastcall*)(void*, DWORD);
+static CreateElementFn g_real_create = nullptr;
+static SetBackgroundFn g_set_background = nullptr;
+static volatile LONG g_marquee_done = 0;
+
+static HRESULT __fastcall marquee_create(void* parser, const wchar_t* id, void* a, void* b, unsigned long* c, void** out) {
+    HRESULT hr = g_real_create(parser, id, a, b, c, out);
+    if (SUCCEEDED(hr) && g_no_fill && out && *out && !IS_INTRESOURCE(id) && !wcscmp(id, L"Marquee")) g_set_background(*out, 0);
+    return hr;
+}
+
+static void** find_import(BYTE* base, DWORD names_rva, DWORD slots_rva) {
+    auto name = reinterpret_cast<IMAGE_THUNK_DATA64*>(base + names_rva);
+    auto slot = reinterpret_cast<IMAGE_THUNK_DATA64*>(base + slots_rva);
+    for (; name->u1.AddressOfData; name++, slot++)
+        if (!IMAGE_SNAP_BY_ORDINAL64(name->u1.Ordinal) &&
+            !strcmp(reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(base + name->u1.AddressOfData)->Name, k_create_element))
+            return reinterpret_cast<void**>(&slot->u1.Function);
+    return nullptr;
+}
+
+// Delay-loaded in this Windows build; a normal import is handled too. Null: not found or unreadable.
+static void** find_create_slot(BYTE* base, SIZE_T* image_size) {
+    __try {
+        auto dos = reinterpret_cast<IMAGE_DOS_HEADER*>(base);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE) return nullptr;
+        auto nt = reinterpret_cast<IMAGE_NT_HEADERS64*>(base + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE || nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) return nullptr;
+        *image_size = nt->OptionalHeader.SizeOfImage;
+        if (DWORD rva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT].VirtualAddress)
+            for (auto d = reinterpret_cast<IMAGE_DELAYLOAD_DESCRIPTOR*>(base + rva); d->DllNameRVA; d++)
+                if (d->Attributes.RvaBased && d->ImportNameTableRVA)
+                    if (auto slot = find_import(base, d->ImportNameTableRVA, d->ImportAddressTableRVA)) return slot;
+        if (DWORD rva = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress)
+            for (auto d = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(base + rva); d->Name; d++)
+                if (d->OriginalFirstThunk)
+                    if (auto slot = find_import(base, d->OriginalFirstThunk, d->FirstThunk)) return slot;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+    }
+    return nullptr;
+}
+
+// Called from `tick` until done, at most once a second. A view makes its Marquee once, when it opens, so both
+// DLLs are loaded here: waiting for the first folder window would leave that window's box filled.
+static void patch_marquee_create() {
+    static ULONGLONG last = 0;
+    if (g_marquee_done) return;
+    ULONGLONG now = GetTickCount64();
+    if (last && now - last < 1000) return;
+    last = now;
+    HMODULE frame = LoadLibraryExW(L"explorerframe.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    HMODULE dui = LoadLibraryExW(L"dui70.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    if (!frame || !dui) return;
+    auto create = reinterpret_cast<void*>(GetProcAddress(dui, k_create_element));
+    auto set = reinterpret_cast<void*>(GetProcAddress(dui, "?SetBackgroundColor@Element@DirectUI@@QEAAJK@Z"));
+    auto base = reinterpret_cast<BYTE*>(frame);
+    SIZE_T size = 0;
+    void** slot = create && set ? find_create_slot(base, &size) : nullptr;
+    if (!slot) {
+        g_marquee_done = 1; // this Windows build lacks the import or export: leave it alone
+        return;
+    }
+    void* hook = reinterpret_cast<void*>(marquee_create);
+    void* current = *slot;
+    // An unbound delay slot points at ExplorerFrame's own stub; any other value is someone else's hook and stays.
+    bool unbound = static_cast<BYTE*>(current) >= base && static_cast<BYTE*>(current) < base + size;
+    if (current == hook || (current != create && !unbound)) {
+        g_marquee_done = 1;
+        return;
+    }
+    g_real_create = reinterpret_cast<CreateElementFn>(create);
+    g_set_background = reinterpret_cast<SetBackgroundFn>(set);
+    DWORD old;
+    if (!VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &old)) return;
+    // shortcut: a delay-load bind racing this write can put the real import back; the fill then stays until Explorer restarts.
+    if (InterlockedCompareExchangePointer(slot, hook, current) == current) g_marquee_done = 1;
+    VirtualProtect(slot, sizeof(void*), old, &old);
+}
+
 static void patch_selection_fill() {
     static LONG once = 0;
-    if (InterlockedExchange(&once, 1)) return;
-    // comctl32's import will point into this DLL: it must never be unmapped.
-    HMODULE self;
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN, reinterpret_cast<LPCWSTR>(&selection_blend), &self)) return;
-    HMODULE modules[1024];
-    DWORD bytes = 0;
-    if (!K32EnumProcessModules(GetCurrentProcess(), modules, sizeof modules, &bytes)) return;
-    DWORD count = (bytes > sizeof modules ? sizeof modules : bytes) / sizeof(HMODULE);
-    for (DWORD i = 0; i < count; i++) {
-        wchar_t path[MAX_PATH];
-        DWORD n = GetModuleFileNameW(modules[i], path, MAX_PATH);
-        if (!n || n >= MAX_PATH || _wcslwr_s(path)) continue;
-        if (wcsstr(path, L"common-controls_6595b64144ccf1df_6.") && wcsstr(path, L"\\comctl32.dll")) patch_blend_import(modules[i]);
+    static volatile LONG pinned = 0;
+    if (!InterlockedExchange(&once, 1)) {
+        // The patched imports will point into this DLL: it must never be unmapped.
+        HMODULE self;
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN, reinterpret_cast<LPCWSTR>(&selection_blend), &self)) {
+            pinned = 1;
+            HMODULE modules[1024];
+            DWORD bytes = 0;
+            if (K32EnumProcessModules(GetCurrentProcess(), modules, sizeof modules, &bytes)) {
+                DWORD count = (bytes > sizeof modules ? sizeof modules : bytes) / sizeof(HMODULE);
+                for (DWORD i = 0; i < count; i++) {
+                    wchar_t path[MAX_PATH];
+                    DWORD n = GetModuleFileNameW(modules[i], path, MAX_PATH);
+                    if (!n || n >= MAX_PATH || _wcslwr_s(path)) continue;
+                    if (wcsstr(path, L"common-controls_6595b64144ccf1df_6.") && wcsstr(path, L"\\comctl32.dll")) patch_blend_import(modules[i]);
+                }
+            }
+        }
     }
+    if (pinned) patch_marquee_create();
 }
 
 struct Factory : implements<Factory, IClassFactory> {
@@ -485,7 +570,7 @@ STDAPI DllGetClassObject(REFCLSID clsid, REFIID iid, void** out) try {
     if (clsid != CLSID_Tap) return CLASS_E_CLASSNOTAVAILABLE;
     if (!g_shared) {
         // Made here, not by MyTune: MyTune runs elevated and explorer could not open its objects.
-        HANDLE m = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(Shared), L"Local\\MyTuneTaskbar7");
+        HANDLE m = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0, sizeof(Shared), L"Local\\MyTuneTaskbar10");
         if (m) g_shared = static_cast<Shared*>(MapViewOfFile(m, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(Shared)));
         log(g_shared ? L"loaded" : L"no shared memory");
     }

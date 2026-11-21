@@ -241,11 +241,11 @@ fn avatar(ui: &Ui, rect: egui::Rect, tex: Option<egui::TextureId>, name: &str) {
 
 /// A server/DM button on the rail: a rounded square (rounder when selected) with an accent bar on its left.
 fn rail_icon(ui: &mut Ui, tex: Option<egui::TextureId>, name: &str, selected: bool, unread: bool, pings: u64) -> egui::Response {
-    let (rect, resp) = ui.allocate_exact_size(vec2(48.0, 48.0), Sense::click_and_drag()); // servers drag to reorder
+    let (rect, resp) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::click_and_drag()); // servers drag to reorder
     let pal = p();
     // circle to rounded square on hover or selection, and the left bar grows or shrinks, both eased
     let round = ui.ctx().animate_bool_with_time(resp.id.with("round"), selected || resp.hovered(), voice::QUICK);
-    let radius = egui::lerp(24.0..=16.0, round);
+    let radius = egui::lerp(20.0..=13.0, round);
     match tex {
         Some(id) => {
             // Black has no selection bar: the other icons are dimmed instead
@@ -1103,12 +1103,12 @@ impl ChatPage {
             });
             }
             // server rail
-            egui::Panel::left("chat_rail").exact_size(72.0).resizable(false).frame(egui::Frame::new().fill(k_sidebar())).show_separator_line(false).show_collapsible(ui, &mut !focus, |ui| {
+            egui::Panel::left("chat_rail").exact_size(64.0).resizable(false).frame(egui::Frame::new().fill(k_sidebar())).show_separator_line(false).show_collapsible(ui, &mut !focus, |ui| {
                 // Join a server: pinned under the rail, centred in it and on the same line as the user bar and
                 // the message bar (their centres sit 41 px above the bottom: 18 + 46/2 and 24 + 34/2)
                 egui::Panel::bottom("rail_join").exact_size(76.0).frame(egui::Frame::new()).show_separator_line(false).show_inside(ui, |ui| {
                     let r = ui.max_rect();
-                    let spot = egui::Rect::from_center_size(egui::pos2(r.center().x, r.bottom() - 41.0), vec2(48.0, 48.0));
+                    let spot = egui::Rect::from_center_size(egui::pos2(r.center().x, r.bottom() - 41.0), vec2(40.0, 40.0));
                     ui.scope_builder(egui::UiBuilder::new().max_rect(spot), |ui| {
                         if rail_icon(ui, None, "+", false, false, 0).on_hover_text("Join a server").clicked() {
                             acts.push(Action::OpenJoinServer);
@@ -1209,7 +1209,7 @@ impl ChatPage {
             if let Some(ps) = egui::PanelState::load(&ctx, ui.scope_id().with_salt(egui::IdSalt::new("chat_list"))) {
                 widths.insert("chat_list".into(), ps.size().x);
             }
-            egui::Panel::left("chat_list").resizable(true).default_size(saved.widths.get("chat_list").copied().unwrap_or(264.0)).size_range(180.0..=460.0).frame(egui::Frame::new().fill(k_sidebar())).show_separator_line(false).show_collapsible(ui, &mut !focus, |ui| {
+            egui::Panel::left("chat_list").resizable(true).default_size(saved.widths.get("chat_list").copied().unwrap_or(300.0)).size_range(180.0..=460.0).frame(egui::Frame::new().fill(k_sidebar())).show_separator_line(false).show_collapsible(ui, &mut !focus, |ui| {
                 let title = match &s.navigation {
                     Navigation::DirectMessages => "Direct messages".to_string(),
                     Navigation::Server(id) => s.servers.iter().find(|x| &x.id == id).map(|x| x.name.clone()).unwrap_or_default(),
@@ -1287,7 +1287,8 @@ impl ChatPage {
                         let unread = r.unread > 0 || r.mentions > 0;
                         let w = ui.available_width() - 16.0;
                         // the click area is the row as drawn: 8 px in from both sides
-                        let (full, _) = ui.allocate_exact_size(vec2(w + 16.0, 44.0), Sense::hover());
+                        // a DM row is 42 + the 2 px gap: Discord's 44 px pitch
+                        let (full, _) = ui.allocate_exact_size(vec2(w + 16.0, if r.direct { 42.0 } else { 44.0 }), Sense::hover());
                         let rect = full.shrink2(vec2(8.0, 0.0));
                         let drags = !r.direct && app.draggable(&r.id);
                         let resp = ui.interact(rect, ui.id().with(("room", &r.id)), if drags { Sense::click_and_drag() } else { Sense::click() });
@@ -1329,7 +1330,7 @@ impl ChatPage {
                             x += 22.0;
                         }
                         let color = if on || unread || (p().black && resp.hovered()) { TEXT } else { SECONDARY };
-                        let font = if unread { th::semibold() } else { egui::FontFamily::Proportional };
+                        let font = if unread { th::semibold() } else { th::body() };
                         // under a DM's name (never the last message, by the user's choice): the voice channel
                         // they are in (speaker icon), else the game they play (green gamepad), else their custom status
                         let sub: Option<(Option<(&str, Color32)>, String)> = if r.direct {

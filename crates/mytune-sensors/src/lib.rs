@@ -3,6 +3,7 @@
 //! Cadence: 1 s while the window is watched or a game runs, else 5 s.
 
 mod hw;
+mod io;
 mod nvml;
 mod pdh;
 pub mod decode;
@@ -11,6 +12,7 @@ mod thermal;
 pub mod session_feed;
 
 pub use hw::HwSource;
+pub use io::{IoNow, IoSampler};
 
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;

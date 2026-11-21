@@ -143,6 +143,8 @@ pub fn build(cmd: Arc<dyn Cmd>) -> Result<Vec<TweakItem>> {
     put("cust.clearstart", Box::new(crate::taskbar::ClearStartTweak));
     #[cfg(feature = "taskbar-look")]
     put("cust.outlineselect", Box::new(crate::taskbar::OutlineSelectTweak));
+    put(crate::selcolor::ID, Box::new(crate::selcolor::SelectionColorTweak));
+    put(crate::searchstats::ID, Box::new(crate::searchstats::SearchStatsTweak));
     put("adv.hibernation",Box::new(HibernationTweak::system(cmd.clone())));
     put("adv.vbs", Box::new(VbsTweak::system(cmd.clone())));
     for t in DirectXTweak::catalog() {

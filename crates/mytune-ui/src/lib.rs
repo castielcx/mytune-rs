@@ -17,6 +17,7 @@ pub mod mouse;
 pub mod nav;
 pub mod notice;
 pub mod nowplaying;
+pub mod searchstats;
 pub mod settingspage;
 pub mod soundcloud;
 pub mod soundcloud_login;

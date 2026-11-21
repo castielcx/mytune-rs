@@ -29,6 +29,8 @@ pub mod pergame;
 pub mod process;
 pub mod procs;
 pub mod reg;
+pub mod searchstats;
+pub mod selcolor;
 pub mod session;
 pub mod special;
 pub mod soundcloud;

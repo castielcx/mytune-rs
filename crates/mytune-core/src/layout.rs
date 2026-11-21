@@ -46,8 +46,8 @@ const DEBLOAT: &[Group] = &[
 const CUSTOMIZE: &[Group] = &[
     ("Appearance", &["cust.dark", "general.display", "cust.dragoutline", "sys.menudelay", "qol.hover"]),
     ("Taskbar", &["cust.taskbarleft", "cust.hidesearch", "cust.hidetaskview", "adv.notifications", "qol.seconds"]),
-    ("Start and search", &["cust.bing", "cust.startrecs", "cust.cleanstart", "cust.clearstart", "qol.searchhighlights"]),
-    ("File Explorer", &["cust.fileext", "cust.hiddenfiles", "qol.thispc", "qol.navpane", "cust.outlineselect"]),
+    ("Start and search", &["cust.bing", "cust.startrecs", "cust.cleanstart", "cust.clearstart", "cust.searchstats", "qol.searchhighlights"]),
+    ("File Explorer", &["cust.fileext", "cust.hiddenfiles", "qol.thispc", "qol.navpane", "cust.outlineselect", "cust.selectioncolor"]),
     ("Right-click menu", &["adv.classicmenu", "qol.cleanmenu", "qol.takeown"]),
     ("Window snapping", &["cust.snapoff", "cust.snapflyout", "cust.snapassist"]),
     ("Keyboard", &["cust.numlock", "sys.keyboard", "qol.stickykeys"]),
@@ -130,7 +130,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(seen.len(), 75);
+        assert_eq!(seen.len(), 77);
     }
 
     #[test]

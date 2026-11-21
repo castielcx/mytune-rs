@@ -428,7 +428,7 @@ mod tests {
     #[test]
     fn catalog_matches_expected_shape() {
         let all = entries().unwrap();
-        assert_eq!((all.len(), all.iter().filter(|e| e.removed).count()), (95, 17), "89 from the C# dump + Rust-only cust.adblock, cust.cleanstart, cust.clearstart, cust.outlineselect, net.buffers and net.wifi");
+        assert_eq!((all.len(), all.iter().filter(|e| e.removed).count()), (97, 17), "89 from the C# dump + Rust-only cust.adblock, cust.cleanstart, cust.clearstart, cust.outlineselect, cust.searchstats, cust.selectioncolor, net.buffers and net.wifi");
         let tweaks = registry_tweaks(Arc::new(CountHooks::default())).unwrap();
         assert_eq!(tweaks.len(), 65, "56 active + 9 removed stubs (adv.msi, qol.takeown and TimerResolution excluded)");
         assert_eq!(tweaks.iter().filter(|t| t.removed).count(), 9);

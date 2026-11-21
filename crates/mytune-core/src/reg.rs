@@ -59,6 +59,34 @@ fn not_found(code: WIN32_ERROR) -> bool {
     code == ERROR_FILE_NOT_FOUND || code == ERROR_PATH_NOT_FOUND
 }
 
+/// Why a tweak that writes the user's settings is refused when MyTune runs under another account.
+pub const OTHER_ACCOUNT: &str = "MyTune is running as a different Windows account than the one signed in, so this would change the wrong account's settings. Nothing was changed. Sign in with an administrator account and start MyTune there.";
+
+thread_local! {
+    static HKCU_DENIED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// While this lives, HKCU writes on this thread fail with `OTHER_ACCOUNT`.
+pub(crate) struct DenyHkcu;
+
+pub(crate) fn deny_hkcu_writes() -> DenyHkcu {
+    HKCU_DENIED.set(true);
+    DenyHkcu
+}
+
+impl Drop for DenyHkcu {
+    fn drop(&mut self) {
+        HKCU_DENIED.set(false);
+    }
+}
+
+fn writable(hive: Hive) -> Result<()> {
+    if hive == Hive::Hkcu && HKCU_DENIED.get() {
+        return Err(Error::Plain(OTHER_ACCOUNT.into()));
+    }
+    Ok(())
+}
+
 struct Key(HKEY);
 impl Drop for Key {
     fn drop(&mut self) {
@@ -83,6 +111,7 @@ fn open(hive: Hive, path: &str, access: REG_SAM_FLAGS) -> Result<Option<Key>> {
 }
 
 fn create(hive: Hive, path: &str, access: REG_SAM_FLAGS) -> Result<Key> {
+    writable(hive)?;
     let p = wide(path);
     let mut h = HKEY::default();
     let r = unsafe {
@@ -252,6 +281,7 @@ pub fn set(hive: Hive, path: &str, name: &str, value: &RegValue) -> Result<()> {
 
 /// Deletes a value; missing key or value is fine.
 pub fn delete_value(hive: Hive, path: &str, name: &str) -> Result<()> {
+    writable(hive)?;
     let Some(key) = open(hive, path, KEY_SET_VALUE)? else { return Ok(()) };
     let n = wide(name);
     let r = unsafe { RegDeleteValueW(key.0, PCWSTR(n.as_ptr())) };
@@ -264,6 +294,7 @@ pub fn delete_value(hive: Hive, path: &str, name: &str) -> Result<()> {
 
 /// Deletes the key only when it has no subkeys and no values. Returns whether it was deleted.
 pub fn delete_key_if_empty(hive: Hive, path: &str) -> Result<bool> {
+    writable(hive)?;
     let Some(key) = open(hive, path, KEY_READ)? else { return Ok(false) };
     let (mut subkeys, mut values) = (0u32, 0u32);
     let r = unsafe {
@@ -289,6 +320,7 @@ pub fn delete_key_if_empty(hive: Hive, path: &str) -> Result<bool> {
 
 /// Deletes a key and everything below it; missing key is fine.
 pub fn delete_tree(hive: Hive, path: &str) -> Result<()> {
+    writable(hive)?;
     let Some(key) = open(hive, path, KEY_ALL_ACCESS)? else { return Ok(()) };
     let r = unsafe { RegDeleteTreeW(key.0, PCWSTR::null()) };
     drop(key);
@@ -325,6 +357,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn roundtrip_all_types() {
         let s = Scratch::new("types");
         let vals = [
@@ -346,6 +379,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn long_value_grows_buffer() {
         let s = Scratch::new("long");
         let v = RegValue::String("x".repeat(5000));
@@ -354,6 +388,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn missing_and_delete() {
         let s = Scratch::new("del");
         assert_eq!(get(Hive::Hkcu, &s.0, "x").unwrap(), None);
@@ -366,6 +401,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn missing_keys_and_delete_if_empty() {
         let s = Scratch::new("keys");
         let deep = format!("{}\\a\\b", s.0);
@@ -380,6 +416,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn delete_tree_removes_subkeys() {
         let s = Scratch::new("tree");
         set(Hive::Hkcu, &format!("{}\\a\\b", s.0), "v", &RegValue::Dword(1)).unwrap();
@@ -390,6 +427,7 @@ mod tests {
 
     /// HKLM needs admin: skips (passes) with a note when access is denied.
     #[test]
+    #[ignore = "real system: writes HKLM scratch key"]
     fn hklm_roundtrip_in_64bit_view() {
         let path = format!("SOFTWARE\\MyTuneTest\\hklm-{}", std::process::id());
         let _ = delete_tree(Hive::Hklm, &path);
@@ -412,6 +450,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn default_value_name() {
         let s = Scratch::new("def");
         set(Hive::Hkcu, &s.0, "", &RegValue::String("dflt".into())).unwrap();

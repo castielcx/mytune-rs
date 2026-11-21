@@ -79,7 +79,8 @@ pub trait Hooks: Send + Sync {
     fn broadcast_setting_change(&self);
     /// Re-reads the DragFullWindows registry value live (SPI_SETDRAGFULLWINDOWS), then broadcasts.
     fn apply_drag_full_windows(&self);
-    fn restart_explorer(&self);
+    /// False when Explorer was not restarted or did not come back.
+    fn restart_explorer(&self) -> bool;
 }
 
 pub struct SystemHooks;
@@ -109,15 +110,8 @@ impl Hooks for SystemHooks {
         self.broadcast_setting_change();
     }
 
-    fn restart_explorer(&self) {
-        use crate::process::run;
-        let _ = run("taskkill", &["/F", "/IM", "explorer.exe"]);
-        std::thread::sleep(std::time::Duration::from_millis(800));
-        let running = run("tasklist", &["/FI", "IMAGENAME eq explorer.exe", "/NH"]).map(|r| r.output.contains("explorer.exe")).unwrap_or(false);
-        if !running {
-            let win = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
-            let _ = std::process::Command::new(std::path::PathBuf::from(win).join("explorer.exe")).spawn();
-        }
+    fn restart_explorer(&self) -> bool {
+        crate::process::restart_explorer()
     }
 }
 
@@ -218,6 +212,12 @@ impl DataTweak {
         Ok(v)
     }
 
+    /// `adv.classicmenu` works by its key existing, so clearing the value alone would leave the classic menu on.
+    fn classic_menu_tree(&self) -> Option<(Hive, &str)> {
+        let s = self.sets.first().filter(|_| self.id == "adv.classicmenu")?;
+        Some((s.hive, s.path.strip_suffix("\\InprocServer32")?))
+    }
+
     fn after_change(&self) {
         match self.after {
             After::None => {}
@@ -225,10 +225,32 @@ impl DataTweak {
             After::DragFullWindows => self.hooks.apply_drag_full_windows(),
         }
         if self.flags.has(TweakFlags::RESTARTS_EXPLORER) {
-            self.hooks.restart_explorer();
+            self.restart_explorer();
         }
     }
+
+    /// Restarts Explorer and remembers a failure for `explorer_result`.
+    pub(crate) fn restart_explorer(&self) {
+        let ok = self.hooks.restart_explorer();
+        let mut missed = EXPLORER_MISSED.lock().unwrap_or_else(|p| p.into_inner());
+        if ok {
+            missed.remove(&self.id);
+        } else {
+            missed.insert(self.id.clone());
+        }
+    }
+
+    fn explorer_result(&self) -> Result<()> {
+        if EXPLORER_MISSED.lock().unwrap_or_else(|p| p.into_inner()).remove(&self.id) {
+            return Err(Error::Plain("The setting was changed, but Windows Explorer did not restart. It shows after you restart Explorer (Tools page) or sign out.".into()));
+        }
+        Ok(())
+    }
 }
+
+/// Tweaks whose last Explorer restart failed. The change itself worked, and an error from `apply` would roll it
+/// back, so `on_applied` / `on_reverted` report it once the backup is saved.
+static EXPLORER_MISSED: std::sync::Mutex<std::collections::BTreeSet<String>> = std::sync::Mutex::new(std::collections::BTreeSet::new());
 
 impl Tweak for DataTweak {
     fn id(&self) -> &str {
@@ -268,6 +290,14 @@ impl Tweak for DataTweak {
         Ok(())
     }
     fn revert_default(&self) -> Result<bool> {
+        if let Some((hive, tree)) = self.classic_menu_tree() {
+            if !self.is_applied()? {
+                return Ok(false);
+            }
+            reg::delete_tree(hive, tree)?;
+            self.after_change();
+            return Ok(true);
+        }
         let sets = self.applicable()?;
         if sets.is_empty() || sets.iter().any(|s| s.default.is_none()) {
             return Ok(false);
@@ -280,6 +310,12 @@ impl Tweak for DataTweak {
         }
         self.after_change();
         Ok(true)
+    }
+    fn on_applied(&self, _: &mut crate::store::Store) -> Result<()> {
+        self.explorer_result()
+    }
+    fn on_reverted(&self, _: &mut crate::store::Store) -> Result<()> {
+        self.explorer_result()
     }
 }
 
@@ -328,6 +364,7 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn revert_without_backup_writes_windows_defaults() {
         let path = format!("Software\\MyTuneTest\\cat-default-{}", std::process::id());
         let set = |name: &str, default| DataSet { hive: Hive::Hkcu, path: path.clone(), name: name.into(), value: RegValue::Dword(0), only_if_key_exists: false, default };
@@ -361,21 +398,51 @@ mod tests {
         fn apply_drag_full_windows(&self) {
             self.drag.fetch_add(1, Ordering::SeqCst);
         }
-        fn restart_explorer(&self) {
+        fn restart_explorer(&self) -> bool {
             self.explorer.fetch_add(1, Ordering::SeqCst);
+            true
         }
+    }
+
+    struct NoShell;
+    impl Hooks for NoShell {
+        fn broadcast_setting_change(&self) {}
+        fn apply_drag_full_windows(&self) {}
+        fn restart_explorer(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn a_failed_explorer_restart_is_reported_after_the_apply_not_by_it() {
+        let d = tempfile::tempdir().unwrap();
+        let mut store = crate::store::Store::load(d.path());
+        let t = DataTweak { id: "test.noshell".into(), title: "t".into(), description: String::new(), details: String::new(), flags: TweakFlags(TweakFlags::RESTARTS_EXPLORER), removed: false, sets: vec![], after: After::None, hooks: Arc::new(NoShell) };
+        t.apply(&mut TweakBackup::default()).unwrap(); // an Err here would make the engine roll the change back
+        assert!(t.on_applied(&mut store).unwrap_err().to_string().contains("did not restart"));
+        assert!(t.on_applied(&mut store).is_ok(), "reported once");
+        t.revert(&TweakBackup::default()).unwrap();
+        assert!(t.on_reverted(&mut store).is_err());
     }
 
     #[test]
     fn catalog_matches_expected_shape() {
         let all = entries().unwrap();
-        assert_eq!((all.len(), all.iter().filter(|e| e.removed).count()), (92, 16), "89 from the C# dump + Rust-only cust.adblock, cust.cleanstart and net.buffers");
+        assert_eq!((all.len(), all.iter().filter(|e| e.removed).count()), (95, 17), "89 from the C# dump + Rust-only cust.adblock, cust.cleanstart, cust.clearstart, cust.outlineselect, net.buffers and net.wifi");
         let tweaks = registry_tweaks(Arc::new(CountHooks::default())).unwrap();
-        assert_eq!(tweaks.len(), 66, "57 active + 9 removed stubs (adv.msi and TimerResolution excluded)");
+        assert_eq!(tweaks.len(), 65, "56 active + 9 removed stubs (adv.msi, qol.takeown and TimerResolution excluded)");
         assert_eq!(tweaks.iter().filter(|t| t.removed).count(), 9);
         let ids: HashSet<_> = tweaks.iter().map(|t| t.id.clone()).collect();
         assert_eq!(ids.len(), tweaks.len(), "unique ids");
-        assert_eq!(tweaks.iter().map(|t| t.sets.len()).sum::<usize>(), 122, "registry value count drifted from the C# dump");
+        assert_eq!(tweaks.iter().map(|t| t.sets.len()).sum::<usize>(), 116, "registry value count drifted from the C# dump");
+    }
+
+    #[test]
+    fn classic_menu_default_deletes_only_its_clsid_tree() {
+        let t = registry_tweaks(Arc::new(CountHooks::default())).unwrap();
+        let by = |id: &str| t.iter().find(|x| x.id == id).unwrap();
+        assert_eq!(by("adv.classicmenu").classic_menu_tree(), Some((Hive::Hkcu, "Software\\Classes\\CLSID\\{86ca1aa0-34aa-4e8b-a509-50c905bae2a2}")));
+        assert!(t.iter().filter(|x| x.id != "adv.classicmenu").all(|x| x.classic_menu_tree().is_none()));
     }
 
     #[test]

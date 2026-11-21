@@ -64,6 +64,42 @@ pub fn run_sfc() -> std::io::Result<()> {
     open_console("sfc /scannow")
 }
 
+/// Restarts Explorer in this session (`process::restart_explorer`), then checks that a new shell is up, because
+/// that call reports nothing. Blocks up to ~13 s: call it off the UI thread.
+pub fn restart_explorer() -> std::io::Result<()> {
+    if crate::process::shell_user_differs() {
+        return Err(std::io::Error::other("it runs under another Windows account than MyTune, so it was left alone"));
+    }
+    let before = shell_pid();
+    crate::process::restart_explorer();
+    // the process can be back before its shell window
+    let mut result = restart_result(before, shell_pid());
+    for _ in 0..10 {
+        if result.is_ok() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        result = restart_result(before, shell_pid());
+    }
+    result.map_err(std::io::Error::other)
+}
+
+/// 0 = no shell window.
+fn restart_result(before: u32, now: u32) -> std::result::Result<(), &'static str> {
+    match now {
+        0 => Err("Explorer did not start; press Ctrl+Shift+Esc > Run new task > explorer.exe"),
+        n if n == before => Err("it was not closed, see the log"),
+        _ => Ok(()),
+    }
+}
+
+fn shell_pid() -> u32 {
+    use windows::Win32::UI::WindowsAndMessaging::{GetShellWindow, GetWindowThreadProcessId};
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(GetShellWindow(), Some(&mut pid)) };
+    pid
+}
+
 pub fn run_dism() -> std::io::Result<()> {
     open_console("DISM /Online /Cleanup-Image /RestoreHealth")
 }
@@ -79,6 +115,14 @@ mod tests {
         assert_eq!(d[1].health, "Warning");
         assert_eq!(parse_disks(r#"{"N":"One","M":"SSD","B":"USB","S":64,"H":"Healthy"}"#).unwrap().len(), 1);
         assert!(parse_disks("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn restart_counts_only_a_new_shell() {
+        assert!(restart_result(10, 20).is_ok());
+        assert!(restart_result(0, 20).is_ok()); // Explorer was down and came back
+        assert_eq!(restart_result(10, 10), Err("it was not closed, see the log"));
+        assert!(restart_result(10, 0).unwrap_err().starts_with("Explorer did not start"));
     }
 
     /// Read only.

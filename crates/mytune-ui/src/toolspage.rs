@@ -4,14 +4,15 @@
 use crate::theme::{self as th, rt, text2, text3, TEXT};
 use crate::widgets::{self as w, caption, caption3};
 use eframe::egui::{self, Align, Id, Layout, Ui};
-use mytune_core::catalog::{registry_tweaks, DataTweak, SystemHooks};
+use mytune_core::alltweaks::{registry_items, TweakItem};
 use mytune_core::cleaner::{self, CleanTarget, ShaderCache};
-use mytune_core::engine::Engine;
+use mytune_core::engine::{Engine, RevertOutcome};
 use mytune_core::stability::{self, ChangeEntry, StabilityEvent};
 use mytune_core::startup::{self, StartupEntry};
 use mytune_core::tools::{self, Disk};
 use mytune_core::tweaks::system_cmd;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
@@ -24,11 +25,13 @@ enum Msg {
     ShaderCleared(&'static str, u64),
     Disks(Result<Vec<Disk>, String>),
     Stability(Result<(Vec<StabilityEvent>, Vec<ChangeEntry>), String>),
+    /// Change id, its label, and how the revert ended (`None`: it failed, the error is logged).
+    Undone(String, String, Option<RevertOutcome>),
 }
 
 pub struct ToolsPage {
     engine: Arc<Engine>,
-    tweaks: Vec<DataTweak>,
+    tweaks: Arc<Vec<TweakItem>>,
     tx: Sender<Msg>,
     rx: Receiver<Msg>,
     pub(crate) status: Option<(String, bool)>,
@@ -51,6 +54,10 @@ pub struct ToolsPage {
     stab: Option<Result<(Vec<StabilityEvent>, Vec<ChangeEntry>), String>>,
     /// change id -> new label of its button after "Switch off"
     undone: HashMap<String, String>,
+    /// Change id being switched off on its thread: one at a time.
+    undoing: Option<String>,
+    /// A second taskkill would kill the shell that just came back.
+    restarting: Arc<AtomicBool>,
 }
 
 impl ToolsPage {
@@ -59,7 +66,7 @@ impl ToolsPage {
         let targets = Arc::new(cleaner::targets());
         ToolsPage {
             engine,
-            tweaks: registry_tweaks(Arc::new(SystemHooks)).unwrap_or_default(),
+            tweaks: Arc::new(registry_items().unwrap_or_default()),
             tx,
             rx,
             status: None,
@@ -78,6 +85,8 @@ impl ToolsPage {
             stab_busy: false,
             stab: None,
             undone: HashMap::new(),
+            undoing: None,
+            restarting: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -118,6 +127,13 @@ impl ToolsPage {
         self.spawn(ctx, |tx| {
             let _ = tx.send(Msg::Startup(startup::list()));
         });
+    }
+
+    /// The page was opened again: the first open loads everything in `ui`.
+    pub(crate) fn reopened(&self, ctx: &egui::Context) {
+        if self.started {
+            self.load_startup(ctx);
+        }
     }
 
     fn load_shaders(&mut self, ctx: &egui::Context) {
@@ -163,6 +179,17 @@ impl ToolsPage {
                     self.stab = Some(r);
                     self.stab_busy = false;
                 }
+                Msg::Undone(id, label, r) => {
+                    self.undoing = None;
+                    self.status = Some(match r {
+                        Some(RevertOutcome::Reverted) => {
+                            self.undone.insert(id, format!("Switched off: {label}"));
+                            crate::notice::toggled(&label, false, None)
+                        }
+                        Some(RevertOutcome::NoBackup) => crate::notice::toggled(&label, false, Some("it was set outside MyTune, so there is nothing to undo")),
+                        None => crate::notice::toggled(&label, false, Some("see the log")),
+                    });
+                }
             }
         }
     }
@@ -191,10 +218,40 @@ impl ToolsPage {
             crate::notice::post(&ctx, m, ok);
         }
         self.junk_card(ui, &ctx);
-        self.startup_card(ui, &ctx);
+        self.startup_card(ui);
         self.shader_card(ui, &ctx);
         self.drives_card(ui);
         self.stability_card(ui, &ctx);
+        Self::heading(ui, "Explorer");
+        let mut restart = false;
+        th::card(ui, (10, 16, 16, 16), |ui| {
+            ui.horizontal(|ui| {
+                let avail = ui.available_width();
+                ui.vertical(|ui| {
+                    ui.set_max_width((avail - 200.0).max(120.0));
+                    caption(ui, "Restart Windows Explorer (taskbar, Start menu and desktop). Open File Explorer windows close.");
+                });
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    ui.add_enabled_ui(!self.restarting.load(Ordering::Relaxed), |ui| {
+                        restart = th::button(ui, "Restart Explorer", false, th::BTN).clicked();
+                    });
+                });
+            });
+        });
+        if restart && !self.restarting.swap(true, Ordering::Relaxed) {
+            let ctx2 = ctx.clone();
+            let restarting = self.restarting.clone();
+            std::thread::spawn(move || {
+                let (m, ok) = match tools::restart_explorer() {
+                    Ok(()) => ("Explorer restarted.".to_string(), true),
+                    Err(e) => (format!("Couldn't restart Explorer: {e}"), false),
+                };
+                restarting.store(false, Ordering::Relaxed);
+                crate::notice::post(&ctx2, m, ok);
+                ctx2.request_repaint();
+            });
+            self.status = Some(("Restarting Explorer…".into(), true));
+        }
     }
 
     fn heading(ui: &mut Ui, text: &str) {
@@ -254,36 +311,20 @@ impl ToolsPage {
         }
     }
 
-    fn startup_card(&mut self, ui: &mut Ui, ctx: &egui::Context) {
+    fn startup_card(&mut self, ui: &mut Ui) {
         Self::heading(ui, "Startup programs");
-        let mut refresh = false;
         let mut flip: Option<(usize, bool)> = None;
         th::card(ui, (10, 16, 16, 16), |ui| {
-            ui.horizontal(|ui| {
-                let avail = ui.available_width();
-                ui.vertical(|ui| {
-                    ui.set_max_width((avail - 120.0).max(120.0));
-                    caption(
-                        ui,
-                        &match &self.startup {
-                            None => "Looking for startup programs…".to_string(),
-                            Some(l) if l.is_empty() => "No startup programs found.".to_string(),
-                            Some(l) => format!(
-                                "{} of {} start with Windows. Turning one off keeps it installed, and it can be turned back on here or in Task Manager.",
-                                l.iter().filter(|e| e.enabled).count(),
-                                l.len()
-                            ),
-                        },
-                    );
-                });
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if th::button(ui, "Refresh", false, th::BTN).clicked() {
-                        refresh = true;
-                    }
-                });
-            });
+            match &self.startup {
+                None => {
+                    caption(ui, "Looking for startup programs…");
+                }
+                Some(l) if l.is_empty() => {
+                    caption(ui, "No startup programs found.");
+                }
+                Some(_) => {}
+            }
             if let Some(list) = &self.startup {
-                ui.add_space(12.0);
                 for (i, e) in list.iter().enumerate() {
                     ui.horizontal(|ui| {
                         let avail = ui.available_width();
@@ -316,9 +357,6 @@ impl ToolsPage {
                     self.status = Some((format!("{name}: {e}"), false));
                 }
             }
-        }
-        if refresh {
-            self.load_startup(ctx);
         }
     }
 
@@ -497,9 +535,11 @@ impl ToolsPage {
                                 let text = match (c.kind.as_deref(), done) {
                                     (_, Some(d)) => d.clone(),
                                     (Some("app"), _) => format!("Open in Microsoft Store: {label}"),
+                                    _ if self.undoing.is_some() && self.undoing == c.id => format!("Switching off: {label}…"),
                                     _ => format!("Switch off: {label}"),
                                 };
-                                ui.add_enabled_ui(done.is_none(), |ui| {
+                                let free = c.kind.as_deref() == Some("app") || self.undoing.is_none();
+                                ui.add_enabled_ui(done.is_none() && free, |ui| {
                                     if th::button(ui, &text, false, th::BTN).clicked() {
                                         undo = Some(c.clone());
                                     }
@@ -529,12 +569,12 @@ impl ToolsPage {
             self.load_stability(ctx);
         }
         if let Some(c) = undo {
-            self.undo(c);
+            self.undo(c, ctx);
         }
         let _ = caption3;
     }
 
-    fn undo(&mut self, c: ChangeEntry) {
+    fn undo(&mut self, c: ChangeEntry, ctx: &egui::Context) {
         let label = c.label.clone().unwrap_or_default();
         if c.kind.as_deref() == Some("app") {
             let q: String = label.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect();
@@ -542,17 +582,19 @@ impl ToolsPage {
             return;
         }
         let Some(id) = c.id else { return };
-        let Some(t) = self.tweaks.iter().find(|t| t.id == id) else { return };
-        match self.engine.revert(t) {
-            Ok(_) => {
-                self.undone.insert(id, format!("Switched off: {label}"));
-                self.status = Some(crate::notice::toggled(&label, false, None));
-            }
-            Err(e) => {
-                mytune_core::log::error(&format!("stability undo {id}"), Some(&e));
-                self.status = Some(crate::notice::toggled(&label, false, Some("see the log")));
-            }
+        if self.undoing.is_some() {
+            return;
         }
+        let Some(i) = self.tweaks.iter().position(|t| t.id == id) else { return };
+        self.undoing = Some(id.clone());
+        let (engine, tweaks) = (self.engine.clone(), self.tweaks.clone());
+        self.spawn(ctx, move |tx| {
+            let r = engine.revert(&tweaks[i]);
+            if let Err(e) = &r {
+                mytune_core::log::error(&format!("stability undo {id}"), Some(e));
+            }
+            let _ = tx.send(Msg::Undone(id, label, r.ok()));
+        });
     }
 }
 

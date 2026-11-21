@@ -148,30 +148,68 @@ fn matches(s: &Session, p: Profile, settings: &[Setting], unsupported: &HashSet<
     Ok(true)
 }
 
+/// Marks an `nv:<id>` that `capture_settings` added in this run: only such a key may be dropped when the driver
+/// refuses the write. A key without the mark holds a real original from an earlier apply.
+const NEW_KEY: &str = "nvnew:";
+
+/// Records one setting's previous user value (or `default`) once. Reads only.
+fn remember(s: &Session, p: Profile, id: u32, b: &mut TweakBackup) -> Result<()> {
+    let key = format!("nv:{id}");
+    if !b.data.contains_key(&key) {
+        let prev = match s.get(p, id)? {
+            Some(v) if v.location == SettingValue::LOCATION_CURRENT_PROFILE && !v.is_current_predefined => v.value.to_string(),
+            _ => "default".to_string(),
+        };
+        b.data.insert(key, prev);
+    }
+    Ok(())
+}
+
+/// The engine saves what this records before `apply` runs. Reads only.
+fn capture_settings(s: &Session, p: Profile, ids: &[u32], b: &mut TweakBackup, unsupported: &HashSet<u32>) -> Result<()> {
+    b.data.retain(|k, _| !k.starts_with(NEW_KEY)); // left by an apply that was cut off
+    for id in ids.iter().filter(|id| !unsupported.contains(id)) {
+        if !b.data.contains_key(&format!("nv:{id}")) {
+            remember(s, p, *id, b)?;
+            b.data.insert(format!("{NEW_KEY}{id}"), "1".into());
+        }
+    }
+    Ok(())
+}
+
+/// True when this run created the setting's `nv:` key; takes the mark off.
+fn created_now(b: &mut TweakBackup, id: u32) -> bool {
+    b.data.remove(&format!("{NEW_KEY}{id}")).is_some() || !b.data.contains_key(&format!("nv:{id}"))
+}
+
 /// Sets the settings, recording each previous user value (or `default`) once.
 fn apply_settings(s: &Session, p: Profile, settings: &[Setting], b: &mut TweakBackup, unsupported: &HashSet<u32>) -> Result<()> {
     for (id, value, name) in settings {
         if unsupported.contains(id) {
             continue;
         }
-        let key = format!("nv:{id}");
-        if !b.data.contains_key(&key) {
-            let prev = match s.get(p, *id)? {
-                Some(v) if v.location == SettingValue::LOCATION_CURRENT_PROFILE && !v.is_current_predefined => v.value.to_string(),
-                _ => "default".to_string(),
-            };
-            b.data.insert(key.clone(), prev);
-        }
+        let created = created_now(b, *id);
+        remember(s, p, *id, b)?;
         match s.set(p, *id, *value) {
             Ok(()) => {}
             Err(e) if e.nvapi_status() == Some(NOT_SUPPORTED) => {
                 log::info(&format!("NVIDIA driver doesn't support '{name}' ({id}); skipped"));
-                b.data.remove(&key);
+                if created {
+                    b.data.remove(&format!("nv:{id}"));
+                }
             }
             Err(e) => return Err(e),
         }
     }
     Ok(())
+}
+
+/// What to restore: `b` = None means default; with a backup, a setting it does not hold was never changed (None).
+fn previous(b: Option<&TweakBackup>, id: u32) -> Option<&str> {
+    match b {
+        Some(b) => b.data.get(&format!("nv:{id}")).map(String::as_str),
+        None => Some("default"),
+    }
 }
 
 /// Puts settings back (`b` = None: all to default). Tries all, then returns every failure together.
@@ -181,7 +219,7 @@ fn restore_settings(s: &Session, p: Profile, ids: &[u32], b: Option<&TweakBackup
         if unsupported.contains(id) {
             continue;
         }
-        let prev = b.and_then(|b| b.data.get(&format!("nv:{id}"))).map(String::as_str).unwrap_or("default");
+        let Some(prev) = previous(b, *id) else { continue };
         let done = if prev == "default" {
             match s.restore_default(p, *id) {
                 Ok(()) => Ok(()),
@@ -239,6 +277,11 @@ impl Tweak for NvidiaGlobalProfileTweak {
         let s = Session::open()?;
         matches(&s, profile_of(&s, &self.target)?, &GLOBAL_SETTINGS, &un)
     }
+    fn capture(&self, b: &mut TweakBackup) -> Result<()> {
+        let un = unsupported_ids(&self.target)?;
+        let s = Session::open()?;
+        capture_settings(&s, profile_of(&s, &self.target)?, &ids_of(&GLOBAL_SETTINGS), b, &un)
+    }
     fn apply(&self, b: &mut TweakBackup) -> Result<()> {
         let un = unsupported_ids(&self.target)?;
         let s = Session::open()?;
@@ -256,8 +299,9 @@ impl Tweak for NvidiaGlobalProfileTweak {
 
 // ---------------------------------------------------------------- G-SYNC
 
-/// On = G-SYNC / VRR enabled in the driver (NVIDIA's default); off = switched off. Revert is NOT "put the old
-/// value back": off is the state the user picks on purpose (same as C#).
+/// On = G-SYNC / VRR enabled in the driver (NVIDIA's default). Apply stores each id's prior state and revert puts
+/// exactly that back, so Revert all and crash recovery never switch off a G-SYNC that was on. A backup from an
+/// older version holds no state: revert then changes nothing.
 pub struct NvidiaGsyncTweak {
     pub target: Target,
 }
@@ -288,18 +332,34 @@ impl Tweak for NvidiaGsyncTweak {
         }
         Ok(true)
     }
-    fn apply(&self, _: &mut TweakBackup) -> Result<()> {
+    fn capture(&self, b: &mut TweakBackup) -> Result<()> {
         let s = Session::open()?;
-        let r = restore_settings(&s, profile_of(&s, &self.target)?, &GSYNC_IDS, None, &HashSet::new());
+        let p = profile_of(&s, &self.target)?;
+        GSYNC_IDS.iter().try_for_each(|id| remember(&s, p, *id, b))
+    }
+    fn apply(&self, b: &mut TweakBackup) -> Result<()> {
+        let s = Session::open()?;
+        let p = profile_of(&s, &self.target)?;
+        GSYNC_IDS.iter().try_for_each(|id| remember(&s, p, *id, b))?;
+        let r = restore_settings(&s, p, &GSYNC_IDS, None, &HashSet::new());
         s.save()?;
         r
     }
-    fn revert(&self, _: &TweakBackup) -> Result<()> {
+    fn revert(&self, b: &TweakBackup) -> Result<()> {
+        if !has_gsync_state(b) {
+            log::info("general.gsync: the backup holds no earlier state, G-SYNC left as it is");
+            return Ok(());
+        }
         let s = Session::open()?;
-        let off: Vec<Setting> = GSYNC_IDS.iter().map(|id| (*id, 0, "G-SYNC / VRR: off")).collect();
-        apply_settings(&s, profile_of(&s, &self.target)?, &off, &mut TweakBackup::default(), &HashSet::new())?;
-        s.save()
+        let r = restore_settings(&s, profile_of(&s, &self.target)?, &GSYNC_IDS, Some(b), &HashSet::new());
+        s.save()?;
+        r
     }
+}
+
+/// True when this G-SYNC backup holds the state from before MyTune (older versions stored none).
+pub fn has_gsync_state(b: &TweakBackup) -> bool {
+    GSYNC_IDS.iter().any(|id| b.data.contains_key(&format!("nv:{id}")))
 }
 
 // ---------------------------------------------------------------- per game
@@ -344,6 +404,16 @@ impl Tweak for NvidiaGameTweak {
             None => Ok(false),
         }
     }
+    fn capture(&self, b: &mut TweakBackup) -> Result<()> {
+        let un = unsupported_ids(&Target::Base)?;
+        let s = Session::open()?;
+        // no profile yet: `apply` creates one, and revert deletes it whole
+        let Some(p) = s.find_application(&self.exe)? else { return Ok(()) };
+        if !b.data.contains_key("createdProfile") {
+            b.data.insert("existingProfile".into(), s.profile_name(p)?);
+        }
+        capture_settings(&s, p, &ids_of(&self.settings()), b, &un)
+    }
     fn apply(&self, b: &mut TweakBackup) -> Result<()> {
         let un = unsupported_ids(&Target::Base)?;
         let s = Session::open()?;
@@ -378,18 +448,67 @@ impl Tweak for NvidiaGameTweak {
         if b.data.contains_key(&format!("nv:{FRAME_RATE_LIMITER}")) {
             ids.push(FRAME_RATE_LIMITER);
         }
-        let r = match s.find_application(&self.exe)? {
-            Some(p) => restore_settings(&s, p, &ids, Some(b), &un),
-            None => Ok(()),
-        };
+        // a revert-only tweak (`pergame::revert_only`) may not know the exe any more: the backup names the profile
+        let by_exe = if self.exe.is_empty() { None } else { s.find_application(&self.exe)? };
+        let p = profile_to_restore(by_exe, b.data.get("existingProfile").map(String::as_str), |name| s.find_profile(name))?;
+        let r = restore_settings(&s, p, &ids, Some(b), &un);
         s.save()?;
         r
     }
 }
 
+/// The exe's profile, else the one the backup names. An error keeps the backup: nothing was restored.
+fn profile_to_restore<P>(by_exe: Option<P>, name: Option<&str>, find: impl FnOnce(&str) -> Result<Option<P>>) -> Result<P> {
+    if let Some(p) = by_exe {
+        return Ok(p);
+    }
+    name.map_or(Ok(None), find)?.ok_or_else(|| Error::Plain("its NVIDIA profile was not found, so nothing was restored. The backup is kept.".into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revert_falls_back_to_the_named_profile_and_fails_when_neither_exists() {
+        assert_eq!(profile_to_restore(Some(1), Some("x"), |_| panic!("the exe was found")).unwrap(), 1);
+        assert_eq!(profile_to_restore(None, Some("x"), |n| Ok((n == "x").then_some(2))).unwrap(), 2);
+        assert!(profile_to_restore::<i32>(None, Some("x"), |_| Ok(None)).is_err());
+        assert!(profile_to_restore::<i32>(None, None, |_| Ok(Some(3))).is_err());
+    }
+
+    #[test]
+    fn revert_skips_settings_without_a_backup() {
+        let mut b = TweakBackup::default();
+        b.data.insert("nv:1".into(), "default".into());
+        b.data.insert("nv:2".into(), "7".into());
+        assert_eq!(previous(Some(&b), 1), Some("default"));
+        assert_eq!(previous(Some(&b), 2), Some("7"));
+        assert_eq!(previous(Some(&b), 3), None, "never backed up: left alone");
+        assert_eq!(previous(None, 3), Some("default"), "G-SYNC: no backup means default");
+    }
+
+    #[test]
+    fn only_a_key_made_by_this_run_counts_as_new() {
+        let mut b = TweakBackup::default();
+        assert!(created_now(&mut b, 1), "no key yet");
+        b.data.insert("nv:2".into(), "7".into());
+        assert!(!created_now(&mut b, 2), "a real original from an earlier apply stays");
+        b.data.insert("nv:3".into(), "default".into());
+        b.data.insert("nvnew:3".into(), "1".into());
+        assert!(created_now(&mut b, 3), "captured in this run");
+        assert!(!b.data.contains_key("nvnew:3") && !created_now(&mut b, 3), "the mark is used once");
+    }
+
+    #[test]
+    fn gsync_backup_without_state_is_recognised() {
+        let mut b = TweakBackup::default();
+        assert!(!has_gsync_state(&b), "an old backup: revert must change nothing");
+        b.data.insert(format!("nv:{}", GSYNC_IDS[1]), "0".into());
+        assert!(has_gsync_state(&b));
+        assert_eq!(previous(Some(&b), GSYNC_IDS[1]), Some("0"), "the stored state is what goes back");
+        assert_eq!(previous(Some(&b), GSYNC_IDS[0]), None, "an id without state is left alone");
+    }
 
     #[test]
     fn tables_match_csharp() {

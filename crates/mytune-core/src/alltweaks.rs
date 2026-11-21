@@ -16,7 +16,7 @@ use crate::engine::Tweak;
 use crate::error::{Error, Result};
 use crate::nvidia::{self, NvidiaGlobalProfileTweak, NvidiaGsyncTweak};
 use crate::pccheck::on_battery_capable;
-use crate::special::{adapter_tweaks, msi_tweak, service_tweaks, AdBlockTweak, CleanStartTweak, ComTaskApi, DirectXTweak, DnsRevert, MemoryCompressionRevert, ProtocolBindingsTweak, ScheduledTasksTweak, TcpStackRevert};
+use crate::special::{adapter_tweaks, msi_tweak, msi_without_devices, removed_apply, service_tweaks, AdBlockTweak, CleanStartTweak, ComTaskApi, DirectXTweak, DnsRevert, MemoryCompressionRevert, ProtocolBindingsTweak, ScheduledTasksTweak, TakeOwnTweak, TcpStackRevert};
 use crate::store::Store;
 use crate::tweaks::{Cmd, HibernationTweak, PowerPlanTweak, TimerTickTweak, VbsTweak};
 use std::collections::HashMap;
@@ -44,12 +44,22 @@ impl Tweak for TweakItem {
         &self.title
     }
     fn is_applied(&self) -> Result<bool> {
+        // A removed tweak is never "on": an original that matches its value must not make a finished revert read as failed.
+        if self.removed {
+            return Ok(false);
+        }
         self.inner.is_applied()
     }
     fn capture(&self, b: &mut TweakBackup) -> Result<()> {
+        if self.removed {
+            return Err(removed_apply(&self.id));
+        }
         self.inner.capture(b)
     }
     fn apply(&self, b: &mut TweakBackup) -> Result<()> {
+        if self.removed {
+            return Err(removed_apply(&self.id));
+        }
         self.inner.apply(b)
     }
     fn revert(&self, b: &TweakBackup) -> Result<()> {
@@ -119,12 +129,20 @@ pub fn build(cmd: Arc<dyn Cmd>) -> Result<Vec<TweakItem>> {
             put(&e.id, Box::new(CleanStartTweak::new(data_tweak(e.clone(), hooks.clone())?, cmd.clone())));
         }
     }
-    // MSI mode needs the PCI device list; without PowerShell it is simply not offered.
-    if let Ok(msi) = msi_tweak(&*cmd, hooks.clone()) {
-        put("adv.msi", Box::new(msi));
-    }
+    // Without the PCI device list MSI mode changes nothing, but a stored backup must still revert.
+    let msi = msi_tweak(&*cmd, hooks.clone()).unwrap_or_else(|e| {
+        crate::log::error("MSI device list not read", Some(&e));
+        msi_without_devices(hooks.clone())
+    });
+    put("adv.msi", Box::new(msi));
     put("general.powerplan", Box::new(PowerPlanTweak { cmd: cmd.clone(), laptop: on_battery_capable() }));
     put("cust.adblock", Box::new(AdBlockTweak));
+    put("qol.takeown", Box::new(TakeOwnTweak));
+    // Owner's build only: without the feature the catalog entry has no object and no row.
+    #[cfg(feature = "taskbar-look")]
+    put("cust.clearstart", Box::new(crate::taskbar::ClearStartTweak));
+    #[cfg(feature = "taskbar-look")]
+    put("cust.outlineselect", Box::new(crate::taskbar::OutlineSelectTweak));
     put("adv.hibernation",Box::new(HibernationTweak::system(cmd.clone())));
     put("adv.vbs", Box::new(VbsTweak::system(cmd.clone())));
     for t in DirectXTweak::catalog() {
@@ -154,15 +172,36 @@ pub fn build(cmd: Arc<dyn Cmd>) -> Result<Vec<TweakItem>> {
     let mut out = Vec::new();
     for e in entries {
         let Some(inner) = by_id.remove(&e.id) else { continue };
-        out.push(TweakItem {
-            flags: TweakFlags::parse(&e.flags)?,
-            id: e.id,
-            title: e.title,
-            description: e.description.unwrap_or_default(),
-            details: e.details.unwrap_or_default(),
-            removed: e.removed,
-            inner,
-        });
+        out.push(item(e, inner)?);
+    }
+    Ok(out)
+}
+
+fn item(e: Entry, inner: Boxed) -> Result<TweakItem> {
+    Ok(TweakItem {
+        flags: TweakFlags::parse(&e.flags)?,
+        id: e.id,
+        title: e.title,
+        description: e.description.unwrap_or_default(),
+        details: e.details.unwrap_or_default(),
+        removed: e.removed,
+        inner,
+    })
+}
+
+/// The registry-backed tweaks, for pages that build their list on the UI thread: unlike `build`, this runs no command.
+pub fn registry_items() -> Result<Vec<TweakItem>> {
+    let hooks: Arc<dyn Hooks> = Arc::new(SystemHooks);
+    let mut out = Vec::new();
+    for e in catalog::entries()? {
+        let inner: Boxed = if e.cls == "RegistryTweak" && !e.provider {
+            Box::new(data_tweak(e.clone(), hooks.clone())?)
+        } else if e.cls == "TakeOwnTweak" {
+            Box::new(TakeOwnTweak)
+        } else {
+            continue;
+        };
+        out.push(item(e, inner)?);
     }
     Ok(out)
 }
@@ -193,12 +232,24 @@ mod tests {
         if !nvidia::available() {
             missing.retain(|id| !["general.nvidia", "general.gsync"].contains(id));
         }
+        if !cfg!(feature = "taskbar-look") {
+            missing.retain(|id| !["cust.clearstart", "cust.outlineselect"].contains(id));
+        }
         // adv.msi has no PCI devices with a silent PowerShell, but it is still built (an empty list of sets)
         assert!(missing.is_empty(), "no object for {missing:?}");
         let alias = |id: &str| items.iter().find(|t| t.id == id).map(|t| t.title.clone());
         assert_eq!(alias("general.powerplan").as_deref(), Some("High-performance power plan"));
         assert!(alias("adv.hibernation").is_some(), "hibernation uses the catalog id, not deb.hibernate");
         assert!(items.iter().filter(|t| t.removed).count() >= 16, "removed tweaks stay available for Restore");
+    }
+
+    #[test]
+    fn registry_items_are_the_registry_tweaks_plus_take_ownership() {
+        let items = registry_items().unwrap();
+        let plain = catalog::registry_tweaks(Arc::new(SystemHooks)).unwrap();
+        assert_eq!(items.len(), plain.len() + 1);
+        assert!(plain.iter().all(|p| items.iter().any(|t| t.id == p.id)));
+        assert!(items.iter().any(|t| t.id == "qol.takeown" && !t.removed));
     }
 
     #[test]
@@ -219,5 +270,26 @@ mod tests {
         let dns = items.iter().find(|t| t.id == "net.dns").unwrap();
         assert!(dns.apply(&mut TweakBackup::new("x")).is_err());
         assert!(!dns.is_applied().unwrap());
+        // every removed tweak, also those whose inner object still has working apply code
+        for t in items.iter().filter(|t| t.removed) {
+            let mut b = TweakBackup::new("x");
+            assert!(t.capture(&mut b).is_err() && t.apply(&mut b).is_err(), "{}", t.id);
+            assert!(b.is_empty(), "{}", t.id);
+            assert!(!t.is_applied().unwrap(), "{}", t.id);
+        }
+    }
+
+    #[test]
+    fn msi_is_built_without_a_device_list_and_reverts_from_its_backup() {
+        struct Fails;
+        impl Cmd for Fails {
+            fn run(&self, _f: &str, _a: &[&str]) -> R<RunResult> {
+                Ok(RunResult { exit_code: 1, output: "failed".into() })
+            }
+        }
+        let items = build(Arc::new(Fails)).unwrap();
+        let msi = items.iter().find(|t| t.id == "adv.msi").expect("adv.msi stays in the list");
+        assert!(!msi.is_applied().unwrap());
+        msi.revert(&TweakBackup::new("x")).unwrap();
     }
 }

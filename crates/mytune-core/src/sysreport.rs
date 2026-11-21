@@ -298,6 +298,24 @@ pub fn create_restore_point(cmd: &dyn Cmd, description: &str) -> Option<String> 
     }
 }
 
+/// The automatic restore point, at most once per app run. Blocks up to 2 minutes, so call it on a worker thread
+/// before the first apply, never inside `Engine::apply`. A failure (System Protection off) is logged and the
+/// tweaks go on: each has its own backup.
+pub fn restore_point_once(cmd: &dyn Cmd) {
+    RESTORE_POINT.call_once(|| {
+        if let Some(e) = create_restore_point(cmd, "MyTune automatic restore point") {
+            crate::log::error(&format!("no restore point before the first change: {e}"), None);
+        }
+    });
+}
+
+static RESTORE_POINT: std::sync::Once = std::sync::Once::new();
+
+/// Whether this run has made (or tried) its automatic restore point.
+pub fn restore_point_done() -> bool {
+    RESTORE_POINT.is_completed()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

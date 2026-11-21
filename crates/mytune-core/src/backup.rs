@@ -7,8 +7,13 @@
 use crate::error::{Error, Result};
 use crate::reg::{self, Hive, RegValue};
 use crate::util::{b64_decode, b64_encode};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
+
+/// A `null` reads as empty: one such field must not make the whole state.json unreadable.
+pub(crate) fn null_default<'de, D: Deserializer<'de>, T: Default + Deserialize<'de>>(d: D) -> std::result::Result<T, D::Error> {
+    Ok(Option::deserialize(d)?.unwrap_or_default())
+}
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -24,21 +29,24 @@ pub struct RegBackup {
     #[serde(default)]
     pub multi: Option<Vec<String>>,
     /// Keys that did not exist before the write, shallowest first.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub created_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct TweakBackup {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub title: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub applied_at: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub registry: Vec<RegBackup>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_default")]
     pub data: BTreeMap<String, String>,
+    /// An apply failed and undoing it failed too: part of the change is still on the PC.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partly_applied: bool,
 }
 
 pub fn to_parts(v: &RegValue) -> (&'static str, Option<String>, Option<Vec<String>>) {

@@ -2,7 +2,7 @@
 //! Not ported yet: monitor refresh rate, G-SYNC, graphics notes, game drive,
 //! connection type, temperatures, startup programs, timer resolution, background load.
 
-use crate::engine::Engine;
+use crate::engine::{Engine, RegSet, RegistryTweak};
 use crate::process::run;
 use crate::reg::{self, Hive, RegValue};
 use crate::tweaks::{system_cmd, PowerPlanTweak, PLAN_GUID};
@@ -63,10 +63,20 @@ pub fn summary(checks: &[Check]) -> String {
     }
 }
 
+/// Backup id of the Game Mode fix; the Restore page undoes it through `pergame::revert_only`.
+pub const GAME_MODE_ID: &str = "pccheck.gamemode";
+
+fn game_mode_tweak() -> RegistryTweak {
+    let set = RegSet { hive: Hive::Hkcu, path: "Software\\Microsoft\\GameBar".into(), name: "AutoGameModeEnabled".into(), value: RegValue::Dword(1) };
+    RegistryTweak { id: GAME_MODE_ID.into(), title: "Windows Game Mode on".into(), sets: vec![set] }
+}
+
+/// Call on a worker thread: the first change of a run waits for the restore point.
 pub fn run_fix(fix: Fix, engine: &Engine) -> crate::error::Result<()> {
+    crate::sysreport::restore_point_once(&*system_cmd());
     match fix {
         Fix::PowerPlan => engine.apply(&PowerPlanTweak { cmd: system_cmd(), laptop: on_battery_capable() }),
-        Fix::GameMode => reg::set(Hive::Hkcu, "Software\\Microsoft\\GameBar", "AutoGameModeEnabled", &RegValue::Dword(1)),
+        Fix::GameMode => engine.apply(&game_mode_tweak()),
     }
 }
 

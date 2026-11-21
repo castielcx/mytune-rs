@@ -116,6 +116,95 @@ pub fn system32(exe: &str) -> PathBuf {
     PathBuf::from(root).join("System32").join(exe)
 }
 
+/// True when this process runs under another account than the desktop shell (elevated with a different admin):
+/// HKCU and `%LOCALAPPDATA%` are then that admin's, not the signed-in user's. False when there is no shell to
+/// compare with (Explorer restarting, a service).
+pub fn shell_user_differs() -> bool {
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::Security::{EqualSid, GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows::Win32::UI::WindowsAndMessaging::{GetShellWindow, GetWindowThreadProcessId};
+    // u64: aligned for TOKEN_USER. 128 bytes hold it and the largest SID.
+    fn user(process: HANDLE, buf: &mut [u64; 16]) -> bool {
+        let mut token = HANDLE::default();
+        unsafe {
+            if OpenProcessToken(process, TOKEN_QUERY, &mut token).is_err() {
+                return false;
+            }
+            let mut n = 0;
+            let ok = GetTokenInformation(token, TokenUser, Some(buf.as_mut_ptr().cast()), 128, &mut n).is_ok();
+            let _ = CloseHandle(token);
+            ok
+        }
+    }
+    unsafe {
+        let mut pid = 0;
+        GetWindowThreadProcessId(GetShellWindow(), Some(&mut pid));
+        if pid == 0 {
+            return false;
+        }
+        let Ok(shell) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else { return false };
+        let (mut a, mut b) = ([0u64; 16], [0u64; 16]);
+        let known = user(shell, &mut a) && user(GetCurrentProcess(), &mut b);
+        let _ = CloseHandle(shell);
+        known && EqualSid((*a.as_ptr().cast::<TOKEN_USER>()).User.Sid, (*b.as_ptr().cast::<TOKEN_USER>()).User.Sid).is_err()
+    }
+}
+
+/// Restarts Explorer in this session only, and waits for Windows to bring it back. Only if Windows does not is it
+/// started here, with the basic-user token: an elevated Explorer would be a shell nobody restarts.
+/// Blocks up to ~8 s: call it off the UI thread. False when Explorer was not restarted or did not come back.
+pub fn restart_explorer() -> bool {
+    use windows::Win32::System::{RemoteDesktop::ProcessIdToSessionId, Threading::GetCurrentProcessId};
+    // it would come back under MyTune's account instead of the signed-in user's
+    if shell_user_differs() {
+        log::info("Explorer not restarted: it belongs to another account than MyTune");
+        return false;
+    }
+    let mut session = 0;
+    if unsafe { ProcessIdToSessionId(GetCurrentProcessId(), &mut session) }.is_err() {
+        log::error("Explorer not restarted: session unknown", None);
+        return false;
+    }
+    let filter = format!("SESSION eq {session}");
+    let tasklist = system32("tasklist.exe");
+    let running = || run(&tasklist.to_string_lossy(), &["/FI", "IMAGENAME eq explorer.exe", "/FI", &filter, "/NH"]).is_ok_and(|r| r.output.to_ascii_lowercase().contains("explorer.exe"));
+    let wait = |tries| (0..tries).any(|_| {
+        thread::sleep(Duration::from_millis(500));
+        running()
+    });
+    mark_planned_restart();
+    let killed = run(&system32("taskkill.exe").to_string_lossy(), &["/F", "/IM", "explorer.exe", "/FI", &filter]).is_ok_and(|r| r.exit_code == 0);
+    let mut back = wait(6);
+    if back && !killed {
+        log::error("Explorer not restarted: taskkill failed", None);
+        return false; // the old shell is still the one running
+    }
+    if !back {
+        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
+        let exe = PathBuf::from(root).join("explorer.exe");
+        let _ = run(&system32("runas.exe").to_string_lossy(), &["/trustlevel:0x20000", &exe.to_string_lossy()]);
+        back = wait(10);
+    }
+    mark_planned_restart(); // the shell can come up late: the window counts from here
+    if !back {
+        log::error("Explorer did not come back after the restart", None);
+    }
+    back
+}
+
+/// When MyTune last restarted Explorer on purpose. The taskbar's crash-loop guard must not count those.
+static PLANNED_RESTART: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+
+fn mark_planned_restart() {
+    *PLANNED_RESTART.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
+}
+
+/// True for about 20 s after MyTune restarted Explorer itself.
+pub fn explorer_restart_planned() -> bool {
+    PLANNED_RESTART.lock().unwrap_or_else(|p| p.into_inner()).is_some_and(|t| t.elapsed() < Duration::from_secs(20))
+}
+
 /// bcdedit entry to edit: `{current}` if it exists, else `{default}` (this PC has no `{current}`).
 /// Not cached, like C#: boot config can change.
 pub fn bcd_entry() -> &'static str {
@@ -168,6 +257,12 @@ mod tests {
         assert_eq!(decode(b"plain"), "plain");
         assert_eq!(decode("é".as_bytes()), "é");
         assert!(!decode(&[0x82]).is_empty()); // invalid UTF-8 -> OEM, no panic
+    }
+
+    /// Read only. Tests run under the signed-in account, so its shell is the same user.
+    #[test]
+    fn shell_user_is_this_user() {
+        assert!(!shell_user_differs());
     }
 
     #[test]

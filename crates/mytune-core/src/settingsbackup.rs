@@ -124,6 +124,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: may queue real gamma change"]
     fn import_copies_five_settings_displays_and_vpns() {
         let d = tempfile::tempdir().unwrap();
         let mut st = Store::load(d.path());

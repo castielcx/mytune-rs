@@ -12,19 +12,14 @@ const PREVIEW: bool = cfg!(feature = "preview");
 const TITLE: &str = if PREVIEW { "MyTune Redesign" } else { "MyTune" };
 const INSTANCE: &str = if PREVIEW { "Local\\MyTuneRs.SingleInstance.Preview" } else { "Local\\MyTuneRs.SingleInstance" };
 
-/// The accent saved by the C# app or this one (`Settings.AccentColor`).
-fn accent() -> String {
-    mytune_core::store::Store::load_default().settings_str("AccentColor").unwrap_or_else(|| "#FF5A0A".into())
-}
-
-/// The MyTune "M" in the accent colour (the same icon the C# app draws).
+/// The white MyTune "M".
 fn icon() -> Icon {
-    Icon::from_rgba(mytune_ui::icon::render(&accent(), 32), 32, 32).expect("icon")
+    { let px = mytune_ui::soundpage::tray_px(); Icon::from_rgba(mytune_ui::soundpage::tray_m(px as usize), px, px).expect("icon") }
 }
 
 /// Title bar / taskbar icon of the window.
 fn window_icon() -> egui::IconData {
-    egui::IconData { rgba: mytune_ui::icon::render(&accent(), 64), width: 64, height: 64 }
+    egui::IconData { rgba: mytune_ui::icon::render(64), width: 64, height: 64 }
 }
 
 fn show(ctx: &egui::Context) {
@@ -88,6 +83,10 @@ fn main() -> eframe::Result {
         let thread = std::thread::current();
         mytune_core::log::error(&format!("PANIC in thread {}", thread.name().unwrap_or("?")), Some(info));
     }));
+    // Explorer's "Take ownership" entry: no window, tray, single-instance check or engine.
+    if mytune_core::special::take_own_from_args() {
+        return Ok(());
+    }
     // Go Live and the share picker's screen pictures run in a copy of this exe; it opens no window.
     mytune_chat::run_stream_worker();
     // Setup runs this after it removed the C# MyTune, whose uninstaller deletes the "Start with Windows" task.
@@ -98,6 +97,7 @@ fn main() -> eframe::Result {
     if already_running() {
         return Ok(());
     }
+    std::thread::spawn(mytune_core::autostart::migrate_run_key);
     let hidden = std::env::args().any(|a| a == "--minimized");
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -144,7 +144,7 @@ fn main() -> eframe::Result {
         // overflow arrow, so once it is registered the program's "show" switch is set (only while the user never
         // chose; Windows has one switch for both icons).
         if !PREVIEW {
-            let sound = TrayIconBuilder::new().with_id(SOUND_TRAY).with_tooltip(SOUND_TIP).with_icon(Icon::from_rgba(mytune_ui::soundpage::speaker(32), 32, 32).expect("icon")).build();
+            let sound = TrayIconBuilder::new().with_id(SOUND_TRAY).with_tooltip(SOUND_TIP).with_icon({ let px = mytune_ui::soundpage::tray_px(); Icon::from_rgba(mytune_ui::soundpage::speaker(px as usize), px, px).expect("icon") }).build();
             std::mem::forget(sound);
             std::thread::spawn(|| {
                 std::thread::sleep(std::time::Duration::from_secs(2));
@@ -159,6 +159,9 @@ fn main() -> eframe::Result {
         mytune_ui::theme::install_fonts(&cc.egui_ctx);
         mytune_ui::theme::apply_visuals(&cc.egui_ctx);
         app.keep_in_tray = tray.is_ok();
+        if !PREVIEW {
+            app.start_crosshair(&cc.egui_ctx);
+        }
         // The icon must live as long as the app.
         std::mem::forget(tray);
         Ok(Box::new(app))

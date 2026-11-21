@@ -59,6 +59,7 @@ pub struct App {
     diagnostics: crate::diagnosticspage::DiagnosticsPage,
     display: crate::displaypage::DisplayPage,
     vibrance: crate::vibrancepage::VibrancePage,
+    crosshair: crate::crosshairpage::CrosshairPage,
     games: crate::gamespage::GamesPage,
     bios: crate::biospage::BiosPage,
     #[cfg(feature = "taskbar-look")]
@@ -81,6 +82,9 @@ pub struct App {
     work_page: Page,
     confirm_optimize: bool,
     confirm_revert_all: bool,
+    /// Tweaks whose last revert failed only because an adapter is not connected: Restore offers Forget for these.
+    adapter_gone: Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
+    confirm_forget: Option<usize>,
     ids_in_store: Vec<String>,
     checks: Option<Vec<Check>>,
     check_rx: Option<mpsc::Receiver<Vec<Check>>>,
@@ -92,7 +96,6 @@ pub struct App {
     /// Sensor thread (GPU via NVML or PDH); sampled every 5 s, every 1 s while Home is shown.
     sensors: Option<mytune_sensors::Sensors>,
     gpu: Option<mytune_sensors::Snapshot>,
-    last_cpu: Option<(u64, u64)>,
     last_sample: Option<Instant>,
     side_w: f32,
     anim_pill: Anim,
@@ -158,7 +161,9 @@ fn saved_accent(store: &Store) -> String {
 
 impl App {
     pub fn new() -> App {
-        Self::with_store(Store::load_default())
+        let dir = mytune_core::util::default_dir();
+        mytune_core::store::harden_dir(&dir); // before the state it trusts is read
+        Self::with_store(Store::load(&dir))
     }
 
     pub fn with_store(store: Store) -> App {
@@ -184,6 +189,7 @@ impl App {
             diagnostics: crate::diagnosticspage::DiagnosticsPage::new(engine.clone()),
             display: crate::displaypage::DisplayPage::new(engine.clone()),
             vibrance: crate::vibrancepage::VibrancePage::new(engine.clone()),
+            crosshair: crate::crosshairpage::CrosshairPage::new(engine.clone()),
             games: crate::gamespage::GamesPage::new(engine.clone()),
             bios: Default::default(),
             #[cfg(feature = "taskbar-look")]
@@ -202,6 +208,8 @@ impl App {
             work_page: Page::Chat,
             confirm_optimize: false,
             confirm_revert_all: false,
+            adapter_gone: Default::default(),
+            confirm_forget: None,
             ids_in_store: vec![],
             checks: None,
             check_rx: None,
@@ -212,7 +220,6 @@ impl App {
             gpu_hist: vec![],
             sensors: Some(mytune_sensors::Sensors::start(mytune_sensors::HwSource::new(true), mytune_sensors::Cadence::default())),
             gpu: None,
-            last_cpu: None,
             last_sample: None,
             side_w: 248.0,
             anim_pill: Anim::new(0.0),
@@ -225,14 +232,36 @@ impl App {
         app
     }
 
+    /// Starts the crosshair overlay thread (restores it when it was on); the hotkey saves and repaints.
+    pub fn start_crosshair(&self, ctx: &eframe::egui::Context) {
+        let initial = self.engine.with_store(|s| mytune_core::crosshair::Crosshair::load(s));
+        let (engine, ctx) = (self.engine.clone(), ctx.clone());
+        mytune_core::crosshair::start(initial, move |c| {
+            let _ = engine.with_store(|s| c.save(s));
+            ctx.request_repaint();
+        });
+    }
+
     pub fn goto(&mut self, page: Page) {
         self.page = page;
     }
 
     /// Shot tests: the Internet page in the middle of a speed test.
     #[doc(hidden)]
-    pub fn fake_speed(&mut self, download_mbps: f64) {
-        self.internet.fake_speed(mytune_core::speedtest::Phase::Download, download_mbps);
+    pub fn fake_speed(&mut self, phase: mytune_core::speedtest::Phase, down: &[f64], up: &[f64]) {
+        self.internet.fake_speed(phase, down, up);
+    }
+
+    /// Shot tests: the Internet page right after a finished speed test.
+    #[doc(hidden)]
+    pub fn fake_speed_done(&mut self, last: mytune_core::speedtest::LastSpeed) {
+        self.internet.fake_speed_done(last);
+    }
+
+    /// Shot tests: the Connection health card with finished rows.
+    #[doc(hidden)]
+    pub fn fake_health(&mut self, rows: Vec<mytune_core::connhealth::Row>) {
+        self.internet.fake_health(rows);
     }
 
     fn start_check(&mut self, ctx: &egui::Context) {
@@ -265,9 +294,9 @@ impl App {
             let (tx, rx) = mpsc::channel();
             let (tweaks, engine, ctx) = (self.tweaks.clone(), self.engine.clone(), ctx.clone());
             std::thread::spawn(move || {
-                // game profiles are not in the tweak list: their revert needs the backup alone
-                let games = engine.with_store(|s| mytune_core::gameprofile::pending_reverts(s));
-                let left = engine.recover(|id| tweaks.iter().find(|t| t.id == id).map(|t| t as &dyn Tweak).or_else(|| games.iter().find(|g| g.id == id).map(|g| g as &dyn Tweak)));
+                // game tweaks and the PC check fix are not in the tweak list: their revert needs the backup alone
+                let others = engine.with_store(|s| mytune_core::pergame::pending_reverts(s));
+                let left = engine.recover(|id| tweaks.iter().find(|t| t.id == id).map(|t| t as &dyn Tweak).or_else(|| others.iter().find(|o| o.id() == id).map(|o| &**o)));
                 let applied = tweaks.iter().map(|t| (t.id.clone(), t.is_applied().unwrap_or(false))).collect();
                 let _ = tx.send((applied, engine.with_store(|s| s.applied_ids())));
                 if let Some((text, ok)) = recovered_text(&left) {
@@ -311,28 +340,60 @@ impl App {
             return;
         }
         let (tx, rx) = mpsc::channel();
-        let (tweaks, engine) = (self.tweaks.clone(), self.engine.clone());
+        let (tweaks, engine, gone) = (self.tweaks.clone(), self.engine.clone(), self.adapter_gone.clone());
         // a re-read started before this change would bring the old state back
         self.states_rx = None;
-        self.status = Some(("Working\u{2026}".into(), true));
+        let first = on && !mytune_core::sysreport::restore_point_done();
+        self.status = Some((if first { "Making a restore point first, this can take a minute\u{2026}" } else { "Working\u{2026}" }.into(), true));
         self.work_page = self.page;
         // the switch moves at once; the thread's reading corrects it if the change failed
         for &i in &idxs {
             self.applied.insert(self.tweaks[i].id.clone(), on);
         }
         std::thread::spawn(move || {
+            if on {
+                mytune_core::sysreport::restore_point_once(&*mytune_core::tweaks::system_cmd());
+            }
             let (mut ok, mut bad, mut last) = (0, 0, String::new());
             for &i in &idxs {
                 let t = &tweaks[i];
+                gone.lock().unwrap_or_else(|p| p.into_inner()).remove(&t.id); // Forget follows the latest result only
+                // G-SYNC's revert puts back the state from before MyTune, usually "on": still on is then correct
+                let gsync = (!on && t.id == "general.gsync").then(|| engine.with_store(|s| s.get_backup(&t.id).is_some_and(mytune_core::nvidia::has_gsync_state)));
                 let r = if on {
                     engine.apply(t).map_err(|e| e.to_string())
                 } else {
                     match engine.revert(t) {
                         Ok(mytune_core::engine::RevertOutcome::Reverted) => Ok(()),
-                        Ok(mytune_core::engine::RevertOutcome::NoBackup) => Err("set outside MyTune and its Windows default is unknown, nothing changed".to_string()),
-                        Err(e) => Err(e.to_string()),
+                        Ok(mytune_core::engine::RevertOutcome::NoBackup) => Err("it was set outside MyTune, so there is nothing to undo".to_string()),
+                        Err(e) => {
+                            if mytune_core::special::only_missing_adapters(&e) {
+                                gone.lock().unwrap_or_else(|p| p.into_inner()).insert(t.id.clone());
+                            }
+                            Err(e.to_string())
+                        }
                     }
                 };
+                // "Ok" only means no error was raised: read the state back, and when it is not what was asked
+                // for, say so with a reason and (turning on) undo the change so the switch stays off.
+                let r = r.and_then(|()| match t.is_applied() {
+                    Ok(now) if now == on || gsync == Some(true) => Ok(()),
+                    checked => {
+                        let why = match checked {
+                            Ok(_) if gsync == Some(false) => "no earlier G-SYNC state was saved, so it was left as it is".to_string(),
+                            Ok(_) if on => "Windows still reports it off, something reset it".to_string(),
+                            Ok(_) => "Windows still reports it on".to_string(),
+                            Err(e) => format!("couldn't check the result: {e}"),
+                        };
+                        mytune_core::log::error(&format!("{} not verified: {why}", t.id), None);
+                        if on {
+                            if let Err(e) = engine.rollback(t) {
+                                mytune_core::log::error(&format!("{} undo after failed check", t.id), Some(&e));
+                            }
+                        }
+                        Err(why)
+                    }
+                });
                 match r {
                     Ok(()) => ok += 1,
                     Err(e) => {
@@ -378,27 +439,10 @@ impl App {
             return;
         }
         self.last_sample = Some(Instant::now());
-        if let Some((_, _, _, load)) = pccheck::memory_now() {
-            self.ram_hist.push(load as f32);
-        }
-        if let Some((idle, total)) = pccheck::cpu_ticks() {
-            if let Some((i0, t0)) = self.last_cpu {
-                let dt = total.saturating_sub(t0) as f32;
-                if dt > 0.0 {
-                    self.cpu_hist.push((100.0 * (1.0 - idle.saturating_sub(i0) as f32 / dt)).clamp(0.0, 100.0));
-                }
-            }
-            self.last_cpu = Some((idle, total));
-        }
-        if let Some(snap) = self.sensors.as_ref().and_then(|s| s.latest()) {
-            if let Some(l) = snap.gpu_load {
-                self.gpu_hist.push(l);
-            }
-            self.gpu = Some(snap);
-        }
-        for h in [&mut self.ram_hist, &mut self.cpu_hist, &mut self.gpu_hist] {
-            if h.len() > 60 {
-                h.remove(0);
+        if let Some(s) = &self.sensors {
+            [self.cpu_hist, self.gpu_hist, self.ram_hist] = s.history();
+            if let Some(snap) = s.latest() {
+                self.gpu = Some(snap);
             }
         }
     }
@@ -414,9 +458,8 @@ impl App {
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
             ctx.memory_mut(|m| m.request_focus(Id::new("search")));
         }
-        // Settings > "Keep running in the tray when closed" (default on): off means closing exits.
-        let tray_on = self.engine.with_store(|s| s.settings_flag("MinimizeToTray")).unwrap_or(true);
-        if self.keep_in_tray && tray_on && ctx.input(|i| i.viewport().close_requested()) {
+        // closing always hides to the tray; without a tray icon it exits
+        if self.keep_in_tray && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             std::thread::spawn(|| {
@@ -489,6 +532,9 @@ impl App {
             self.settings.status = None;
             self.mouse.status = None;
             self.display.status = None;
+            if self.page == Page::Tools {
+                self.tools.reopened(ctx);
+            }
         }
         // the chat draws its own opaque layers, so it keeps a solid base; every other page shows the backdrop
                 egui::CentralPanel::default().frame(egui::Frame::new()).show(root, |ui| {
@@ -518,6 +564,8 @@ impl App {
                             ui.horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 10.0;
                                 ui.label(ico(crate::nav::glyph_of(page), 22.0));
+                                let (dot, _) = ui.allocate_exact_size(vec2(4.0, 4.0), Sense::hover());
+                                ui.painter().circle_filled(dot.center() + vec2(0.0, 2.0), 2.0, th::text3()); // 2 px: optical middle of the title
                                 ui.label(dsb(page.label(), 27.0));
                             });
                         });
@@ -559,7 +607,18 @@ impl App {
                         Page::Tools => self.tools.ui(ui),
                         Page::Settings => self.settings.ui(ui),
                         Page::Mouse => self.mouse.ui(ui),
-                        Page::Sound => self.sound.ui(ui),
+                        Page::Sound => {
+                            // The switch hides Windows' volume icon through the taskbar DLL, so it exists only with it.
+                            #[cfg(feature = "taskbar-look")]
+                            {
+                                self.sound.hide_win = Some(self.taskbar.hide_volume());
+                            }
+                            let _clicked = self.sound.ui(ui);
+                            #[cfg(feature = "taskbar-look")]
+                            if let Some(on) = _clicked {
+                                self.taskbar.set_hide_volume(on);
+                            }
+                        }
                         Page::Music => crate::nowplaying::page(ui),
                         Page::Diagnostics => {
                             th::section(ui, "PC check");
@@ -568,6 +627,7 @@ impl App {
                         }
                         Page::Display => self.display.ui(ui),
                         Page::Vibrance => self.vibrance.ui(ui),
+                        Page::Crosshair => self.crosshair.ui(ui),
                         Page::Games => self.games.ui(ui),
                         Page::Bios => self.bios.ui(ui),
                         _ => th::card(ui, (10, 16, 16, 16), |ui| {
@@ -583,6 +643,10 @@ impl App {
         if self.confirm_revert_all {
             self.revert_all_modal(ctx);
         }
+        if let Some(i) = self.confirm_forget {
+            self.forget_adapter_modal(ctx, i);
+        }
+        self.games.modals(ctx);
         crate::notice::show(ctx, 44.0); // under the title bar
         crate::fade::end_frame(ctx);
         crate::sharp::scan(ctx);
@@ -607,7 +671,9 @@ impl App {
             // centred over the nav icons
             let cx = 32.0; // same column as the nav icons, open or folded
             let logo = Rect::from_center_size(pos2(bar.left() + cx, bar.center().y), vec2(18.0, 18.0));
-            ui.painter().rect_filled(logo, 5.0, pal.accent);
+            if !pal.black {
+                ui.painter().rect_filled(logo, 5.0, pal.accent);
+            }
             let m = |x: f32, y: f32| logo.min + vec2(x, y) * (18.0 / 256.0);
             let pts: Vec<_> = [(65., 187.), (65., 69.), (90., 69.), (128., 123.), (166., 69.), (191., 69.), (191., 187.), (167., 187.), (167., 119.), (133., 157.), (123., 157.), (89., 119.), (89., 187.)]
                 .iter()
@@ -784,8 +850,8 @@ impl App {
         if hov > 0.0 || down > 0.0 {
             paint.rect_filled(plate(1.0 - 0.03 * down), ROW_R, Color32::from_white_alpha((20.0 * hov * (1.0 - on) + 14.0 * down) as u8));
         }
-        let glyph_col = if sel { Color32::WHITE } else { pal.side_muted };
-        let text_col = if sel { Color32::WHITE } else { pal.side_text };
+        let glyph_col = if sel || (pal.black && resp.hovered()) { Color32::WHITE } else { pal.side_muted };
+        let text_col = if sel { Color32::WHITE } else { th::hover_text(pal.side_text, resp.hovered()) };
         let gx = rect.left() + 24.0; // fixed column: icon and name stay put, the sidebar edge uncovers the name
         paint.text(pos2(gx, rect.center().y.round()), egui::Align2::CENTER_CENTER, item.glyph, FontId::new(16.0, th::icons()), glyph_col);
         if w > 120.0 {
@@ -852,20 +918,46 @@ impl App {
             ui.label(rt(if !ready { "This takes a moment." } else if all_set { "Every recommended setting is on." } else { "Optimize now switches them on. You see the list first." }, 13.0).color(home_sub()));
             // one tick per recommended setting, filled for each one that is on, outlined for each one still off
             if total > 0 {
-                ui.add_space(14.0);
-                let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 8.0), Sense::hover());
+                ui.add_space(11.0);
+                let (bar, _) = ui.allocate_exact_size(vec2(ui.available_width(), 15.0), Sense::hover());
                 let lit = if ready { total - todo.len() } else { 0 };
                 let w = (bar.width() - 3.0 * (total - 1) as f32) / total as f32;
+                // a light runs along the ticks at constant speed and leaves after the last one that is on (like a
+                // tail light); it only reaches further once another recommended setting is applied
+                const SPEED: f64 = 9.0; // ticks a second, constant: no slowing at the end
+                const DELAY: f64 = 0.4; // short rest before it starts again
+                let end = lit.saturating_sub(1) as f32;
+                const REACH: f32 = 2.5; // the light spans this many ticks each side, then is exactly zero (no endless tail)
+                let run = (end as f64 + 2.0 * REACH as f64) / SPEED; // from fully left of the first to fully right of the last
+                // time the frame will be on screen, not when it started: even steps at any frame rate
+                let t = if lit > 0 { ui.input(|i| i.time + i.predicted_dt as f64) % (run + DELAY) } else { 0.0 };
+                let pos = -REACH + (t.min(run) * SPEED) as f32;
+                // every edge on a whole device pixel: sizes that land between pixels shimmer as the light moves
+                let ppp = ui.ctx().pixels_per_point();
+                let snap = |v: f32| (v * ppp).round() / ppp;
+                let cy = snap(bar.center().y);
                 for i in 0..total {
-                    let tick = Rect::from_min_size(pos2(bar.left() + i as f32 * (w + 3.0), bar.top()), vec2(w, 8.0));
+                    let d = ((i as f32 - pos).abs() / REACH).min(1.0);
+                    let k = if i >= lit { 0.0 } else { 0.5 * (1.0 + (std::f32::consts::PI * d).cos()) };
+                    let h = ((8.0 * (1.0 + 0.6 * k) * ppp) / 2.0).round() * 2.0 / ppp; // even pixel count keeps it centred
+                    let (x0, x1) = (snap(bar.left() + i as f32 * (w + 3.0)), snap(bar.left() + i as f32 * (w + 3.0) + w));
+                    let tick = Rect::from_min_max(pos2(x0, cy - h / 2.0), pos2(x1, cy + h / 2.0));
                     if i < lit {
-                        ui.painter().rect_filled(tick, 2.0, pal.accent);
+                        ui.painter().rect_filled(tick, 2.0, pal.accent.gamma_multiply(0.6 + 0.4 * k));
                     } else {
                         ui.painter().rect_stroke(tick, 2.0, Stroke::new(1.0, Color32::from_white_alpha(0x40)), StrokeKind::Inside);
                     }
                 }
+                // a window behind a fullscreen game still counts as shown, so focus decides too
+                if lit > 0 && window_shown() && ui.input(|i| i.viewport().focused == Some(true)) {
+                    if t < run {
+                        ui.ctx().request_repaint();
+                    } else {
+                        ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(run + DELAY - t));
+                    }
+                }
             }
-            ui.add_space(14.0);
+            ui.add_space(11.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 if ready && !all_set && th::button(ui, "Optimize now", true, th::BTN).clicked() {
@@ -1119,15 +1211,25 @@ impl App {
     /// Every tweak MyTune has a backup for, in the order the Restore list shows them.
     fn revert_all_modal(&mut self, ctx: &egui::Context) {
         let idxs: Vec<usize> = self.ids_in_store.iter().filter_map(|id| self.tweaks.iter().position(|t| &t.id == id)).collect();
+        // game tweaks and the PC check fix are not in the tweak list
+        let others: Vec<String> = self.ids_in_store.iter().filter(|id| !self.tweaks.iter().any(|t| &t.id == *id) && mytune_core::pergame::reverts_alone(id)).cloned().collect();
+        let files = others.iter().any(|id| id.ends_with(":config"));
+        let busy = self.work_rx.is_some() || self.games.busy();
         let m = egui::Modal::new(Id::new("revert_all")).show(ctx, |ui| {
             ui.set_width(460.0);
             ui.label(dsb("Revert all changes?", 20.0));
             ui.add_space(4.0);
-            ui.label(rt(format!("{} tweaks go back to how they were before MyTune changed them.", idxs.len()), 12.0).color(text2()));
+            ui.label(rt(format!("{} tweaks go back to how they were before MyTune changed them.", idxs.len() + others.len()), 12.0).color(text2()));
+            if files {
+                ui.add_space(4.0);
+                ui.label(rt("Game settings files go back to the copy from before MyTune's first save. Anything changed in those games since then is overwritten. A game that is running is skipped and stays as it is.", 12.0).color(th::WARNING));
+            }
             ui.add_space(10.0);
             let mut go = false;
             ui.horizontal(|ui| {
-                go = th::button(ui, "Revert all", true, (18.0, 8.0, 18.0, 9.0)).clicked();
+                ui.add_enabled_ui(!busy, |ui| {
+                    go = th::button(ui, "Revert all", true, (18.0, 8.0, 18.0, 9.0)).clicked();
+                });
                 if th::button(ui, "Cancel", false, (14.0, 8.0, 14.0, 9.0)).clicked() {
                     ui.close();
                 }
@@ -1136,9 +1238,55 @@ impl App {
         });
         if m.inner {
             self.run_work(idxs, false);
+            self.games.revert_all(others);
             self.confirm_revert_all = false;
         } else if m.should_close() {
             self.confirm_revert_all = false;
+        }
+    }
+
+    /// Only for an adapter tweak whose last revert failed because the adapter is not connected.
+    fn forget_adapter_modal(&mut self, ctx: &egui::Context, i: usize) {
+        let busy = self.work_rx.is_some();
+        let title = self.tweaks[i].title.clone();
+        let m = egui::Modal::new(Id::new("forget_adapter")).show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.label(dsb("Forget this adapter?", 20.0));
+            ui.add_space(4.0);
+            ui.label(rt(format!("{title}: MyTune tries to restore it once more. If the adapter is still not connected, its saved original settings are deleted. This cannot be undone. Use it only for an adapter you no longer have."), 12.0).color(text2()));
+            ui.add_space(10.0);
+            let mut go = false;
+            ui.horizontal(|ui| {
+                ui.add_enabled_ui(!busy, |ui| {
+                    go = th::button(ui, "Forget", true, (18.0, 8.0, 18.0, 9.0)).clicked();
+                });
+                if th::button(ui, "Cancel", false, (14.0, 8.0, 14.0, 9.0)).clicked() {
+                    ui.close();
+                }
+            });
+            go
+        });
+        if m.inner {
+            self.confirm_forget = None;
+            let (tx, rx) = mpsc::channel();
+            let (tweaks, engine, gone) = (self.tweaks.clone(), self.engine.clone(), self.adapter_gone.clone());
+            self.states_rx = None;
+            self.status = Some(("Working\u{2026}".into(), true));
+            self.work_page = self.page;
+            std::thread::spawn(move || {
+                let t = &tweaks[i];
+                let r = mytune_core::special::forget_missing_adapter(&engine, t);
+                gone.lock().unwrap_or_else(|p| p.into_inner()).remove(&t.id);
+                let msg = match r {
+                    Ok(true) => (format!("{}: saved adapter settings forgotten", t.title), true),
+                    Ok(false) => (format!("{}: the adapter is back, original restored", t.title), true),
+                    Err(e) => (format!("{}: {e}", t.title), false),
+                };
+                let _ = tx.send((msg, vec![(t.id.clone(), t.is_applied().unwrap_or(false))]));
+            });
+            self.work_rx = Some(rx);
+        } else if m.should_close() {
+            self.confirm_forget = None;
         }
     }
 
@@ -1181,6 +1329,7 @@ impl App {
                 }
             }
         }
+        let partly = self.engine.with_store(|s| s.partly_applied_ids());
         for (heading, rows) in sections {
             th::section_gap(ui, heading);
             th::group(ui, |ui| {
@@ -1194,8 +1343,11 @@ impl App {
                                 ui.set_max_width((avail - 64.0).max(120.0));
                                 ui.label(th::md(&t.title, 14.0));
                                 ui.add_space(2.0);
-                                ui.label(rt(&t.description, 12.5).color(text2()));
+                                if partly.contains(&t.id) {
+                                    th::chip(ui, "Partly applied, undo it in Restore", th::WARNING, th::warning_soft());
+                                }
                                 th::flag_chips(ui, t.flags);
+                                th::more_info(ui, egui::Id::new(("more_info", &t.id)), &t.description);
                             });
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if th::switch(ui, on).on_hover_text(&t.details).clicked() {
@@ -1219,7 +1371,7 @@ impl App {
             });
             return;
         }
-        let (mut revert, mut game_undo) = (None, None);
+        let (mut revert, mut game_undo, mut forget, mut forget_adapter) = (None, None, None, None);
         th::card(ui, (10, 16, 16, 16), |ui| {
             ui.horizontal(|ui| {
                 ui.set_min_height(ROW_H);
@@ -1235,8 +1387,8 @@ impl App {
         th::group(ui, |ui| {
             for id in &self.ids_in_store {
                 let idx = self.tweaks.iter().position(|t| &t.id == id);
-                // a Game Hub settings profile: not in the tweak list, its title is in the backup
-                let game = (id.starts_with("game:") && id.ends_with(":config")).then(|| self.engine.with_store(|s| s.get_backup(id).map(|b| b.title.clone()))).flatten();
+                // a per-game tweak or the PC check fix: not in the tweak list, its title is in the backup
+                let game = mytune_core::pergame::reverts_alone(id).then(|| self.engine.with_store(|s| s.get_backup(id).map(|b| b.title.clone()))).flatten();
                 th::card(ui, (10, 10, 14, 10), |ui| {
                     ui.horizontal(|ui| {
                         ui.set_min_height(ROW_H);
@@ -1246,10 +1398,19 @@ impl App {
                                 if th::button(ui, "Undo", false, th::BTN).clicked() {
                                     revert = Some(i);
                                 }
+                                // only after an Undo that failed because the adapter is not connected
+                                let gone = self.adapter_gone.lock().unwrap_or_else(|p| p.into_inner()).contains(id);
+                                if gone && th::button(ui, "Forget", false, th::BTN).on_hover_text("For an adapter you no longer have: deletes its saved original settings.").clicked() {
+                                    forget_adapter = Some(i);
+                                }
                             }
                             None if game.is_some() => {
                                 if th::button(ui, "Undo", false, th::BTN).clicked() {
                                     game_undo = Some((id.clone(), game.clone().unwrap_or_default()));
+                                }
+                                // only after an Undo that could not reach the game's file
+                                if self.games.is_stuck(id) && th::button(ui, "Forget", false, th::BTN).on_hover_text("For a game you uninstalled: deletes MyTune's copy and this entry.").clicked() {
+                                    forget = Some((id.clone(), game.clone().unwrap_or_default()));
                                 }
                             }
                             None => {
@@ -1265,6 +1426,12 @@ impl App {
         }
         if let Some((id, title)) = game_undo {
             self.games.revert(id, title);
+        }
+        if let Some((id, title)) = forget {
+            self.games.ask_forget(id, title);
+        }
+        if forget_adapter.is_some() {
+            self.confirm_forget = forget_adapter;
         }
     }
 }
@@ -1300,7 +1467,7 @@ fn frame_cap() {
 }
 
 /// False while MyTune's window is hidden in the tray or minimised. True when no window is found (headless tests).
-fn window_shown() -> bool {
+pub(crate) fn window_shown() -> bool {
     use windows_sys::Win32::UI::WindowsAndMessaging::{FindWindowW, IsIconic, IsWindowVisible};
     let wide = |s: &str| s.encode_utf16().chain(Some(0)).collect::<Vec<u16>>();
     unsafe {

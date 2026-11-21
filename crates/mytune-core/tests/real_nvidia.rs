@@ -117,15 +117,11 @@ fn nvidia_tweaks_on_throwaway_profiles() {
     // ---- 3. G-SYNC switch
     let gs = NvidiaGsyncTweak { target: Target::Named(t_name.clone()) };
     assert!(gs.is_applied().unwrap(), "nothing switched off yet");
-    e.revert(&gs).ok(); // revert = switch off in the driver (only if there is a backup, so call the trait directly)
-    gs.revert(&Default::default()).unwrap();
-    let off: Vec<_> = GSYNC_IDS.iter().map(|id| user_value(&t_name, *id)).collect();
-    println!("G-SYNC ids after switching off: {off:?}");
-    if off.iter().any(|v| *v == Some(0)) {
-        assert!(!gs.is_applied().unwrap());
-        gs.apply(&mut Default::default()).unwrap();
-    }
-    assert!(gs.is_applied().unwrap());
+    gs.revert(&Default::default()).unwrap(); // a backup without state changes nothing
+    assert!(gs.is_applied().unwrap(), "revert never switches G-SYNC off by itself");
+    e.apply(&gs).unwrap();
+    e.revert(&gs).unwrap();
+    assert!(gs.is_applied().unwrap(), "it was on before, so it is on after");
     for id in GSYNC_IDS {
         assert_eq!(user_value(&t_name, id), None);
     }

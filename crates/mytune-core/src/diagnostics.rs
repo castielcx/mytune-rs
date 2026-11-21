@@ -498,8 +498,10 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(300));
         let list = m.sample(&[]).unwrap();
         assert!(list.len() > 10);
-        let own = std::process::id();
-        let me = list.iter().find(|s| s.pid == own).expect("own process listed");
+        // a row is a name group and carries only its first pid: another copy of this test binary may hold it
+        let exe = std::env::current_exe().unwrap();
+        let own = exe.file_stem().unwrap().to_string_lossy();
+        let me = list.iter().find(|s| s.base.eq_ignore_ascii_case(&own)).expect("own process listed");
         assert!(!me.can_end);
         assert!(me.memory_mb > 1.0);
     }

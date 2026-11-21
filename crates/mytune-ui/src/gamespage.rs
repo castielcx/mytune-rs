@@ -5,13 +5,16 @@
 use crate::theme::{self as th, dsb, rt, sb, text2, text3};
 use crate::widgets::{self, caption, caption3};
 use eframe::egui::{self, Align, Id, Layout, Ui};
-use mytune_core::engine::{Engine, RevertOutcome};
+use mytune_core::engine::{Engine, RevertOutcome, Tweak};
+use mytune_core::error::Error;
 use mytune_core::gamelib;
 use mytune_core::gameprofile::{self, ConfigTweak, Group, Item, Kind};
+use mytune_core::pergame;
 use mytune_core::procs::{Procs, WinProcs};
 use serde_json::Value;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Copy, PartialEq)]
@@ -33,6 +36,50 @@ struct Row {
     /// MyTune holds a copy of the settings file from before its first save.
     applied: bool,
     files: Vec<PathBuf>,
+    /// Windows' "high-performance GPU" preference for this exe (works for every game).
+    gpu: bool,
+}
+
+fn gpu_tweak(id: &str, name: &str, exe: &str) -> Option<pergame::GpuTweak> {
+    pergame::gpu_tweak(id, name, exe).ok()
+}
+
+/// A question for the user before a change: (backup id, title).
+#[derive(Clone)]
+enum Ask {
+    /// The game's file changed since MyTune saved it: overwrite it with the original?
+    Overwrite(String, String),
+    /// Delete the backup of a game that is gone?
+    Forget(String, String),
+}
+
+/// What the worker threads tell the UI besides their notice.
+#[derive(Default)]
+struct Shared {
+    ask: Option<Ask>,
+    /// Backups whose revert failed: Restore offers Forget for these.
+    stuck: HashSet<String>,
+}
+
+fn shared(s: &Mutex<Shared>) -> std::sync::MutexGuard<'_, Shared> {
+    s.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Forget is offered only for a settings file's backup: on a GPU or NVIDIA entry it would delete live originals.
+/// Only when every failure is a missing folder or copy: after a passing write error the copy is the only original.
+fn note_revert(state: &Mutex<Shared>, id: &str, failed: Option<&Error>) {
+    match failed {
+        None => drop(shared(state).stuck.remove(id)),
+        Some(Error::Revert(fails)) if id.ends_with(":config") => {
+            let mut s = shared(state);
+            if fails.iter().all(|f| f.contains("use Forget")) {
+                s.stuck.insert(id.to_string());
+            } else {
+                s.stuck.remove(id);
+            }
+        }
+        Some(_) => {}
+    }
 }
 
 /// The settings dialog of one game.
@@ -41,6 +88,10 @@ struct Dialog {
     items: Vec<Item>,
     /// What the controls show, as written in the file. Starts as the file's own values.
     values: Vec<Option<String>>,
+    /// Which key each (target, index) named when the file was read: Save refuses if that has shifted.
+    keys: Vec<(usize, usize, gameprofile::KeyAt)>,
+    /// The settings come from NVIDIA App's lowest preset alone (the game has no hand-written profile).
+    nvidia: bool,
 }
 
 type Notice = Option<(String, bool)>;
@@ -56,6 +107,7 @@ pub struct GamesPage {
     dialog: Option<Dialog>,
     /// Test switch (env `MYTUNE_GAME_SETTINGS`, part of a game's name): opens that game's dialog once.
     auto: Option<String>,
+    shared: Arc<Mutex<Shared>>,
 }
 
 const ROW_H: f32 = 30.0;
@@ -81,7 +133,9 @@ fn snapshot(engine: &Engine) -> Vec<Row> {
                 Prof::Ready
             };
             let stem = Path::new(&exe).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+            let gpu = gpu_tweak(&id, &name, &exe).is_some_and(|g| g.is_applied().unwrap_or(false));
             Some(Row {
+                gpu,
                 running: !stem.is_empty() && procs.iter().any(|p| p.name.eq_ignore_ascii_case(&stem)),
                 installed: Path::new(&exe).is_file(),
                 applied: engine.with_store(|s| s.get_backup(&t.id).is_some()),
@@ -101,7 +155,22 @@ fn snapshot(engine: &Engine) -> Vec<Row> {
 impl GamesPage {
     pub fn new(engine: Arc<Engine>) -> GamesPage {
         let auto = std::env::var("MYTUNE_GAME_SETTINGS").ok().map(|s| s.to_lowercase());
-        GamesPage { engine, rows: vec![], rx: None, working: false, scanned: false, read_at: None, dialog: None, auto }
+        GamesPage { engine, rows: vec![], rx: None, working: false, scanned: false, read_at: None, dialog: None, auto, shared: Default::default() }
+    }
+
+    /// A change is running: a new one would be dropped.
+    pub fn busy(&self) -> bool {
+        self.working
+    }
+
+    /// A revert of this backup failed, so Restore offers Forget.
+    pub fn is_stuck(&self, id: &str) -> bool {
+        shared(&self.shared).stuck.contains(id)
+    }
+
+    /// Asks before deleting the backup of a game that is gone.
+    pub fn ask_forget(&mut self, id: String, title: String) {
+        shared(&self.shared).ask = Some(Ask::Forget(id, title));
     }
 
     /// Runs `job` on a thread, then reads the list again. A list read that was under way is dropped: it
@@ -148,35 +217,154 @@ impl GamesPage {
     fn open(&mut self, id: &str) {
         let Some(r) = self.rows.iter().find(|r| r.id == id) else { return };
         let dir = self.engine.with_store(|s| s.dir().to_path_buf());
-        let items = ConfigTweak::new(Arc::new(WinProcs), &r.id, &r.name, &r.exe, &dir).settings();
+        let t = ConfigTweak::new(Arc::new(WinProcs), &r.id, &r.name, &r.exe, &dir);
+        let items = t.settings();
+        let keys = items.iter().filter_map(|i| Some((i.target, i.index, t.key_at(i.target, i.index)?))).collect();
         let values = items.iter().map(|i| i.value.clone()).collect();
-        self.dialog = Some(Dialog { id: r.id.clone(), items, values });
+        self.dialog = Some(Dialog { id: r.id.clone(), items, values, keys, nvidia: gameprofile::nvidia_only(&r.name, &r.exe) });
     }
 
-    fn save(&mut self, id: String, name: String, exe: String, values: Vec<(usize, usize, String)>) {
+    fn save(&mut self, id: String, name: String, exe: String, values: Vec<(usize, usize, String)>, keys: Vec<(usize, usize, gameprofile::KeyAt)>) {
+        let state = self.shared.clone();
         self.run(true, move |engine| {
             let dir = engine.with_store(|s| s.dir().to_path_buf());
-            Some(match engine.apply(&ConfigTweak::new(Arc::new(WinProcs), &id, &name, &exe, &dir).with_values(values)) {
-                Ok(()) => (format!("{name}: settings saved. Put back original restores the file from before MyTune changed it."), true),
-                Err(e) => (format!("{name}: {e}"), false),
+            let t = ConfigTweak::new(Arc::new(WinProcs), &id, &name, &exe, &dir);
+            if !t.keys_match(&keys, &values) {
+                return Some((format!("{name}: the settings file changed while the dialog was open, so nothing was saved. The dialog now shows the file as it is."), false));
+            }
+            mytune_core::sysreport::restore_point_once(&*mytune_core::tweaks::system_cmd());
+            let tweak_id = t.id.clone();
+            Some(match engine.apply(&t.with_values(values)) {
+                Ok(()) => {
+                    note_revert(&state, &tweak_id, None);
+                    (format!("{name}: settings saved. Put back original restores the file from before MyTune changed it."), true)
+                }
+                Err(e) => {
+                    gameprofile::drop_stray_copies(engine, &tweak_id);
+                    (format!("{name}: {e}"), false)
+                }
             })
         });
     }
 
-    /// Puts a game's original settings file back; `id` is the tweak id (`game:<id>:config`). Also used by Restore.
+    fn set_gpu(&mut self, id: String, name: String, exe: String, on: bool) {
+        self.run(true, move |engine| {
+            let t = gpu_tweak(&id, &name, &exe)?;
+            if on {
+                mytune_core::sysreport::restore_point_once(&*mytune_core::tweaks::system_cmd());
+                return engine.apply(&t).err().map(|e| (format!("{name}: {e}"), false));
+            }
+            match engine.revert(&t) {
+                Ok(RevertOutcome::Reverted) => None,
+                Ok(RevertOutcome::NoBackup) => Some((format!("{name}: this GPU preference was not set by MyTune, so it stays as it is."), false)),
+                Err(e) => Some((format!("{name}: {e}"), false)),
+            }
+        });
+    }
+
+    /// Undoes a stored per-game or PC check change by its backup id (Restore, and the game's dialog). Works for a
+    /// game no longer in the list. A settings file changed since MyTune saved it is not overwritten without asking.
     pub fn revert(&mut self, id: String, title: String) {
+        self.start_revert(id, title, true);
+    }
+
+    fn start_revert(&mut self, id: String, title: String, ask_first: bool) {
         if self.working {
             return;
         }
+        let state = self.shared.clone();
         self.run(true, move |engine| {
             let changed = engine.with_store(|s| s.get_backup(&id).cloned()).is_some_and(|b| gameprofile::changed_since_apply(&b));
-            Some(match engine.revert(&ConfigTweak::for_revert(Arc::new(WinProcs), &id, &title)) {
-                Ok(RevertOutcome::Reverted) if changed => (format!("{title}: original settings file restored. The file had been changed since MyTune saved it; those changes are gone."), true),
-                Ok(RevertOutcome::Reverted) => (format!("{title}: original settings file restored"), true),
+            if changed && ask_first {
+                shared(&state).ask = Some(Ask::Overwrite(id, title));
+                return None;
+            }
+            let Some(t) = engine.with_store(|s| pergame::revert_only(s, &id, &title)) else {
+                return Some((format!("{title}: MyTune cannot undo this here"), false));
+            };
+            let result = engine.revert(&*t);
+            note_revert(&state, &id, result.as_ref().err());
+            Some(match result {
+                Ok(RevertOutcome::Reverted) if changed => (format!("{title}: original restored. The file had been changed since MyTune saved it; those changes are gone."), true),
+                Ok(RevertOutcome::Reverted) => (format!("{title}: original restored"), true),
                 Ok(RevertOutcome::NoBackup) => (format!("{title}: no backup, nothing changed"), false),
                 Err(e) => (format!("{title}: {e}"), false),
             })
         });
+    }
+
+    /// Revert all's part for changes outside the tweak list. A game that is running is skipped and stays applied.
+    pub fn revert_all(&mut self, ids: Vec<String>) {
+        if ids.is_empty() || self.working {
+            return;
+        }
+        let state = self.shared.clone();
+        self.run(true, move |engine| {
+            let (mut done, mut left) = (0, Vec::new());
+            for id in ids {
+                let Some(b) = engine.with_store(|s| s.get_backup(&id).cloned()) else { continue };
+                let title = if b.title.is_empty() { id.clone() } else { b.title.clone() };
+                if id.starts_with("game:") && gameprofile::backup_game_running(&b).unwrap_or(true) {
+                    left.push(format!("{title}: skipped, the game is running. Close it and undo this on the Restore page."));
+                    continue;
+                }
+                let Some(t) = engine.with_store(|s| pergame::revert_only(s, &id, &title)) else { continue };
+                let result = engine.revert(&*t);
+                note_revert(&state, &id, result.as_ref().err());
+                match result {
+                    Ok(_) => done += 1,
+                    Err(e) => left.push(format!("{title}: {e}")),
+                }
+            }
+            Some(match left.is_empty() {
+                true => (format!("{done} game changes undone"), true),
+                false => (format!("{done} game changes undone, {} left. {}", left.len(), left.join(" ")), false),
+            })
+        });
+    }
+
+    /// The questions of `Ask`; shown over whichever page asked (Games or Restore).
+    pub fn modals(&mut self, ctx: &egui::Context) {
+        let Some(ask) = shared(&self.shared).ask.clone() else { return };
+        let (head, text, yes) = match &ask {
+            Ask::Overwrite(_, t) => ("Put back the original file?", format!("{t}: the file changed after MyTune saved it, by a game update or the game's own menu. Putting back the original overwrites those changes."), "Put back"),
+            Ask::Forget(_, t) => ("Forget this backup?", format!("{t}: MyTune deletes its copy of the original and this entry. This cannot be undone. Use it only for a game you uninstalled."), "Forget"),
+        };
+        let m = egui::Modal::new(Id::new("game_ask")).show(ctx, |ui| {
+            ui.set_width(460.0);
+            ui.label(dsb(head, 20.0));
+            ui.add_space(4.0);
+            ui.label(rt(text, 12.0).color(text2()));
+            ui.add_space(10.0);
+            let mut go = false;
+            ui.horizontal(|ui| {
+                go = th::button(ui, yes, true, (18.0, 8.0, 18.0, 9.0)).clicked();
+                if th::button(ui, "Cancel", false, (14.0, 8.0, 14.0, 9.0)).clicked() {
+                    ui.close();
+                }
+            });
+            go
+        });
+        if m.inner && !self.working {
+            shared(&self.shared).ask = None;
+            match ask {
+                Ask::Overwrite(id, title) => self.start_revert(id, title, false),
+                Ask::Forget(id, title) => {
+                    let state = self.shared.clone();
+                    self.run(true, move |engine| {
+                        Some(match gameprofile::forget(engine, &id) {
+                            Ok(()) => {
+                                note_revert(&state, &id, None);
+                                (format!("{title}: backup forgotten"), true)
+                            }
+                            Err(e) => (format!("{title}: {e}"), false),
+                        })
+                    });
+                }
+            }
+        } else if m.should_close() {
+            shared(&self.shared).ask = None;
+        }
     }
 
     /// Takes a finished thread's result. True when a change finished (the Restore list may differ now).
@@ -200,12 +388,16 @@ impl GamesPage {
     }
 
     pub fn ui(&mut self, ui: &mut Ui) {
+        // a window behind a fullscreen game still counts as shown, so focus decides too
+        let seen = crate::app::window_shown() && ui.input(|i| i.viewport().focused == Some(true));
         if !self.scanned {
             self.scan(); // once a run, so the list is there without a click
-        } else if self.rx.is_none() && self.read_at.map_or(true, |t| t.elapsed() > Duration::from_secs(3)) {
+        } else if seen && self.rx.is_none() && self.read_at.map_or(true, |t| t.elapsed() > Duration::from_secs(3)) {
             self.run(false, |_| None); // running state and files, only while the page is shown
         }
-        ui.ctx().request_repaint_after(Duration::from_secs(1));
+        if seen {
+            ui.ctx().request_repaint_after(Duration::from_secs(1));
+        }
 
         let mut scan = false;
         th::card(ui, (10, 16, 16, 16), |ui| {
@@ -228,6 +420,8 @@ impl GamesPage {
 
         // (row index, remove it: else open its settings)
         let mut act = None;
+        let mut gpu: Option<(usize, bool)> = None;
+        let mut forget = None;
         th::group(ui, |ui| {
             for (i, r) in self.rows.iter().enumerate() {
                 th::card(ui, (10, 10, 14, 10), |ui| {
@@ -245,7 +439,7 @@ impl GamesPage {
                             caption(
                                 ui,
                                 &match r.state {
-                                    Prof::None => format!("{store}  \u{00B7}  No settings for this game yet"),
+                                    Prof::None => store.to_string(),
                                     Prof::NoFile => format!("{store}  \u{00B7}  Start the game once"),
                                     Prof::Ready if r.applied => format!("{store}  \u{00B7}  Settings changed by MyTune"),
                                     Prof::Ready => store.to_string(),
@@ -256,8 +450,25 @@ impl GamesPage {
                             if !r.installed && th::button(ui, "Remove", false, th::BTN).clicked() {
                                 act = Some((i, true));
                             }
-                            if r.installed && r.state == Prof::Ready && th::button(ui, "In-game settings", false, th::BTN).clicked() {
-                                act = Some((i, false));
+                            if !r.installed && r.applied && th::button(ui, "Forget backup", false, th::BTN).on_hover_text("Deletes MyTune's copy of this game's settings file.").clicked() {
+                                forget = Some(i);
+                            }
+                            // rows without the button keep its place, so the switches line up
+                            let slot = Id::new("games_btn_w");
+                            if r.installed && r.state == Prof::Ready {
+                                let b = th::button(ui, "In-game settings", false, th::BTN);
+                                ui.data_mut(|d| d.insert_temp(slot, b.rect.width() + ui.spacing().item_spacing.x));
+                                if b.clicked() {
+                                    act = Some((i, false));
+                                }
+                            } else if r.installed {
+                                ui.add_space(ui.data(|d| d.get_temp::<f32>(slot)).unwrap_or(160.0));
+                            }
+                            if r.installed {
+                                if th::switch(ui, r.gpu).on_hover_text("Tells Windows to run this game on the fast graphics card (laptops and PCs with two GPUs).").clicked() {
+                                    gpu = Some((i, !r.gpu));
+                                }
+                                caption(ui, "High-performance GPU");
                             }
                             if r.running {
                                 th::chip(ui, "Running", th::SUCCESS, th::success_soft());
@@ -285,6 +496,14 @@ impl GamesPage {
         }
         if scan {
             self.scan();
+        }
+        if let Some((i, on)) = gpu {
+            let r = &self.rows[i];
+            self.set_gpu(r.id.clone(), r.name.clone(), r.exe.clone(), on);
+        }
+        if let Some(i) = forget {
+            let r = &self.rows[i];
+            self.ask_forget(pergame::game_tweak_id(&r.id, "config"), format!("{}: in-game settings", r.name));
         }
         match act {
             Some((i, true)) => self.edit_game(self.rows[i].id.clone(), |_| false),
@@ -335,8 +554,14 @@ impl GamesPage {
                             th::card(ui, (14, 8, 14, 8), |ui| {
                                 ui.horizontal(|ui| {
                                     ui.set_min_height(ROW_H);
-                                    ui.label(rt(item.setting.label, 14.0));
-                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| control(ui, n, item, &mut d.values[n]));
+                                    ui.label(rt(item.setting.label, 14.0).color(if item.value.is_some() { th::TEXT } else { text3() }));
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if item.value.is_some() {
+                                            control(ui, n, item, &mut d.values[n]);
+                                        } else {
+                                            ui.label(rt("Not in this game's file", 12.0).color(text3())).on_hover_text("The game has not written this setting. MyTune only changes settings that are already in the file.");
+                                        }
+                                    });
                                 });
                             });
                         }
@@ -354,7 +579,11 @@ impl GamesPage {
                         act = Some(Do::Save);
                     }
                 });
-                if d.items.iter().any(|i| i.setting.best.is_some()) && th::button(ui, "Competitive values", false, (14.0, 8.0, 14.0, 9.0)).on_hover_text("Fills in MyTune's values for the most frames and the least blur. Nothing is saved until you press Save.").clicked() {
+                let (best, hint) = match d.nvidia {
+                    true => ("Lowest (NVIDIA)", "Fills in the lowest preset NVIDIA App has for this game. Nothing is saved until you press Save."),
+                    false => ("Competitive values", "Fills in MyTune's values for the most frames and the least blur. Nothing is saved until you press Save."),
+                };
+                if d.items.iter().any(|i| i.setting.best.is_some() && i.value.is_some()) && th::button(ui, best, false, (14.0, 8.0, 14.0, 9.0)).on_hover_text(hint).clicked() {
                     act = Some(Do::Best);
                 }
                 if r.applied && !*working && th::button(ui, "Put back original", false, (14.0, 8.0, 14.0, 9.0)).on_hover_text("Restores the settings file from before MyTune first changed it.").clicked() {
@@ -370,11 +599,14 @@ impl GamesPage {
         }
         let (id, name, exe) = (r.id.clone(), r.name.clone(), r.exe.clone());
         match act {
-            Some(Do::Save) => self.save(id, name, exe, changed),
+            Some(Do::Save) => {
+                let keys = d.keys.clone();
+                self.save(id, name, exe, changed, keys);
+            }
             Some(Do::Best) => {
                 for (item, v) in d.items.iter().zip(&mut d.values) {
                     // the file's own spelling stays when it already says the same
-                    match item.setting.best {
+                    match item.setting.best.filter(|_| item.value.is_some()) {
                         Some(b) if !item.value.as_deref().is_some_and(|now| now.eq_ignore_ascii_case(b)) => *v = Some(b.into()),
                         Some(_) => *v = item.value.clone(),
                         None => {}
@@ -411,8 +643,9 @@ fn control(ui: &mut Ui, n: usize, item: &Item, v: &mut Option<String>) {
         }
         Kind::Number { min, max, decimals } => {
             let mut x = v.as_deref().and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
-            if ui.add(egui::DragValue::new(&mut x).range(min..=max).speed(1.0).max_decimals(0)).changed() {
-                *v = Some(format!("{:.decimals$}", x.round()));
+            // a file value outside the range stays as it is until the user changes it
+            if ui.add(egui::DragValue::new(&mut x).range(min..=max).clamp_existing_to_range(false).speed(1.0).max_decimals(decimals)).changed() {
+                *v = Some(gameprofile::number_text(x, decimals));
             }
         }
     }

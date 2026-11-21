@@ -13,7 +13,7 @@
 //! - `ServicesManualTweak::is_applied` = "no installed service is still on auto-start (2)" and at least
 //!   one is installed (C# also returns true just because a backup exists).
 //! - `PowerPlanTweak`: laptop vs desktop is a constructor argument (`Sys.IsLaptop` is not ported).
-//!   Revert still falls back to Balanced when the saved previous plan is gone, like C#.
+//!   Revert falls back to Balanced, then High performance, when the saved previous plan is gone.
 
 use crate::backup::TweakBackup;
 use crate::engine::Tweak;
@@ -21,6 +21,8 @@ use crate::error::{Error, Result};
 use crate::log;
 use crate::process::{self, RunResult};
 use crate::reg::{self, Hive, RegValue};
+use crate::store::Store;
+use serde_json::Value;
 use std::sync::Arc;
 
 /// Runs an external program. Real: `SystemCmd`. Tests: a fake.
@@ -65,17 +67,64 @@ fn bcdedit() -> String {
     exe("bcdedit.exe")
 }
 
-/// The entry to edit: `entry` if given (tests use a throwaway copy), else `{current}` if it exists,
-/// else `{default}`.
-fn bcd_entry(cmd: &dyn Cmd, entry: &Option<String>) -> String {
+/// Backup key: the BCD entry this backup edited.
+const BCD_ENTRY: &str = "bcdEntry";
+
+/// The entry to edit: `entry` if given (tests use a throwaway copy), else `{current}`, else `{default}`.
+/// bcdedit's errors are localized, so a readable `{default}` is what proves `{current}` is merely missing;
+/// when both fail the store itself failed and nothing may be edited.
+fn bcd_entry(cmd: &dyn Cmd, entry: &Option<String>) -> Result<String> {
     if let Some(e) = entry {
-        return e.clone();
+        return Ok(e.clone());
     }
-    match cmd.run(&bcdedit(), &["/enum", "{current}"]) {
-        Ok(r) => process::bcd_entry_for(r.exit_code),
-        Err(_) => "{default}",
+    if cmd.run(&bcdedit(), &["/enum", "{current}"])?.exit_code == 0 {
+        return Ok("{current}".into());
     }
-    .to_string()
+    checked(cmd, &bcdedit(), &["/enum", "{default}"])?;
+    Ok("{default}".into())
+}
+
+/// Real `{guid}` of an entry; `/v` prints it in place of aliases such as `{current}`.
+fn bcd_guid(cmd: &dyn Cmd, entry: &str) -> Option<String> {
+    let r = cmd.run(&bcdedit(), &["/enum", entry, "/v"]).ok().filter(|r| r.exit_code == 0)?;
+    find_guid(&r.output).map(|g| format!("{{{g}}}"))
+}
+
+/// The entry this backup edits, stored on first use as its GUID: `{default}` can later point at another OS.
+fn bcd_pin(cmd: &dyn Cmd, entry: &Option<String>, b: &mut TweakBackup) -> Result<String> {
+    if let Some(e) = b.data.get(BCD_ENTRY) {
+        return Ok(e.clone());
+    }
+    let live = bcd_entry(cmd, entry)?;
+    let e = bcd_guid(cmd, &live).unwrap_or(live);
+    b.data.insert(BCD_ENTRY.into(), e.clone());
+    Ok(e)
+}
+
+/// Where revert writes: the stored entry; the live one for an old backup or a stored entry that no longer exists
+/// (a Windows upgrade replaces it). An unreadable store is an error, so the backup is kept.
+fn bcd_revert_entry(cmd: &dyn Cmd, entry: &Option<String>, b: &TweakBackup) -> Result<String> {
+    if let Some(e) = b.data.get(BCD_ENTRY) {
+        if cmd.run(&bcdedit(), &["/enum", e])?.exit_code == 0 {
+            return Ok(e.clone());
+        }
+        log::info(&format!("bcd entry {e} no longer exists, using the live entry"));
+    }
+    bcd_entry(cmd, entry)
+}
+
+/// `hypervisorlaunchtype` from the mounted BCD store (element 250000f0: 0 = Off, 1 = Auto). bcdedit may print
+/// localized values, which neither compare nor can be passed back to `/set`. `None`: use the text.
+fn hypervisor_raw(cmd: &dyn Cmd, entry: &str) -> Option<&'static str> {
+    let key = format!("BCD00000000\\Objects\\{}\\Elements\\250000f0", bcd_guid(cmd, entry)?);
+    match reg::get(Hive::Hklm, &key, "Element").ok()?? {
+        RegValue::Binary(v) if v.len() == 8 && v[1..].iter().all(|x| *x == 0) => match v[0] {
+            0 => Some("Off"),
+            1 => Some("Auto"),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// Value of a bcdedit element: second word of the line that starts with `name`. Empty if absent.
@@ -95,6 +144,11 @@ fn bcd_value(cmd: &dyn Cmd, entry: &str, name: &str) -> String {
         Ok(r) if r.exit_code == 0 => parse_bcd_value(&r.output, name),
         _ => String::new(),
     }
+}
+
+/// Read for storing an original: a failed read is an error, because a stored "" means "was absent".
+fn bcd_value_strict(cmd: &dyn Cmd, entry: &str, name: &str) -> Result<String> {
+    Ok(parse_bcd_value(&checked(cmd, &bcdedit(), &["/enum", entry])?, name))
 }
 
 /// Deletes a bcdedit element that did not exist before. A failing `/deletevalue` is fine only when a
@@ -132,17 +186,22 @@ impl Tweak for TimerTickTweak {
         "Disable dynamic tick"
     }
     fn is_applied(&self) -> Result<bool> {
-        let e = &*bcd_entry(&*self.cmd, &self.entry);
-        Ok(bcd_value(&*self.cmd, e, "disabledynamictick").eq_ignore_ascii_case("yes")
-            && !bcd_value(&*self.cmd, e, "useplatformclock").eq_ignore_ascii_case("yes"))
+        let Ok(e) = bcd_entry(&*self.cmd, &self.entry) else { return Ok(false) };
+        Ok(bcd_value(&*self.cmd, &e, "disabledynamictick").eq_ignore_ascii_case("yes")
+            && !bcd_value(&*self.cmd, &e, "useplatformclock").eq_ignore_ascii_case("yes"))
     }
-    fn apply(&self, b: &mut TweakBackup) -> Result<()> {
-        let e = &*bcd_entry(&*self.cmd, &self.entry);
+    fn capture(&self, b: &mut TweakBackup) -> Result<()> {
+        let e = bcd_pin(&*self.cmd, &self.entry, b)?;
         for k in ["disabledynamictick", "useplatformclock"] {
             if !b.data.contains_key(k) {
-                b.data.insert(k.into(), bcd_value(&*self.cmd, e, k));
+                b.data.insert(k.into(), bcd_value_strict(&*self.cmd, &e, k)?);
             }
         }
+        Ok(())
+    }
+    fn apply(&self, b: &mut TweakBackup) -> Result<()> {
+        self.capture(b)?;
+        let e = &*b.data[BCD_ENTRY].clone();
         bcd_set(&*self.cmd, e, "disabledynamictick", "yes")?;
         if !b.data["useplatformclock"].is_empty() {
             bcd_delete(&*self.cmd, e, "useplatformclock")?;
@@ -150,7 +209,7 @@ impl Tweak for TimerTickTweak {
         Ok(())
     }
     fn revert(&self, b: &TweakBackup) -> Result<()> {
-        let e = &*bcd_entry(&*self.cmd, &self.entry);
+        let e = &*bcd_revert_entry(&*self.cmd, &self.entry, b)?;
         let tick = b.data.get("disabledynamictick").map(String::as_str).unwrap_or("");
         let hpet = b.data.get("useplatformclock").map(String::as_str).unwrap_or("");
         if tick.is_empty() {
@@ -196,26 +255,38 @@ impl Tweak for VbsTweak {
         "Turn off virtualization-based security"
     }
     fn is_applied(&self) -> Result<bool> {
-        let e = &*bcd_entry(&*self.cmd, &self.entry);
+        let Ok(e) = bcd_entry(&*self.cmd, &self.entry) else { return Ok(false) };
+        let hypervisor = match hypervisor_raw(&*self.cmd, &e) {
+            Some(v) => v.to_string(),
+            None => bcd_value(&*self.cmd, &e, "hypervisorlaunchtype"),
+        };
         Ok(dword(self.hive, &self.device_guard, "EnableVirtualizationBasedSecurity")? == Some(0)
             && dword(self.hive, &self.hvci, "Enabled")? != Some(1)
-            && bcd_value(&*self.cmd, e, "hypervisorlaunchtype").eq_ignore_ascii_case("off"))
+            && hypervisor.eq_ignore_ascii_case("off"))
     }
-    fn apply(&self, b: &mut TweakBackup) -> Result<()> {
-        let e = &*bcd_entry(&*self.cmd, &self.entry);
+    fn capture(&self, b: &mut TweakBackup) -> Result<()> {
+        let e = bcd_pin(&*self.cmd, &self.entry, b)?;
         if !b.data.contains_key("hypervisorlaunchtype") {
-            b.data.insert("hypervisorlaunchtype".into(), bcd_value(&*self.cmd, e, "hypervisorlaunchtype"));
+            let v = match hypervisor_raw(&*self.cmd, &e) {
+                Some(v) => v.to_string(),
+                None => bcd_value_strict(&*self.cmd, &e, "hypervisorlaunchtype")?,
+            };
+            b.data.insert("hypervisorlaunchtype".into(), v);
         }
         b.capture(self.hive, &self.device_guard, "EnableVirtualizationBasedSecurity")?;
+        b.capture(self.hive, &self.hvci, "Enabled")
+    }
+    fn apply(&self, b: &mut TweakBackup) -> Result<()> {
+        self.capture(b)?;
+        let e = &*b.data[BCD_ENTRY].clone();
         reg::set(self.hive, &self.device_guard, "EnableVirtualizationBasedSecurity", &RegValue::Dword(0))?;
-        b.capture(self.hive, &self.hvci, "Enabled")?;
         reg::set(self.hive, &self.hvci, "Enabled", &RegValue::Dword(0))?;
         bcd_set(&*self.cmd, e, "hypervisorlaunchtype", "off")
     }
     fn revert(&self, b: &TweakBackup) -> Result<()> {
         // Registry first; if it fails the error is returned and bcdedit is not touched (same as C#).
         b.restore_registry()?;
-        let e = &*bcd_entry(&*self.cmd, &self.entry);
+        let e = &*bcd_revert_entry(&*self.cmd, &self.entry, b)?;
         match b.data.get("hypervisorlaunchtype").map(String::as_str).unwrap_or("") {
             "" => bcd_delete(&*self.cmd, e, "hypervisorlaunchtype"),
             prev => bcd_set(&*self.cmd, e, "hypervisorlaunchtype", prev),
@@ -229,12 +300,21 @@ pub struct HibernationTweak {
     pub cmd: Arc<dyn Cmd>,
     pub hive: Hive,
     pub path: String,
+    /// Whether the firmware can hibernate at all (S4).
+    pub supported: fn() -> bool,
 }
 
 impl HibernationTweak {
     pub fn system(cmd: Arc<dyn Cmd>) -> HibernationTweak {
-        HibernationTweak { cmd, hive: Hive::Hklm, path: "SYSTEM\\CurrentControlSet\\Control\\Power".into() }
+        HibernationTweak { cmd, hive: Hive::Hklm, path: "SYSTEM\\CurrentControlSet\\Control\\Power".into(), supported: s4_supported }
     }
+}
+
+/// Stays true while hibernation is merely switched off. If the query fails, assume support so the backup is kept.
+fn s4_supported() -> bool {
+    use windows::Win32::System::Power::{GetPwrCapabilities, SYSTEM_POWER_CAPABILITIES};
+    let mut c = SYSTEM_POWER_CAPABILITIES::default();
+    !unsafe { GetPwrCapabilities(&mut c) } || c.SystemS4
 }
 
 impl Tweak for HibernationTweak {
@@ -247,16 +327,45 @@ impl Tweak for HibernationTweak {
     fn is_applied(&self) -> Result<bool> {
         Ok(dword(self.hive, &self.path, "HibernateEnabled")? == Some(0))
     }
-    fn apply(&self, b: &mut TweakBackup) -> Result<()> {
+    fn capture(&self, b: &mut TweakBackup) -> Result<()> {
         if !b.data.contains_key("wasEnabled") {
+            // An absent value means the Windows default applies; with no default it was never on.
+            let on = match dword(self.hive, &self.path, "HibernateEnabled")? {
+                Some(v) => v != 0,
+                None => dword(self.hive, &self.path, "HibernateEnabledDefault")? == Some(1),
+            };
             // "0" means hibernation was already off before MyTune
-            b.data.insert("wasEnabled".into(), if self.is_applied()? { "0" } else { "1" }.into());
+            b.data.insert("wasEnabled".into(), if on { "1" } else { "0" }.into());
+            if let Some(t @ (1 | 2)) = dword(self.hive, &self.path, "HiberFileType")? {
+                b.data.insert("hiberType".into(), t.to_string());
+            }
         }
+        Ok(())
+    }
+    fn apply(&self, b: &mut TweakBackup) -> Result<()> {
+        self.capture(b)?;
         checked(&*self.cmd, &exe("powercfg.exe"), &["/hibernate", "off"]).map(|_| ())
     }
     fn revert(&self, b: &TweakBackup) -> Result<()> {
-        if b.data.get("wasEnabled").map(String::as_str).unwrap_or("1") != "0" {
-            checked(&*self.cmd, &exe("powercfg.exe"), &["/hibernate", "on"])?;
+        if b.data.get("wasEnabled").map(String::as_str).unwrap_or("1") == "0" {
+            return Ok(());
+        }
+        let powercfg = exe("powercfg.exe");
+        if let Err(e) = checked(&*self.cmd, &powercfg, &["/hibernate", "on"]) {
+            if (self.supported)() {
+                return Err(e);
+            }
+            log::info("hibernation is not supported on this PC, nothing to turn back on");
+            return Ok(());
+        }
+        let kind = match b.data.get("hiberType").map(String::as_str) {
+            Some("1") => "reduced",
+            Some("2") => "full",
+            _ => return Ok(()),
+        };
+        // Hibernation is back; a type that will not take must not hold the backup forever.
+        if let Err(e) = checked(&*self.cmd, &powercfg, &["/hibernate", "/type", kind]) {
+            log::error("restoring the hiberfile type failed", Some(&e));
         }
         Ok(())
     }
@@ -309,6 +418,17 @@ impl ServicesManualTweak {
     }
 }
 
+/// `sc config start=` word for a saved `Start` value. Backups from before `DelayedAutostart` was saved give `false`.
+fn sc_start_mode(start: Option<&str>, delayed: bool) -> Option<&'static str> {
+    match start {
+        Some("2") if delayed => Some("delayed-auto"),
+        Some("2") => Some("auto"),
+        Some("3") => Some("demand"),
+        Some("4") => Some("disabled"),
+        _ => None,
+    }
+}
+
 impl Tweak for ServicesManualTweak {
     fn id(&self) -> &str {
         &self.id
@@ -329,6 +449,27 @@ impl Tweak for ServicesManualTweak {
         }
         Ok(any)
     }
+    fn capture(&self, b: &mut TweakBackup) -> Result<()> {
+        for s in &self.names {
+            let key = self.key(s);
+            if reg::key_exists(self.hive, &key)? && dword(self.hive, &key, "Start")? == Some(2) {
+                b.capture(self.hive, &key, "Start")?;
+                b.capture(self.hive, &key, "DelayedAutostart")?;
+            }
+        }
+        Ok(())
+    }
+    fn revert_default(&self) -> Result<bool> {
+        // Windows ships Spooler on Automatic. The Xbox services ship on Manual, so they have nothing to write.
+        if self.id != "deb.spooler" || dword(self.hive, &self.key("Spooler"), "Start")? != Some(3) {
+            return Ok(false);
+        }
+        if self.set_start("Spooler", "auto") {
+            Ok(true)
+        } else {
+            Err(Error::Revert(vec!["Spooler: sc config start= auto failed".into()]))
+        }
+    }
     fn apply(&self, b: &mut TweakBackup) -> Result<()> {
         for s in &self.names {
             let key = self.key(s);
@@ -337,6 +478,7 @@ impl Tweak for ServicesManualTweak {
                 continue;
             }
             b.capture(self.hive, &key, "Start")?;
+            b.capture(self.hive, &key, "DelayedAutostart")?;
             if !self.set_start(s, "demand") {
                 // not changed, so nothing to restore for it
                 b.registry.retain(|r| !r.path.eq_ignore_ascii_case(&key));
@@ -347,12 +489,8 @@ impl Tweak for ServicesManualTweak {
     fn revert(&self, b: &TweakBackup) -> Result<()> {
         let mut failed = Vec::new();
         for r in b.registry.iter().filter(|r| r.name == "Start" && r.existed) {
-            let mode = match r.value.as_deref() {
-                Some("2") => "auto",
-                Some("3") => "demand",
-                Some("4") => "disabled",
-                _ => continue,
-            };
+            let delayed = b.registry.iter().any(|d| d.name == "DelayedAutostart" && d.path.eq_ignore_ascii_case(&r.path) && d.value.as_deref() == Some("1"));
+            let Some(mode) = sc_start_mode(r.value.as_deref(), delayed) else { continue };
             let svc = r.path.rsplit('\\').next().unwrap_or("");
             if !reg::key_exists(self.hive, &self.key(svc))? {
                 continue; // uninstalled since: nothing to put back
@@ -376,6 +514,9 @@ pub const HIGH_PERFORMANCE: &str = "8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c";
 const BALANCED: &str = "381b4222-f694-41f0-9685-ff5bb260df2e";
 const PROCESSOR: &str = "54533251-82be-4824-96c1-47b60b740d00";
 const NONE: &str = "fea3413e-7e05-4911-9a71-700331f1c294";
+
+/// AC value that leaves the base plan's setting alone.
+const KEEP: u32 = u32::MAX;
 
 /// (subgroup, setting, AC, DC). DC `None` leaves the battery value of the base plan.
 type Row = (&'static str, &'static str, u32, Option<u32>);
@@ -402,10 +543,12 @@ const DESKTOP: [Row; 25] = [
     (PROCESSOR, "7b224883-b3cc-4d79-819f-8374152cbe7c", 20, None),
     (PROCESSOR, "893dee8e-2bef-41e0-89c6-b55d0929964c", 0, None),
     (PROCESSOR, "8baa4a8a-14c6-4451-8e8b-14bdbd197537", 0, Some(0)),
-    (PROCESSOR, "94d3a615-a899-4ac5-ae2b-e4d8f634367f", 0, Some(0)),
+    // system cooling policy: 1 = Active (fans first), 0 = Passive would slow the CPU before raising the fans
+    (PROCESSOR, "94d3a615-a899-4ac5-ae2b-e4d8f634367f", 1, Some(0)),
     (PROCESSOR, "bc5038f7-23e0-4960-96da-33abaf5935ec", 100, None),
     (PROCESSOR, "ea062031-0e34-4ff1-9b6d-eb1059334028", 100, Some(100)),
-    ("7516b95f-f776-4464-8c53-06167f40cc99", "3c0bc021-c8a8-4e07-a973-6b14cbcb2b7e", 0, Some(600)),
+    // display timeout: AC keeps the base plan's, a fixed 0 would never turn an OLED off
+    ("7516b95f-f776-4464-8c53-06167f40cc99", "3c0bc021-c8a8-4e07-a973-6b14cbcb2b7e", KEEP, Some(600)),
 ];
 
 // NOTE: the C# table has both ...6863 and ...6864 (near-identical GUIDs); copied as is.
@@ -414,14 +557,16 @@ const LAPTOP: [Row; 12] = [
     ("238c9fa8-0aad-41ed-83f4-97be242c8f20", "29f6c1db-86da-48c5-9fdb-f2b67b1f44da", 0, Some(900)),
     ("238c9fa8-0aad-41ed-83f4-97be242c8f20", "9d7815a6-7ee4-497e-8888-515a05f02364", 0, Some(5400)),
     ("2a737441-1930-4402-8d77-b2bebba308a3", "48e6b7a6-50f5-4782-a5d4-53bb8f07e226", 0, Some(0)),
-    (PROCESSOR, "0cc5b647-c1df-4637-891a-dec35c318583", 4, Some(4)),
+    // core parking: none on mains, allowed on battery
+    (PROCESSOR, "0cc5b647-c1df-4637-891a-dec35c318583", 100, Some(4)),
     (PROCESSOR, "36687f9e-e3a5-4dbf-b1dc-15eb381c6863", 40, Some(60)),
     (PROCESSOR, "36687f9e-e3a5-4dbf-b1dc-15eb381c6864", 40, Some(60)),
-    (PROCESSOR, "893dee8e-2bef-41e0-89c6-b55d0929964c", 100, Some(50)),
+    // minimum processor state: 5% on battery is the Windows Balanced value
+    (PROCESSOR, "893dee8e-2bef-41e0-89c6-b55d0929964c", 100, Some(5)),
     (PROCESSOR, "97cfac41-2217-47eb-992d-618b1977c907", 1000, None),
     (PROCESSOR, "bc5038f7-23e0-4960-96da-33abaf5935ec", 100, Some(100)),
     (PROCESSOR, "ea062031-0e34-4ff1-9b6d-eb1059334028", 100, Some(100)),
-    ("7516b95f-f776-4464-8c53-06167f40cc99", "3c0bc021-c8a8-4e07-a973-6b14cbcb2b7e", 0, Some(300)),
+    ("7516b95f-f776-4464-8c53-06167f40cc99", "3c0bc021-c8a8-4e07-a973-6b14cbcb2b7e", KEEP, Some(300)),
 ];
 
 /// First `8-4-4-4-12` hex GUID in `s`, lowercased.
@@ -453,6 +598,10 @@ impl PowerPlanTweak {
     fn scheme_exists(&self, guid: &str) -> bool {
         self.pc(&["/list"]).map(|r| r.output.to_ascii_lowercase().contains(guid)).unwrap_or(false)
     }
+    /// powercfg also exits 0 for a setting this PC lacks; only a real one is printed with its GUID.
+    fn setting_exists(&self, sub: &str, setting: &str) -> bool {
+        self.pc(&["/query", PLAN_GUID, sub, setting]).is_ok_and(|r| r.exit_code == 0 && r.output.to_ascii_lowercase().contains(setting))
+    }
 }
 
 impl Tweak for PowerPlanTweak {
@@ -465,39 +614,86 @@ impl Tweak for PowerPlanTweak {
     fn is_applied(&self) -> Result<bool> {
         Ok(self.active_scheme()?.as_deref() == Some(PLAN_GUID))
     }
-    fn apply(&self, b: &mut TweakBackup) -> Result<()> {
-        let prev = self.active_scheme()?;
+    fn capture(&self, b: &mut TweakBackup) -> Result<()> {
         if !b.data.contains_key("previous") {
-            if let Some(p) = prev.filter(|p| p != PLAN_GUID) {
+            if let Some(p) = self.active_scheme()?.filter(|p| p != PLAN_GUID) {
                 b.data.insert("previous".into(), p);
             }
         }
-        if self.scheme_exists(PLAN_GUID) {
-            let _ = self.pc(&["/delete", PLAN_GUID]);
-        }
+        Ok(())
+    }
+    fn apply(&self, b: &mut TweakBackup) -> Result<()> {
+        self.capture(b)?;
         let base = if !self.laptop && self.scheme_exists(HIGH_PERFORMANCE) { HIGH_PERFORMANCE } else { BALANCED };
+        if self.scheme_exists(PLAN_GUID) {
+            // powercfg refuses to delete the active plan
+            let was_active = self.is_applied()?;
+            if was_active {
+                let away = b.data.get("previous").filter(|p| self.scheme_exists(&p.to_ascii_lowercase())).map_or(base, String::as_str);
+                self.pc_checked(&["/setactive", away])?;
+            }
+            if let Err(e) = self.pc_checked(&["/delete", PLAN_GUID]) {
+                if was_active {
+                    let _ = self.pc(&["/setactive", PLAN_GUID]);
+                }
+                return Err(e);
+            }
+        }
         self.pc_checked(&["/duplicatescheme", base, PLAN_GUID])?;
         self.pc_checked(&["/changename", PLAN_GUID, "MyTune Performance", "Low latency and stable FPS (made by MyTune)"])?;
         let rows: &[Row] = if self.laptop { &LAPTOP } else { &DESKTOP };
+        let mut failed = Vec::new();
         for (sub, setting, ac, dc) in rows {
-            // Some settings do not exist on every PC; skip those instead of failing the whole plan.
-            let _ = self.pc(&["/setacvalueindex", PLAN_GUID, sub, setting, &ac.to_string()]);
-            if let Some(dc) = dc {
-                let _ = self.pc(&["/setdcvalueindex", PLAN_GUID, sub, setting, &dc.to_string()]);
+            let ac = (*ac != KEEP).then_some(("/setacvalueindex", *ac));
+            for (flag, value) in ac.into_iter().chain(dc.map(|d| ("/setdcvalueindex", d))) {
+                let written = self.pc(&[flag, PLAN_GUID, sub, setting, &value.to_string()]).is_ok_and(|r| r.exit_code == 0);
+                // Some settings do not exist on every PC; skip those instead of failing the whole plan.
+                if !written && self.setting_exists(sub, setting) {
+                    failed.push(format!("{setting} {flag}"));
+                }
             }
         }
-        self.pc_checked(&["/setactive", PLAN_GUID]).map(|_| ())
+        self.pc_checked(&["/setactive", PLAN_GUID])?;
+        if failed.is_empty() {
+            Ok(())
+        } else {
+            Err(Error::Plain(format!("{} power plan setting(s) could not be written: {}", failed.len(), failed.join(", "))))
+        }
     }
     fn revert(&self, b: &TweakBackup) -> Result<()> {
-        let mut target = b.data.get("previous").cloned().unwrap_or_else(|| BALANCED.to_string());
-        if target.is_empty() || target.eq_ignore_ascii_case(PLAN_GUID) || !self.scheme_exists(&target.to_ascii_lowercase()) {
-            target = BALANCED.to_string();
-        }
-        self.pc_checked(&["/setactive", &target])?;
-        if self.scheme_exists(PLAN_GUID) {
+        let saved = b.data.get("previous").map(|p| p.to_ascii_lowercase());
+        // A failed list is an error: read as "plan gone", it would select Balanced and lose the saved plan.
+        let list = self.pc_checked(&["/list"])?.to_ascii_lowercase();
+        // Some PCs have no Balanced plan. If none is listed, trying Balanced fails and keeps the backup.
+        let target = saved.iter().map(String::as_str).chain([BALANCED, HIGH_PERFORMANCE])
+            .find(|p| !p.is_empty() && *p != PLAN_GUID && list.contains(p))
+            .unwrap_or(BALANCED);
+        self.pc_checked(&["/setactive", target])?;
+        if list.contains(PLAN_GUID) {
             let _ = self.pc(&["/delete", PLAN_GUID]);
         }
         Ok(())
+    }
+    /// No record of the user's plan: Balanced is the Windows default. Without it, nothing is touched.
+    fn revert_default(&self) -> Result<bool> {
+        if !self.is_applied()? || !self.scheme_exists(BALANCED) {
+            return Ok(false);
+        }
+        self.pc_checked(&["/setactive", BALANCED])?;
+        let _ = self.pc(&["/delete", PLAN_GUID]);
+        Ok(true)
+    }
+    /// A game is running on the booster's plan: its record is the user's real plan. The tweak takes it over,
+    /// so there is one record and the game's exit does not undo this apply.
+    fn on_applied(&self, store: &mut Store) -> Result<()> {
+        let Some(user) = store.top("PowerPrevious").and_then(Value::as_str).map(String::from) else { return Ok(()) };
+        let Some(mut b) = store.get_backup(self.id()).cloned() else { return Ok(()) };
+        // High performance here is the booster's own fallback plan, not a choice of the user
+        if b.data.get("previous").is_none_or(|p| p.eq_ignore_ascii_case(PLAN_GUID) || p.eq_ignore_ascii_case(HIGH_PERFORMANCE)) {
+            b.data.insert("previous".into(), user);
+        }
+        store.set_top("PowerPrevious", Value::Null);
+        store.set_backup(self.id(), b)
     }
 }
 
@@ -583,6 +779,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn services_only_touches_auto_start_and_reverts_to_auto() {
         let s = Scratch::new("svc");
         let fake = Fake::new(|l| (l == "sc config C start= demand").then(|| (5, "denied".into())));
@@ -594,14 +791,58 @@ mod tests {
         // C failed -> not in the backup; only A is
         e.with_store(|st| {
             let b = st.get_backup("deb.svc").unwrap();
-            assert_eq!(b.registry.len(), 1);
-            assert!(b.registry[0].path.ends_with("\\A"));
+            assert_eq!(b.registry.iter().filter(|r| r.name == "Start").count(), 1);
+            assert!(b.registry.iter().all(|r| r.path.ends_with("\\A")));
         });
         assert_eq!(e.revert(&t).unwrap(), RevertOutcome::Reverted);
         assert_eq!(fake.calls().last().unwrap(), "sc config A start= auto");
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
+    fn services_all_failed_leaves_no_backup() {
+        let s = Scratch::new("svcphantom");
+        let mut t = svc_setup(&s);
+        t.cmd = Fake::new(|l| l.starts_with("sc config").then(|| (5, "denied".into())));
+        let (d, e) = engine();
+        e.apply(&t).unwrap();
+        assert!(e.with_store(|st| st.get_backup("deb.svc").is_none()));
+        assert!(Store::load(d.path()).get_backup("deb.svc").is_none(), "not on disk either");
+    }
+
+    #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
+    fn hibernation_original_is_on_disk_before_the_change() {
+        let (d, e) = engine();
+        let state = d.path().join("state.json");
+        let seen = Arc::new(Mutex::new(false));
+        let s2 = seen.clone();
+        let fake = Fake::new(move |l| {
+            if l.starts_with("powercfg") {
+                *s2.lock().unwrap() = std::fs::read_to_string(&state).is_ok_and(|j| j.contains("wasEnabled"));
+            }
+            None
+        });
+        let scratch = Scratch::new("hibcap");
+        let t = HibernationTweak { cmd: fake, hive: Hive::Hkcu, path: scratch.0.clone(), supported: || true };
+        e.apply(&t).unwrap();
+        assert!(*seen.lock().unwrap());
+    }
+
+    #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
+    fn failed_bcd_read_is_not_stored_as_absent() {
+        let s = Scratch::new("bcdfail");
+        let fake = Fake::new(|l| l.starts_with("bcdedit /enum").then(|| (1, "failed".into())));
+        let t = VbsTweak { cmd: fake.clone(), entry: Some("{t}".into()), hive: Hive::Hkcu, device_guard: format!("{}\\dg", s.0), hvci: format!("{}\\hvci", s.0) };
+        let (_d, e) = engine();
+        assert!(e.apply(&t).is_err());
+        assert!(e.with_store(|st| st.get_backup("adv.vbs").is_none()));
+        assert!(!fake.calls().iter().any(|c| c.contains("/set")));
+    }
+
+    #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn services_failed_revert_keeps_backup() {
         let s = Scratch::new("svcfail");
         let ok = Fake::new(|_| None);
@@ -618,6 +859,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn services_is_applied_rules() {
         let s = Scratch::new("svcapplied");
         let mut t = svc_setup(&s);
@@ -632,12 +874,13 @@ mod tests {
     // ------------------------------------------------------------ hibernation
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn hibernation_remembers_if_it_was_off() {
         for (was, expect_on) in [(1u32, true), (0u32, false)] {
             let s = Scratch::new(&format!("hib{was}"));
             reg::set(Hive::Hkcu, &s.0, "HibernateEnabled", &RegValue::Dword(was)).unwrap();
             let fake = Fake::new(|_| None);
-            let t = HibernationTweak { cmd: fake.clone(), hive: Hive::Hkcu, path: s.0.clone() };
+            let t = HibernationTweak { cmd: fake.clone(), hive: Hive::Hkcu, path: s.0.clone(), supported: || true };
             let (_d, e) = engine();
             e.apply(&t).unwrap();
             e.revert(&t).unwrap();
@@ -645,6 +888,47 @@ mod tests {
             assert_eq!(calls[0], "powercfg /hibernate off");
             assert_eq!(calls.contains(&"powercfg /hibernate on".to_string()), expect_on, "{calls:?}");
         }
+    }
+
+    fn hib_backup(data: &[(&str, &str)]) -> TweakBackup {
+        let mut b = TweakBackup::new("t");
+        b.data = data.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        b
+    }
+
+    #[test]
+    fn hibernation_absent_value_is_not_counted_as_enabled() {
+        // only reads a key that does not exist
+        let t = HibernationTweak { cmd: Fake::new(|_| None), hive: Hive::Hkcu, path: "Software\\MyTuneTest\\no-such-key".into(), supported: || true };
+        let mut b = TweakBackup::new("t");
+        t.capture(&mut b).unwrap();
+        assert_eq!(b.data["wasEnabled"], "0");
+    }
+
+    #[test]
+    fn hibernation_revert_without_support_ends_and_with_support_keeps_failing() {
+        let fails = || Fake::new(|l| (l == "powercfg /hibernate on").then(|| (1, "not supported".into())));
+        let b = hib_backup(&[("wasEnabled", "1")]);
+        let no = HibernationTweak { cmd: fails(), hive: Hive::Hkcu, path: "x".into(), supported: || false };
+        assert!(no.revert(&b).is_ok());
+        let yes = HibernationTweak { cmd: fails(), hive: Hive::Hkcu, path: "x".into(), supported: || true };
+        assert!(yes.revert(&b).is_err());
+    }
+
+    #[test]
+    fn hibernation_revert_restores_the_file_type() {
+        let fake = Fake::new(|_| None);
+        let t = HibernationTweak { cmd: fake.clone(), hive: Hive::Hkcu, path: "x".into(), supported: || true };
+        t.revert(&hib_backup(&[("wasEnabled", "1"), ("hiberType", "1")])).unwrap();
+        assert_eq!(fake.calls(), ["powercfg /hibernate on", "powercfg /hibernate /type reduced"]);
+    }
+
+    #[test]
+    fn delayed_autostart_comes_back_and_old_backups_stay_plain() {
+        assert_eq!(sc_start_mode(Some("2"), true), Some("delayed-auto"));
+        assert_eq!(sc_start_mode(Some("2"), false), Some("auto"));
+        assert_eq!(sc_start_mode(Some("3"), true), Some("demand"));
+        assert_eq!(sc_start_mode(None, false), None);
     }
 
     // ------------------------------------------------------------ VBS / timer tick (bcdedit)
@@ -681,6 +965,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn vbs_apply_and_revert_restores_registry_and_bcd() {
         let s = Scratch::new("vbs");
         reg::set(Hive::Hkcu, &format!("{}\\DG", s.0), "EnableVirtualizationBasedSecurity", &RegValue::Dword(1)).unwrap();
@@ -697,6 +982,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn vbs_stuck_bcd_delete_is_reported_and_backup_kept() {
         let s = Scratch::new("vbsabsent");
         let fake = fake_bcd(&[], true); // hypervisorlaunchtype absent; /deletevalue always fails
@@ -710,6 +996,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn vbs_failed_registry_restore_skips_bcdedit() {
         let s = Scratch::new("vbsskip");
         let fake = fake_bcd(&[("hypervisorlaunchtype", "Auto")], false);
@@ -750,14 +1037,131 @@ mod tests {
         assert_eq!(bcd_value(&*fake, "{default}", "disabledynamictick"), "");
     }
 
+    #[test]
+    fn bcd_falls_back_only_when_current_is_missing_and_pins_the_entry() {
+        // {current} missing, store fine
+        let fake = fake_bcd(&[], false);
+        assert_eq!(bcd_entry(&*fake, &None).unwrap(), "{default}");
+        // whole store unreadable: no entry, so nothing can be edited
+        let broken = Fake::new(|l| l.starts_with("bcdedit /enum").then(|| (1, "access denied".into())));
+        assert!(bcd_entry(&*broken, &None).is_err());
+        let t = TimerTickTweak { cmd: broken.clone(), entry: None };
+        let mut b = TweakBackup::new("t");
+        assert!(t.apply(&mut b).is_err());
+        assert!(!broken.calls().iter().any(|c| c.contains("/set")));
+        // the entry's GUID is stored and revert uses it
+        const G: &str = "11111111-2222-3333-4444-555555555555";
+        let pinned = Fake::new(|l| l.ends_with("{current} /v").then(|| (0, format!("identifier {{{G}}}"))));
+        let t = TimerTickTweak { cmd: pinned.clone(), entry: None };
+        let mut b = TweakBackup::new("t");
+        t.apply(&mut b).unwrap();
+        assert_eq!(b.data[BCD_ENTRY], format!("{{{G}}}"));
+        t.revert(&b).unwrap();
+        assert!(pinned.calls().contains(&format!("bcdedit /deletevalue {{{G}}} disabledynamictick")));
+    }
+
     // ------------------------------------------------------------ power plan
+
+    #[test]
+    fn power_plan_tables_keep_the_promises() {
+        const COOLING: &str = "94d3a615-a899-4ac5-ae2b-e4d8f634367f";
+        const DISPLAY: &str = "3c0bc021-c8a8-4e07-a973-6b14cbcb2b7e";
+        const MIN_CORES: &str = "0cc5b647-c1df-4637-891a-dec35c318583";
+        let row = |t: &[Row], s: &str| *t.iter().find(|r| r.1 == s).unwrap();
+        assert_eq!((row(&DESKTOP, COOLING).2, row(&DESKTOP, COOLING).3), (1, Some(0)), "Active on AC, DC untouched");
+        assert_eq!(row(&DESKTOP, DISPLAY).2, KEEP);
+        assert_eq!(row(&LAPTOP, DISPLAY).2, KEEP);
+        assert_eq!(row(&LAPTOP, MIN_CORES).2, 100, "no core parking on mains");
+        assert_eq!(row(&LAPTOP, "893dee8e-2bef-41e0-89c6-b55d0929964c").3, Some(5), "battery-friendly");
+    }
+
+    /// Fake powercfg whose active plan is MyTune's, with `extra` handling first.
+    fn fake_on_plan(extra: impl Fn(&str) -> Option<(i32, String)> + Send + Sync + 'static) -> Arc<Fake> {
+        Fake::new(move |l| {
+            extra(l).or_else(|| {
+                if l.starts_with("powercfg /getactivescheme") {
+                    Some((0, format!("Power Scheme GUID: {PLAN_GUID}  (MyTune)")))
+                } else if l.starts_with("powercfg /list") {
+                    Some((0, format!("{HIGH_PERFORMANCE}\n{PLAN_GUID}\naaaaaaaa-1111-2222-3333-bbbbbbbbbbbb\n")))
+                } else {
+                    None
+                }
+            })
+        })
+    }
+
+    #[test]
+    fn power_plan_reapply_leaves_the_active_plan_before_deleting_it() {
+        let fake = fake_on_plan(|_| None);
+        let t = PowerPlanTweak { cmd: fake.clone(), laptop: false };
+        let mut b = hib_backup(&[("previous", "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb")]);
+        t.apply(&mut b).unwrap();
+        let c = fake.calls();
+        let at = |x: String| c.iter().position(|l| *l == x).unwrap();
+        assert!(at("powercfg /setactive aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb".into()) < at(format!("powercfg /delete {PLAN_GUID}")));
+        assert_eq!(c.last().unwrap(), &format!("powercfg /setactive {PLAN_GUID}"));
+    }
+
+    #[test]
+    fn power_plan_failed_delete_stops_and_goes_back() {
+        let fake = fake_on_plan(|l| l.starts_with("powercfg /delete").then(|| (1, "denied".into())));
+        let t = PowerPlanTweak { cmd: fake.clone(), laptop: false };
+        assert!(t.apply(&mut TweakBackup::new("t")).is_err());
+        let c = fake.calls();
+        assert!(!c.iter().any(|l| l.contains("/duplicatescheme")));
+        assert_eq!(c.last().unwrap(), &format!("powercfg /setactive {PLAN_GUID}"));
+    }
+
+    #[test]
+    fn power_plan_write_failure_counts_only_for_a_setting_that_exists() {
+        const REAL: &str = "893dee8e-2bef-41e0-89c6-b55d0929964c";
+        const MISSING: &str = "619b7505-003b-4e82-b7a6-4dd29c300971";
+        let fake = fake_on_plan(|l| {
+            if l.starts_with("powercfg /setacvalueindex") && (l.contains(REAL) || l.contains(MISSING)) {
+                Some((1, "failed".into()))
+            } else if l.starts_with("powercfg /query") {
+                Some((0, if l.contains(REAL) { format!("Power Setting GUID: {REAL}") } else { "Power Scheme GUID: x".into() }))
+            } else {
+                None
+            }
+        });
+        let t = PowerPlanTweak { cmd: fake.clone(), laptop: false };
+        let err = t.apply(&mut TweakBackup::new("t")).unwrap_err().to_string();
+        assert!(err.contains(REAL) && !err.contains(MISSING), "{err}");
+        assert_eq!(fake.calls().last().unwrap(), &format!("powercfg /setactive {PLAN_GUID}"), "the plan still goes active");
+    }
+
+    #[test]
+    fn power_plan_takes_over_the_boosters_record() {
+        const USER: &str = "cccccccc-1111-2222-3333-dddddddddddd";
+        let t = PowerPlanTweak { cmd: fake_on_plan(|_| None), laptop: false };
+        let (_d, e) = engine();
+        e.with_store(|s| s.set_top("PowerPrevious", Value::String(USER.into())));
+        e.apply(&t).unwrap();
+        e.with_store(|s| {
+            assert_eq!(s.get_backup("general.powerplan").unwrap().data["previous"], USER);
+            assert_eq!(s.top("PowerPrevious"), Some(&Value::Null));
+        });
+    }
+
+    #[test]
+    fn power_plan_without_a_backup_goes_to_balanced_or_stays() {
+        let on_balanced_pc = fake_on_plan(|l| l.starts_with("powercfg /list").then(|| (0, format!("{BALANCED}\n{PLAN_GUID}\n"))));
+        let t = PowerPlanTweak { cmd: on_balanced_pc.clone(), laptop: false };
+        assert!(t.revert_default().unwrap());
+        assert!(on_balanced_pc.calls().contains(&format!("powercfg /setactive {BALANCED}")));
+        let no_balanced = fake_on_plan(|_| None);
+        let t = PowerPlanTweak { cmd: no_balanced.clone(), laptop: false };
+        assert!(!t.revert_default().unwrap());
+        assert!(!no_balanced.calls().iter().any(|l| l.contains("/setactive") || l.contains("/delete")));
+    }
 
     fn fake_power(prev_exists: bool) -> Arc<Fake> {
         Fake::new(move |l| {
             if l.starts_with("powercfg /getactivescheme") {
                 Some((0, "Power Scheme GUID: aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb  (Mine)".into()))
             } else if l.starts_with("powercfg /list") {
-                let mut o = format!("{HIGH_PERFORMANCE}\n{PLAN_GUID}\n");
+                let mut o = format!("{HIGH_PERFORMANCE}\n{PLAN_GUID}\n{BALANCED}\n");
                 if prev_exists {
                     o.push_str("AAAAAAAA-1111-2222-3333-BBBBBBBBBBBB\n");
                 }
@@ -778,7 +1182,7 @@ mod tests {
         assert_eq!(c[0], "powercfg /getactivescheme");
         assert!(c.contains(&format!("powercfg /delete {PLAN_GUID}")), "old MyTune plan removed first");
         assert!(c.contains(&format!("powercfg /duplicatescheme {HIGH_PERFORMANCE} {PLAN_GUID}")));
-        assert_eq!(c.iter().filter(|x| x.starts_with("powercfg /setacvalueindex")).count(), 25);
+        assert_eq!(c.iter().filter(|x| x.starts_with("powercfg /setacvalueindex")).count(), 24, "display timeout on AC stays the base plan's");
         assert_eq!(c.iter().filter(|x| x.starts_with("powercfg /setdcvalueindex")).count(), 12);
         assert_eq!(c.last().unwrap(), &format!("powercfg /setactive {PLAN_GUID}"));
         e.revert(&t).unwrap();
@@ -795,8 +1199,19 @@ mod tests {
         e.apply(&t).unwrap();
         let c = fake.calls();
         assert!(c.contains(&format!("powercfg /duplicatescheme {BALANCED} {PLAN_GUID}")));
-        assert_eq!(c.iter().filter(|x| x.starts_with("powercfg /setacvalueindex")).count(), 12);
+        assert_eq!(c.iter().filter(|x| x.starts_with("powercfg /setacvalueindex")).count(), 11);
         e.revert(&t).unwrap();
         assert!(fake.calls().contains(&format!("powercfg /setactive {BALANCED}")));
+    }
+
+    #[test]
+    fn power_plan_failed_list_keeps_the_saved_plan() {
+        let fake = fake_on_plan(|l| l.starts_with("powercfg /list").then(|| (1, "failed".into())));
+        let t = PowerPlanTweak { cmd: fake.clone(), laptop: false };
+        let (_d, e) = engine();
+        e.with_store(|s| s.set_backup("general.powerplan", hib_backup(&[("previous", "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb")]))).unwrap();
+        assert!(e.revert(&t).is_err());
+        assert!(!fake.calls().iter().any(|l| l.contains("/setactive") || l.contains("/delete")));
+        assert!(e.with_store(|s| s.get_backup("general.powerplan").is_some()));
     }
 }

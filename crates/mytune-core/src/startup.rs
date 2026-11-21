@@ -146,6 +146,7 @@ mod tests {
 
     /// Writes a StartupApproved value for a name that does not exist in any Run key, then removes it.
     #[test]
+    #[ignore = "real system: writes real HKCU StartupApproved"]
     fn toggle_roundtrip_on_a_fake_entry() {
         let src = sources();
         let (idx, s) = src.iter().enumerate().find(|(_, s)| s.hive == Hive::Hkcu && s.run_path.is_some()).unwrap();

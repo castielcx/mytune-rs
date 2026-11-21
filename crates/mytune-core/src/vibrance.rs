@@ -298,6 +298,7 @@ mod tests {
 
     /// Writes the level the display already has (no visible change) and reads it back: proves the Set signature.
     #[test]
+    #[ignore = "real system: writes NVAPI vibrance"]
     fn real_gpu_set_same_level_is_accepted() {
         for n in 1..=4 {
             if let Some(r) = get(n).unwrap() {

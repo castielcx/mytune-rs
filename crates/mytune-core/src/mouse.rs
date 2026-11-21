@@ -28,6 +28,10 @@ pub fn acceleration_on() -> bool {
 
 pub fn set_acceleration(on: bool) -> Result<()> {
     use windows::Win32::UI::WindowsAndMessaging::{SystemParametersInfoW, SPI_SETMOUSE, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS};
+    // not an engine tweak, so the engine's guard does not cover it
+    if crate::process::shell_user_differs() {
+        return Err(Error::Plain(reg::OTHER_ACCOUNT.into()));
+    }
     let (speed, t1, t2): (i32, i32, i32) = if on { (1, 6, 10) } else { (0, 0, 0) };
     for (name, v) in [("MouseSpeed", speed), ("MouseThreshold1", t1), ("MouseThreshold2", t2)] {
         reg::set(Hive::Hkcu, MOUSE_KEY, name, &RegValue::String(v.to_string()))?;
@@ -681,6 +685,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: raw mouse input and timer period"]
     fn listener_starts_and_stops() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let t = RateTest::start(tx, || {}).expect("raw input listener");

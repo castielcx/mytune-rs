@@ -18,12 +18,45 @@ impl TaskbarCard {
     pub fn new(engine: Arc<Engine>) -> TaskbarCard {
         let saved = engine.with_store(|s| taskbar::load(s));
         let live = Arc::new(Mutex::new(saved.clone()));
+        taskbar::set_outline_select(engine.with_store(|s| s.settings_flag("OutlineSelect")) == Some(true));
         let (e, l) = (engine.clone(), live.clone());
         taskbar::start(live.clone(), move || {
             let c = l.lock().unwrap_or_else(|p| p.into_inner()).clone();
             let _ = e.with_store(|s| taskbar::save(s, &c));
+            // Explorer keeps dying after the load: this switch alone would load the DLL again.
+            let _ = e.revert(&taskbar::OutlineSelectTweak);
+            taskbar::set_outline_select(false);
         });
+        // The tweak `cust.clearstart` (Customize list): its switch, and its way out when Start keeps dying.
+        // It was a tick in this card first (`Settings.Taskbar.start_clear`): carried over once.
+        let ticked = engine.with_store(|s| {
+            s.settings_flag("ClearStart").is_none() && s.top("Settings").and_then(|v| v.get("Taskbar")).and_then(|t| t.get("start_clear")).and_then(|v| v.as_bool()) == Some(true)
+        });
+        if ticked {
+            // this runs on the UI thread, and this tweak only sets a flag: the restore point need not finish first
+            std::thread::spawn(|| mytune_core::sysreport::restore_point_once(&*mytune_core::tweaks::system_cmd()));
+            let _ = engine.apply(&taskbar::ClearStartTweak);
+        }
+        taskbar::set_start_clear(engine.with_store(|s| s.settings_flag("ClearStart")) == Some(true));
+        let e = engine.clone();
+        taskbar::start_menu(move || drop(e.revert(&taskbar::ClearStartTweak)));
         TaskbarCard { engine, live, saved }
+    }
+
+    /// Windows' own volume icon is hidden from the tray (Sound page switch).
+    pub fn hide_volume(&self) -> bool {
+        self.live.lock().unwrap_or_else(|p| p.into_inner()).hide_volume
+    }
+
+    pub fn set_hide_volume(&mut self, on: bool) {
+        let c = {
+            let mut live = self.live.lock().unwrap_or_else(|p| p.into_inner());
+            live.hide_volume = on;
+            live.clone()
+        };
+        let _ = self.engine.with_store(|s| taskbar::save(s, &c));
+        self.saved = c;
+        std::thread::spawn(taskbar::clear_volume_icon_policy); // its broadcast can wait 1 s per hung window
     }
 
     pub fn ui(&mut self, ui: &mut Ui) {

@@ -27,8 +27,9 @@ impl Hooks for CountHooks {
     fn apply_drag_full_windows(&self) {
         self.drag.fetch_add(1, Ordering::SeqCst);
     }
-    fn restart_explorer(&self) {
+    fn restart_explorer(&self) -> bool {
         self.explorer.fetch_add(1, Ordering::SeqCst);
+        true
     }
 }
 
@@ -111,7 +112,7 @@ fn every_catalog_registry_tweak_applies_and_reverts_in_a_sandbox() {
     let sb = Sandbox::new();
     let hooks = Arc::new(CountHooks::default());
     let tweaks = registry_tweaks(hooks.clone()).unwrap();
-    assert_eq!(tweaks.len(), 66);
+    assert_eq!(tweaks.len(), 65);
     let engine = Engine::new(Store::load(tmp.path()));
 
     // ---- pass 1: no original values anywhere -> revert must leave the sandbox completely empty
@@ -147,7 +148,7 @@ fn every_catalog_registry_tweak_applies_and_reverts_in_a_sandbox() {
             assert_eq!(engine.revert(t).unwrap(), RevertOutcome::NoBackup, "{}", t.id);
         }
     }
-    assert_eq!(checked, 122, "registry values verified");
+    assert_eq!(checked, 116, "registry values verified");
 
     // hooks ran (RestartsExplorer tweaks restart Explorer, Customize ones broadcast, drag outline calls SPI)
     assert!(hooks.explorer.load(Ordering::SeqCst) > 0);

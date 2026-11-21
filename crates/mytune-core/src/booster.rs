@@ -50,7 +50,8 @@ impl BoosterSettings {
     pub fn read(store: &Store) -> BoosterSettings {
         let f = |n: &str| store.settings_flag(n) == Some(true);
         BoosterSettings {
-            game_timer: f("GameTimer"),
+            // a backup means the adv.timer card is on, even if an imported settings file cleared the flag
+            game_timer: f("GameTimer") || store.get_backup("adv.timer").is_some(),
             quiet_during_games: f("QuietDuringGames"),
             auto_power_plan: f("AutoPowerPlan"),
             throttle_background: f("ThrottleBackground"),
@@ -421,6 +422,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn nothing_changes_when_all_settings_are_off() {
         let sc = Scratch::new("off");
         let (_d, mut st) = store_with("{}");
@@ -434,6 +436,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn quiet_mode_on_off_keeps_the_previous_value() {
         for (prev, label) in [(None, "absent"), (Some(1u32), "one")] {
             let sc = Scratch::new(&format!("quiet-{label}"));
@@ -454,6 +457,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn crash_recovery_undoes_quiet_mode_and_power_plan_on_start() {
         let sc = Scratch::new("crash");
         reg::set(Hive::Hkcu, &sc.0, TOAST_VALUE, &RegValue::Dword(0)).unwrap(); // left behind by the dead process
@@ -474,6 +478,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn power_plan_switch_and_restore() {
         let sc = Scratch::new("plan");
         let (d, mut st) = store_with(r#"{"AutoPowerPlan":true}"#);
@@ -491,6 +496,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn power_plan_falls_back_to_scheme_min_and_skips_when_already_fast() {
         let sc = Scratch::new("plan2");
         let (_d, mut st) = store_with(r#"{"AutoPowerPlan":true}"#);
@@ -509,6 +515,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn power_restore_failure_keeps_the_record_and_falls_back_to_balanced() {
         let sc = Scratch::new("plan3");
         let (_d, mut st) = store_with(r#"{"AutoPowerPlan":true}"#);
@@ -530,6 +537,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn timer_uses_the_coarser_of_target_and_hardware_finest() {
         for (finest, expect) in [(5000u32, 5000u32), (4000, 5000), (10000, 10000)] {
             let sc = Scratch::new("timer");
@@ -549,6 +557,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn throttle_follows_the_game_and_stop_undoes_everything() {
         let sc = Scratch::new("thr");
         let (_d, mut st) = store_with(r#"{"ThrottleBackground":true,"GameTimer":true,"QuietDuringGames":true}"#);
@@ -565,6 +574,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real system: writes HKCU scratch key"]
     fn one_failing_feature_does_not_stop_the_others() {
         let sc = Scratch::new("iso");
         let (_d, mut st) = store_with(r#"{"AutoPowerPlan":true,"GameTimer":true}"#);
@@ -582,5 +592,13 @@ mod tests {
     fn settings_reader() {
         let (_d, st) = store_with(r#"{"GameTimer":true,"ThrottleBackground":true,"Other":1}"#);
         assert_eq!(BoosterSettings::read(&st), BoosterSettings { game_timer: true, quiet_during_games: false, auto_power_plan: false, throttle_background: true });
+    }
+
+    #[test]
+    fn timer_follows_the_card_when_the_flag_was_cleared() {
+        let (_d, mut st) = store_with(r#"{"GameTimer":false}"#);
+        assert!(!BoosterSettings::read(&st).game_timer);
+        st.set_backup("adv.timer", crate::backup::TweakBackup::new("t")).unwrap();
+        assert!(BoosterSettings::read(&st).game_timer);
     }
 }

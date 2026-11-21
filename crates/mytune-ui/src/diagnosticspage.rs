@@ -468,6 +468,6 @@ impl DiagnosticsPage {
 }
 
 /// Opens a page in the default browser without going through a shell.
-fn open_url(url: &str) {
+pub(crate) fn open_url(url: &str) {
     let _ = std::process::Command::new("rundll32.exe").args(["url.dll,FileProtocolHandler", url]).spawn();
 }

@@ -45,12 +45,16 @@ Type: files; Name: "{app}\mytune-ui.exe"
 Type: files; Name: "{autoprograms}\MyTune rs.lnk"
 Type: files; Name: "{autodesktop}\MyTune rs.lnk"
 
+[UninstallDelete]
+Type: filesandordirs; Name: "{commonpf64}\MyTune Updates"
+
 [Icons]
 Name: "{autoprograms}\MyTune"; Filename: "{app}\{#AppExe}"
 Name: "{autodesktop}\MyTune"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "Launch MyTune"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#AppExe}"; Flags: nowait; Check: IsRelaunch
 
 [Code]
 procedure StopApp;
@@ -73,6 +77,7 @@ const
 var
   OldCsVersion, OldCsUninstaller, OldRsVersion: String;
   HadAutostart: Boolean;
+  AppStopped, InstallDone: Boolean;
 
 // Version and uninstaller of an Inno Setup install, '' when it is not on this PC.
 procedure FindInstall(id: String; var version, uninstaller: String);
@@ -131,6 +136,7 @@ var
 begin
   Result := '';
   StopApp;
+  AppStopped := True;
   // An older MyTune rs has the same AppId: its files are replaced in place, nothing to remove.
   if OldCsUninstaller = '' then Exit;
   // The C# uninstaller deletes the "Start with Windows" task: remember it, it is made again for the new exe.
@@ -154,6 +160,23 @@ var
 begin
   if (CurStep = ssPostInstall) and HadAutostart then
     Exec(ExpandConstant('{app}\{#AppExe}'), '--enable-autostart', '', SW_HIDE, ewWaitUntilTerminated, code);
+  if CurStep = ssDone then InstallDone := True;
+end;
+
+function IsRelaunch: Boolean;
+var i: Integer;
+begin
+  Result := False;
+  for i := 1 to ParamCount do
+    if CompareText(ParamStr(i), '/RELAUNCH') = 0 then Result := True;
+end;
+
+// {app} is only safe here after PrepareToInstall ran, which AppStopped proves.
+procedure DeinitializeSetup;
+var code: Integer;
+begin
+  if AppStopped and (not InstallDone) and IsRelaunch and FileExists(ExpandConstant('{app}\{#AppExe}')) then
+    Exec(ExpandConstant('{app}\{#AppExe}'), '--update-failed', '', SW_SHOW, ewNoWait, code);
 end;
 
 function InitializeUninstall: Boolean;

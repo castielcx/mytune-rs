@@ -8,6 +8,7 @@
 
 use crate::reg::{self, Hive, RegValue};
 use crate::store::Store;
+use crate::util::program_data;
 use crate::Result;
 use serde_json::{json, Value};
 use std::fs;
@@ -334,10 +335,6 @@ fn xbox(out: &mut Vec<Found>) {
             push(out, "Xbox", &name, &content.to_string_lossy(), exe.as_deref(), None, None);
         }
     }
-}
-
-fn program_data() -> PathBuf {
-    PathBuf::from(std::env::var_os("ProgramData").unwrap_or_else(|| "C:\\ProgramData".into()))
 }
 
 /// Every installed game the stores know, tools and launchers left out. Copies of one game are still in

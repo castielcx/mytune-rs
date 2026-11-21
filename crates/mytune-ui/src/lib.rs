@@ -28,6 +28,8 @@ pub mod storagecard;
 #[cfg(feature = "taskbar-look")]
 pub mod taskbarcard;
 pub mod theme;
+#[cfg(feature = "license")]
+pub mod updategate;
 pub mod vibrancepage;
 pub mod crosshairpage;
 pub mod toolspage;

@@ -295,7 +295,7 @@ const LOOP_WINDOW: u64 = 120;
 /// Explorer crashed every 4 s, 2026-11-21). Only loads that went in are counted (`note_load`): a load
 /// Windows refuses is retried every 5 s and is no crash.
 fn loads_file(feature: &str) -> PathBuf {
-    PathBuf::from(std::env::var_os("ProgramData").unwrap_or_else(|| "C:\\ProgramData".into())).join("MyTune").join(format!("loads-{feature}.txt"))
+    crate::util::program_data().join("MyTune").join(format!("loads-{feature}.txt"))
 }
 
 fn recent_loads(feature: &str) -> Vec<u64> {
@@ -326,7 +326,7 @@ fn forget_loads(feature: &str) {
 /// (`taskbar` for explorer.exe, `startmenu` for Start).
 /// The hash in the name lets a new version sit beside one that the target still holds open.
 fn dll_path(dll: &[u8], prefix: &str) -> Result<PathBuf, String> {
-    let dir = PathBuf::from(std::env::var_os("ProgramData").unwrap_or_else(|| "C:\\ProgramData".into())).join("MyTune");
+    let dir = crate::util::program_data().join("MyTune");
     let hash = dll.iter().fold(0xcbf29ce484222325u64, |h, b| (h ^ *b as u64).wrapping_mul(0x100000001b3));
     let path = dir.join(format!("{prefix}-{hash:016x}.dll"));
     if std::fs::read(&path).ok().as_deref() != Some(dll) {

@@ -192,7 +192,7 @@ fn game_roots(drive: char) -> Vec<PathBuf> {
         let libs = vdf.lines().filter(|l| l.trim_start().starts_with("\"path\"")).filter_map(|l| l.rsplit('"').nth(1)).map(|p| PathBuf::from(p.replace("\\\\", "\\")));
         out.extend(libs.chain([steam]).map(|lib| lib.join("steamapps")));
     }
-    let manifests = env("ProgramData").unwrap_or_default().join("Epic\\EpicGamesLauncher\\Data\\Manifests");
+    let manifests = crate::util::program_data().join("Epic\\EpicGamesLauncher\\Data\\Manifests");
     for e in fs::read_dir(manifests).into_iter().flatten().flatten() {
         let item = fs::read(e.path()).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
         out.extend(item.as_ref().and_then(|v| v.get("InstallLocation")?.as_str()).map(PathBuf::from));
@@ -210,8 +210,8 @@ fn roots(drive: char) -> Vec<(String, usize)> {
     use windows::Win32::UI::Shell::{FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Videos};
     let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
     let mut v: Vec<(PathBuf, usize)> = game_roots(drive).into_iter().map(|p| (p, GAMES)).collect();
-    v.extend([env("ProgramFiles"), env("ProgramFiles(x86)"), env("ProgramData"), env("LOCALAPPDATA").map(|p| p.join("Programs"))].into_iter().flatten().map(|p| (p, APPS)));
-    v.extend(env("SystemRoot").map(|p| (p, WINDOWS)));
+    v.extend([env("ProgramFiles"), env("ProgramFiles(x86)"), Some(crate::util::program_data()), env("LOCALAPPDATA").map(|p| p.join("Programs"))].into_iter().flatten().map(|p| (p, APPS)));
+    v.push((crate::util::windows_dir(), WINDOWS));
     for (i, id) in [FOLDERID_Documents, FOLDERID_Pictures, FOLDERID_Videos, FOLDERID_Music, FOLDERID_Downloads].iter().enumerate() {
         v.extend(known_folder(id).map(|p| (p, 3 + i)));
     }

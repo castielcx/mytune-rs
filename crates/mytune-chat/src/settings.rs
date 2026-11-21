@@ -169,8 +169,7 @@ impl Default for Settings {
 
 impl Settings {
     pub fn path() -> PathBuf {
-        let base = std::env::var_os("ProgramData").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
-        base.join("MyTune").join("chat-settings.json")
+        mytune_core::util::program_data().join("MyTune").join("chat-settings.json")
     }
 
     /// The saved settings, or the defaults when there are none or the file is unreadable.

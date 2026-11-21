@@ -599,6 +599,52 @@ pub fn harden_dir(dir: &Path) {
     }
 }
 
+/// SYSTEM and Administrators only: the elevated app runs what is inside.
+#[cfg(feature = "license")]
+pub(crate) const UPDATES_ACL: &str = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+
+/// Replaces `p` with a NEW, empty folder only admins can touch. Changing the DACL of the old one is not enough:
+/// a handle opened before the change survives it and could still turn the folder into a junction.
+#[cfg(feature = "license")]
+pub(crate) fn secure_private_dir(p: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::Security::SECURITY_ATTRIBUTES;
+    use windows::Win32::Storage::FileSystem::CreateDirectoryW;
+
+    if let Some(parent) = p.parent() {
+        fs::create_dir_all(parent)?;
+        if fs::symlink_metadata(parent)?.file_type().is_symlink() {
+            return Err(std::io::Error::other("the parent folder is a link"));
+        }
+    }
+    if let Ok(md) = fs::symlink_metadata(p) {
+        if md.is_dir() {
+            // a folder planted by another account may deny Administrators until they take it
+            take_ownership_privilege(true);
+            let r = secure(p, UPDATES_ACL, false).and_then(|()| fs::remove_dir_all(p));
+            take_ownership_privilege(false);
+            r?;
+        } else if md.file_attributes() & 0x10 != 0 {
+            log::info(&format!("private folder: removed link {}", p.display()));
+            fs::remove_dir(p)?;
+        } else {
+            fs::remove_file(p)?;
+        }
+    }
+    // the owner is set too: an owner keeps the right to change the DACL whatever the DACL says
+    let sddl: Vec<u16> = format!("O:BA{UPDATES_ACL}").encode_utf16().chain(Some(0)).collect();
+    let path: Vec<u16> = p.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut sd = PSECURITY_DESCRIPTOR::default();
+    unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(PCWSTR(sddl.as_ptr()), SDDL_REVISION_1, &mut sd, None).map_err(win_io)?;
+        let attrs = SECURITY_ATTRIBUTES { nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32, lpSecurityDescriptor: sd.0, bInheritHandle: false.into() };
+        // fails if the name exists again, so a folder planted meanwhile is never used
+        let r = CreateDirectoryW(PCWSTR(path.as_ptr()), Some(&attrs));
+        let _ = LocalFree(Some(HLOCAL(sd.0)));
+        r.map_err(win_io)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -906,6 +952,89 @@ mod tests {
             assert!(fs::symlink_metadata(dir.join("planted")).is_err(), "the link is gone");
             assert!(target.exists());
             assert_eq!(read_sddl(&open_meta(&target, READ_CONTROL).unwrap(), DACL_SECURITY_INFORMATION).unwrap(), before, "its target was not changed");
+        }
+    }
+
+    /// Turns the empty folder `link` into a junction. By hand: a test may not start mklink and std has no stable call.
+    #[cfg(feature = "license")]
+    fn make_junction(link: &Path, target: &Path) {
+        let subst: Vec<u16> = format!(r"\??\{}", target.display()).encode_utf16().collect();
+        let bytes = (subst.len() * 2) as u16;
+        let mut rp: Vec<u8> = 0xA000_0003u32.to_le_bytes().to_vec();
+        for v in [bytes + 12, 0, 0, bytes, bytes + 2, 0] {
+            rp.extend(v.to_le_bytes());
+        }
+        rp.extend(subst.iter().chain(&[0, 0]).flat_map(|c| c.to_le_bytes()));
+        const FSCTL_SET_REPARSE_POINT: u32 = 0x0009_00A4;
+        let f = open_meta(link, 0x4000_0000).unwrap();
+        unsafe {
+            windows::Win32::System::IO::DeviceIoControl(HANDLE(f.as_raw_handle()), FSCTL_SET_REPARSE_POINT, Some(rp.as_ptr().cast()), rp.len() as u32, None, 0, Some(&mut 0), None).unwrap();
+        }
+        drop(f);
+        assert!(fs::symlink_metadata(link).unwrap().file_type().is_symlink());
+    }
+
+    /// Only ever on a scratch folder. Setting the owner needs an elevated test run.
+    #[cfg(feature = "license")]
+    #[test]
+    fn secure_private_dir_closes_the_folder_and_replaces_a_link() {
+        let d = tempfile::tempdir().unwrap();
+        let (target, updates) = (d.path().join("target"), d.path().join("updates"));
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("keep"), "k").unwrap();
+        fs::create_dir(&updates).unwrap();
+        if open_meta(&updates, WRITE_OWNER).and_then(|f| set_sddl(&f, "O:BA", OWNER_SECURITY_INFORMATION)).is_err() {
+            eprintln!("skipped: needs elevation");
+            return;
+        }
+        make_junction(&updates, &target);
+        let dacl = |p: &Path| read_sddl(&open_meta(p, READ_CONTROL).unwrap(), DACL_SECURITY_INFORMATION).unwrap();
+        let before = dacl(&target);
+
+        secure_private_dir(&updates).unwrap();
+
+        assert!(fs::symlink_metadata(&updates).unwrap().is_dir(), "a real folder now");
+        assert_eq!(dacl(&updates), UPDATES_ACL);
+        assert_eq!(read_sddl(&open_meta(&updates, READ_CONTROL).unwrap(), OWNER_SECURITY_INFORMATION).unwrap(), "O:BA");
+        assert_eq!(dacl(&target), before, "the link's target was not changed");
+        assert!(target.join("keep").exists());
+
+        // a link swapped in after the check reaches remove_dir_all, which must not follow it either
+        let late = d.path().join("late");
+        fs::create_dir(&late).unwrap();
+        make_junction(&late, &target);
+        fs::remove_dir_all(&late).unwrap();
+        assert!(target.join("keep").exists());
+    }
+
+    /// A handle opened before the call must not end up pointing at the folder the update then uses.
+    #[cfg(feature = "license")]
+    #[test]
+    fn secure_private_dir_never_keeps_a_folder_someone_holds_open() {
+        let d = tempfile::tempdir().unwrap();
+        let updates = d.path().join("updates");
+        fs::create_dir(&updates).unwrap();
+        if open_meta(&updates, WRITE_OWNER).and_then(|f| set_sddl(&f, "O:BA", OWNER_SECURITY_INFORMATION)).is_err() {
+            eprintln!("skipped: needs elevation");
+            return;
+        }
+        fs::write(updates.join("old.exe"), "x").unwrap();
+        let file_id = |f: &File| {
+            let mut info = BY_HANDLE_FILE_INFORMATION::default();
+            unsafe { GetFileInformationByHandle(HANDLE(f.as_raw_handle()), &mut info) }.unwrap();
+            (info.dwVolumeSerialNumber, info.nFileIndexHigh, info.nFileIndexLow)
+        };
+        let held = open_meta(&updates, 0x4000_0000).unwrap(); // GENERIC_WRITE, sharing read, write and delete
+        let old = file_id(&held);
+
+        // Err is fine: the update stops. Ok must mean a different folder object.
+        if secure_private_dir(&updates).is_ok() {
+            let now = open_meta(&updates, READ_CONTROL | FILE_READ_ATTRIBUTES).unwrap();
+            assert_ne!(file_id(&now), old);
+            assert_eq!(read_sddl(&now, DACL_SECURITY_INFORMATION).unwrap(), UPDATES_ACL);
+            assert!(!updates.join("old.exe").exists());
+        } else {
+            eprintln!("secure_private_dir refused while the handle was held");
         }
     }
 

@@ -98,7 +98,8 @@ fn current_user() -> String {
 pub fn enable() -> bool {
     let Ok(exe) = std::env::current_exe() else { return false };
     let xml = task_xml(&current_user(), &exe.to_string_lossy());
-    let file = std::env::temp_dir().join("mytune-task.xml");
+    // Beside the exe, not in TEMP: a non-admin can redirect TEMP or swap the file, and this XML becomes an admin task.
+    let file = exe.with_file_name("mytune-task.xml");
     let utf16: Vec<u8> = std::iter::once(0xFEFFu16).chain(xml.encode_utf16()).flat_map(|c| c.to_le_bytes()).collect();
     let ok = std::fs::write(&file, utf16).is_ok() && schtasks(&["/Create", "/TN", TASK, "/XML", &file.to_string_lossy(), "/F"]) == 0 && set_run_key(true).is_ok();
     let _ = std::fs::remove_file(&file);

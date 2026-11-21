@@ -16,6 +16,7 @@ use crate::backup::TweakBackup;
 use crate::engine::Tweak;
 use crate::error::{Error, Result};
 use crate::procs::Procs;
+use crate::util::as_user;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
@@ -478,6 +479,12 @@ pub fn nvidia_only(name: &str, exe_path: &str) -> bool {
     profile_in(name, exe_path, &env("LOCALAPPDATA"), &env("APPDATA"), &documents()).is_none()
 }
 
+/// What a folder holds, asked as the standard user. Every settings path comes from `LOCALAPPDATA`, `APPDATA` or the
+/// HKCU Documents folder, which a non-admin can redirect, so no game file is ever touched with admin rights.
+fn listing(dir: &Path) -> Vec<PathBuf> {
+    as_user(|| Ok(fs::read_dir(dir)?.flatten().map(|f| f.path()).collect())).unwrap_or_default()
+}
+
 fn profile_in(name: &str, exe_path: &str, local: &Path, roaming: &Path, docs: &Path) -> Option<Profile> {
     let one = |path: PathBuf, format, settings| Profile { targets: vec![Target { path, format, settings }], procs: &[] };
     Some(match crate::gamelib::title_key(name).as_str() {
@@ -498,19 +505,17 @@ fn profile_in(name: &str, exe_path: &str, local: &Path, roaming: &Path, docs: &P
                 Target { path: local.join("Packages\\Microsoft.MinecraftUWP_8wekyb3d8bbwe\\LocalState").join(options), format: Format::Colon, settings: MC_BEDROCK },
             ];
             // newer Bedrock builds keep one folder per signed-in user
-            for user in fs::read_dir(roaming.join("Minecraft Bedrock\\Users")).into_iter().flatten().flatten() {
-                targets.push(Target { path: user.path().join(options), format: Format::Colon, settings: MC_BEDROCK });
+            for user in listing(&roaming.join("Minecraft Bedrock\\Users")) {
+                targets.push(Target { path: user.join(options), format: Format::Colon, settings: MC_BEDROCK });
             }
             Profile { targets, procs: &["javaw", "Minecraft.Windows"] }
         }
         "rob run" => {
             let dir = local.parent().unwrap_or(local).join("LocalLow\\Kefir\\ROB RUN\\settings");
-            let targets = fs::read_dir(dir)
+            let targets = listing(&dir)
                 .into_iter()
-                .flatten()
-                .flatten()
-                .filter(|f| f.file_name().to_string_lossy().starts_with("settings_steam_") && f.path().extension().is_some_and(|e| e == "dat"))
-                .map(|f| Target { path: f.path(), format: Format::Json, settings: ROB_RUN })
+                .filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("settings_steam_")) && p.extension().is_some_and(|e| e == "dat"))
+                .map(|path| Target { path, format: Format::Json, settings: ROB_RUN })
                 .collect();
             Profile { targets, procs: &[] }
         }
@@ -557,7 +562,8 @@ fn nvidia(name: &str, local: &Path) -> &'static [Lowest] {
     if let Some(known) = seen.get(&key) {
         return known;
     }
-    let (found, skipped) = crate::nvcache::for_game(&local.join("NVIDIA Corporation\\NVIDIA App\\NvBackend\\Recommendations"), &key);
+    let cache = local.join("NVIDIA Corporation\\NVIDIA App\\NvBackend\\Recommendations");
+    let (found, skipped) = crate::util::as_standard_user(|| crate::nvcache::for_game(&cache, &key)).unwrap_or_default();
     if !found.is_empty() || !skipped.is_empty() {
         let kept: Vec<&str> = found.iter().map(|f| f.label.as_str()).collect();
         crate::log::info(&format!("NVIDIA App lowest preset for {name}: {} settings ({}); left out: {}", kept.len(), kept.join(", "), skipped.join(", ")));
@@ -581,7 +587,7 @@ fn nvidia_files(raw: &str, local: &Path, roaming: &Path) -> Vec<PathBuf> {
             None if !rest.contains('*') => vec![path],
             Some((start, end)) if rest.matches('*').count() == 1 => {
                 let fits = |name: String| name.len() >= start.len() + end.len() && name.starts_with(start) && name.ends_with(end);
-                fs::read_dir(folder).into_iter().flatten().flatten().filter(|f| fits(f.file_name().to_string_lossy().to_lowercase())).map(|f| f.path()).filter(|p| p.is_file()).collect()
+                as_user(|| Ok(fs::read_dir(folder)?.flatten().filter(|f| fits(f.file_name().to_string_lossy().to_lowercase())).map(|f| f.path()).filter(|p| p.is_file()).collect::<Vec<_>>())).unwrap_or_default()
             }
             _ => vec![],
         };
@@ -602,14 +608,14 @@ fn same_kind(now: &[u8], best: Option<&str>) -> bool {
 fn merged(path: &Path, format: Format, hand: &'static [Setting], lowest: &[&'static Lowest]) -> Option<&'static [Setting]> {
     type Kept = HashMap<(PathBuf, usize), (u64, Option<std::time::SystemTime>, &'static [Setting])>;
     static KEPT: Mutex<Option<Kept>> = Mutex::new(None);
-    let meta = fs::metadata(path).ok().filter(|m| m.is_file() && m.len() <= 2 * 1024 * 1024)?;
+    let meta = as_user(|| fs::metadata(path)).ok().filter(|m| m.is_file() && m.len() <= 2 * 1024 * 1024)?;
     let (stamp, key) = ((meta.len(), meta.modified().ok()), (path.to_path_buf(), hand.as_ptr() as usize));
     let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
     let kept = kept.get_or_insert_with(HashMap::new);
     let list = match kept.get(&key) {
         Some((len, time, list)) if (*len, *time) == stamp => *list,
         _ => {
-            let src = fs::read(path).ok()?;
+            let src = as_user(|| fs::read(path)).ok()?;
             let mut all = hand.to_vec();
             for l in lowest {
                 let s = &l.setting;
@@ -711,6 +717,14 @@ fn replace_file(path: &Path, bytes: &[u8], readonly: Option<bool>, modified: Opt
     swapped
 }
 
+/// `replace_file` as the standard user. Refused means the tweak fails: it is never retried as admin.
+fn write_game_file(path: &Path, bytes: &[u8], readonly: Option<bool>, modified: Option<SystemTime>) -> std::io::Result<()> {
+    as_user(|| replace_file(path, bytes, readonly, modified)).map_err(|e| match e.kind() {
+        std::io::ErrorKind::PermissionDenied => std::io::Error::new(e.kind(), format!("{}: your Windows account may not change this file, and MyTune does not use admin rights on it", path.display())),
+        _ => e,
+    })
+}
+
 fn slot(b: &TweakBackup, kind: &str, n: usize) -> Option<String> {
     b.data.get(&format!("{kind}{n}")).cloned()
 }
@@ -808,7 +822,15 @@ pub fn drop_stray_copies(engine: &crate::engine::Engine, id: &str) {
 /// True when a file was changed after MyTune wrote it (by the game's own menu, usually). Revert still puts
 /// the copy from before the profile back; the caller says so.
 pub fn changed_since_apply(b: &TweakBackup) -> bool {
-    (0..).map_while(|n| Some((slot(b, "file", n)?, slot(b, "after", n)?))).any(|(file, after)| fs::read(file).is_ok_and(|now| hash(&now) != after))
+    (0..).map_while(|n| Some((slot(b, "file", n)?, slot(b, "after", n)?))).any(|(file, after)| match as_user(|| fs::read(&file)) {
+        Ok(now) => hash(&now) != after,
+        // unreadable is not proof it is unchanged, and Put back must not replace later edits without asking
+        Err(e) => e.kind() != std::io::ErrorKind::NotFound,
+    })
+}
+
+fn unreadable(path: &Path, e: &std::io::Error) -> String {
+    format!("{}: MyTune could not read this settings file as your Windows account, and it does not use admin rights on it. Nothing was changed. ({e})", path.display())
 }
 
 /// A number control's value as written in the file. Whole-number settings round halves up.
@@ -875,7 +897,7 @@ impl ConfigTweak {
     pub fn settings(&self) -> Vec<Item> {
         let mut out = Vec::new();
         for (target, t) in self.profile.iter().flat_map(|p| &p.targets).enumerate() {
-            let Ok(src) = fs::read(&t.path) else { continue };
+            let Ok(src) = as_user(|| fs::read(&t.path)) else { continue };
             let values = read(t.format, &src, t.settings);
             if values.iter().all(Option::is_none) {
                 continue; // not a file we know
@@ -920,7 +942,11 @@ impl ConfigTweak {
     fn readable(&self) -> Result<Vec<(&Target, Vec<u8>, Vec<u8>)>> {
         let mut out = Vec::new();
         for (i, t) in self.profile.iter().flat_map(|p| &p.targets).enumerate() {
-            let Ok(src) = fs::read(&t.path) else { continue }; // the game has not made this file (yet)
+            let src = match as_user(|| fs::read(&t.path)) {
+                Ok(src) => src,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue, // the game has not made this file (yet)
+                Err(e) => return Err(Error::Plain(unreadable(&t.path, &e))),
+            };
             let (new, found) = edit(t.format, &src, &self.edits(i, t))?;
             if found > 0 {
                 out.push((t, src, new));
@@ -962,7 +988,7 @@ impl ConfigTweak {
                 if fs::read(&copy)? != src {
                     return Err(Error::Plain("The copy of the game's settings file does not match the file. Nothing changed.".into()));
                 }
-                let meta = fs::metadata(&t.path).ok();
+                let meta = as_user(|| fs::metadata(&t.path)).ok();
                 if let Some(m) = &meta {
                     b.data.insert(format!("ro{n}"), if m.permissions().readonly() { "1" } else { "0" }.into());
                 }
@@ -981,9 +1007,17 @@ impl ConfigTweak {
         Ok(out)
     }
 
-    /// The game's settings files that exist on this PC.
+    /// The game's settings files that exist on this PC. One that cannot be checked counts as there, so the dialog
+    /// opens and says why instead of "Start the game once".
     pub fn files(&self) -> Vec<PathBuf> {
-        self.profile.iter().flat_map(|p| &p.targets).filter(|t| t.path.is_file()).map(|t| t.path.clone()).collect()
+        let all: Vec<PathBuf> = self.profile.iter().flat_map(|p| &p.targets).map(|t| t.path.clone()).collect();
+        let there = |p: &PathBuf| fs::metadata(p).map_or_else(|e| e.kind() != std::io::ErrorKind::NotFound, |m| m.is_file());
+        as_user(|| Ok(all.iter().filter(|p| there(p)).cloned().collect())).unwrap_or_else(|_| all.clone())
+    }
+
+    /// Why a settings file that exists cannot be read, for the dialog: its rows would be missing without a word.
+    pub fn read_problem(&self) -> Option<String> {
+        self.profile.iter().flat_map(|p| &p.targets).find_map(|t| as_user(|| fs::read(&t.path)).err().filter(|e| e.kind() != std::io::ErrorKind::NotFound).map(|e| unreadable(&t.path, &e)))
     }
 }
 
@@ -1004,7 +1038,7 @@ impl Tweak for ConfigTweak {
     }
     fn apply(&self, b: &mut TweakBackup) -> Result<()> {
         for (path, new, n) in self.prepare(b)? {
-            replace_file(&path, &new, None, None)?;
+            write_game_file(&path, &new, None, None)?;
             b.data.insert(format!("after{n}"), hash(&new));
         }
         Ok(())
@@ -1016,7 +1050,10 @@ impl Tweak for ConfigTweak {
         for n in 0.. {
             let (Some(file), Some(copy)) = (slot(b, "file", n), slot(b, "backup", n)) else { break };
             let path = Path::new(&file);
-            if !path.parent().is_some_and(Path::is_dir) {
+            let folder = as_user(|| Ok(path.parent().is_some_and(Path::is_dir)));
+            if let Err(e) = &folder {
+                fails.push(format!("{file}: {e}"));
+            } else if !matches!(folder, Ok(true)) {
                 fails.push(format!("{file}: its folder is missing or offline. The backup copy is kept. If the game was uninstalled, use Forget."));
             } else if !Path::new(&copy).exists() {
                 // `on_reverted` deletes a copy only after its record left state.json, so a record without its copy
@@ -1025,7 +1062,7 @@ impl Tweak for ConfigTweak {
             } else {
                 let readonly = slot(b, "ro", n).map(|v| v == "1");
                 let modified = slot(b, "mtime", n).and_then(|t| time_of(&t));
-                match fs::read(&copy).and_then(|orig| replace_file(path, &orig, readonly, modified)) {
+                match fs::read(&copy).and_then(|orig| write_game_file(path, &orig, readonly, modified)) {
                     Ok(()) => copies.push(copy),
                     Err(e) => fails.push(format!("{file}: {e}")),
                 }
@@ -1462,6 +1499,83 @@ mod tests {
         assert!(!copy.exists());
         let disk = crate::store::Store::load(d.path());
         assert!(disk.get_backup(&t.id).is_none() && disk.top("Pending").is_none());
+    }
+
+    #[test]
+    fn an_unreadable_file_counts_as_changed_and_a_missing_one_does_not() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let file = d.path().join("g.ini");
+        fs::write(&file, UE).unwrap();
+        let mut b = TweakBackup::new("t");
+        b.data.insert("file0".into(), file.to_string_lossy().to_string());
+        b.data.insert("after0".into(), hash(UE.as_bytes()));
+        assert!(!changed_since_apply(&b));
+        let held = fs::OpenOptions::new().read(true).share_mode(0).open(&file).unwrap();
+        assert!(changed_since_apply(&b));
+        drop(held);
+        fs::remove_file(&file).unwrap();
+        assert!(!changed_since_apply(&b), "a file that is gone behaves as before");
+    }
+
+    #[test]
+    fn a_save_reports_an_unreadable_target_and_skips_a_missing_one() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let running = Arc::new(Fake(Mutex::new(vec![])));
+        let (mut t, file) = tweak(d.path(), &running); // its second target does not exist
+        let second = d.path().join("second.ini");
+        fs::write(&file, UE).unwrap();
+        fs::write(&second, UE).unwrap();
+        t.profile.as_mut().unwrap().targets.push(Target { path: second.clone(), format: Format::Ini, settings: ARC });
+
+        let held = fs::OpenOptions::new().read(true).share_mode(0).open(&second).unwrap();
+        let mut b = TweakBackup::new(&t.title);
+        let e = t.capture(&mut b).unwrap_err().to_string();
+        assert!(e.contains("second.ini") && e.contains("could not read"), "{e}");
+        assert!(b.data.is_empty() && !d.path().join("gameconfig").exists(), "nothing is copied");
+        assert!(t.read_problem().is_some_and(|p| p.contains("second.ini")));
+        assert_eq!(fs::read(&file).unwrap(), UE.as_bytes());
+        drop(held);
+
+        assert!(t.read_problem().is_none(), "a missing file is no problem");
+        t.apply(&mut b).unwrap();
+        assert_eq!((slot(&b, "file", 0).is_some(), slot(&b, "file", 1).is_some(), slot(&b, "file", 2).is_some()), (true, true, false));
+    }
+
+    #[test]
+    fn a_settings_file_redirected_to_an_admin_folder_stays_unchanged() {
+        if !crate::util::test_elevated() {
+            eprintln!("skipped: not elevated");
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let admin = d.path().join("admin");
+        let keep = crate::util::test_admin_only(&admin);
+        fs::write(&keep, UE).unwrap();
+        let link = d.path().join("link");
+        crate::util::test_junction(&link, &admin);
+        let running = Arc::new(Fake(Mutex::new(vec![])));
+        let (mut t, _) = tweak(d.path(), &running);
+        let through = link.join("keep.txt");
+        t.profile.as_mut().unwrap().targets[0].path = through.clone();
+
+        let mut b = TweakBackup::new(&t.title);
+        assert!(t.capture(&mut b).unwrap_err().to_string().contains("does not use admin rights"));
+        assert!(t.apply(&mut b).is_err() && b.data.is_empty(), "nothing is copied or recorded");
+        assert!(t.settings().is_empty());
+        assert_eq!(t.files(), [through.clone()], "it counts as there, so the dialog can say why");
+        assert!(t.read_problem().is_some());
+
+        let copy = d.path().join("copy.ini");
+        fs::write(&copy, "attacker bytes").unwrap();
+        b.data.insert("file0".into(), through.to_string_lossy().to_string());
+        b.data.insert("backup0".into(), copy.to_string_lossy().to_string());
+        b.data.insert("after0".into(), hash(UE.as_bytes()));
+        assert!(changed_since_apply(&b), "a denied read counts as changed");
+        assert!(t.revert(&b).is_err());
+        assert_eq!(fs::read(&copy).unwrap(), b"attacker bytes", "a failed revert keeps the copy");
+        assert_eq!(fs::read(&keep).unwrap(), UE.as_bytes());
     }
 
     #[test]

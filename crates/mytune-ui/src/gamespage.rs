@@ -214,10 +214,13 @@ impl GamesPage {
 
     /// Reads the game's settings from its file for the dialog.
     /// shortcut: read on the UI thread (one small local file per click), move to a thread if a game's file sits on a slow drive
-    fn open(&mut self, id: &str) {
+    fn open(&mut self, ctx: &egui::Context, id: &str) {
         let Some(r) = self.rows.iter().find(|r| r.id == id) else { return };
         let dir = self.engine.with_store(|s| s.dir().to_path_buf());
         let t = ConfigTweak::new(Arc::new(WinProcs), &r.id, &r.name, &r.exe, &dir);
+        if let Some(problem) = t.read_problem() {
+            crate::notice::post(ctx, problem, false);
+        }
         let items = t.settings();
         let keys = items.iter().filter_map(|i| Some((i.target, i.index, t.key_at(i.target, i.index)?))).collect();
         let values = items.iter().map(|i| i.value.clone()).collect();
@@ -378,7 +381,7 @@ impl GamesPage {
         self.rows = rows;
         self.rx = None;
         if let Some(id) = self.dialog.as_ref().filter(|_| self.working).map(|d| d.id.clone()) {
-            self.open(&id); // a save or a put-back finished: show the file as it is now
+            self.open(ctx, &id); // a save or a put-back finished: show the file as it is now
         }
         self.read_at = Some(Instant::now());
         if let Some((text, ok)) = notice {
@@ -487,7 +490,7 @@ impl GamesPage {
         if let Some(want) = &self.auto {
             if let Some(id) = self.rows.iter().find(|r| r.state == Prof::Ready && r.name.to_lowercase().contains(want)).map(|r| r.id.clone()) {
                 self.auto = None;
-                self.open(&id);
+                self.open(ui.ctx(), &id);
             }
         }
         self.dialog_modal(ui.ctx());
@@ -507,7 +510,7 @@ impl GamesPage {
         }
         match act {
             Some((i, true)) => self.edit_game(self.rows[i].id.clone(), |_| false),
-            Some((i, false)) => self.open(&self.rows[i].id.clone()),
+            Some((i, false)) => self.open(ui.ctx(), &self.rows[i].id.clone()),
             None => {}
         }
     }

@@ -5,6 +5,7 @@ edition = "2021"
 description = "Drives the Yapfast Discord engine (GPL-3.0-or-later) from MyTune's egui UI"
 
 [dependencies]
+mytune-core = { path = "../mytune-core" }
 yapfast-core = { path = "../../vendor-src/yapfast/crates/yapfast-core", default-features = false, features = ["discord"] }
 anyhow = "1"
 qrcode = { version = "0.14", default-features = false }

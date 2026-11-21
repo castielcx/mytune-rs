@@ -120,5 +120,5 @@ Explorer restart / settings broadcast after a tweak go through the `Hooks` trait
   (copies of ping.exe), quiet mode on a scratch key and a switch to a THROWAWAY power plan and back (guard restores the plan).
 - Not covered by real tests: power plan, hibernation, adapter property / binding changes, DNS / TCP /
   memory-compression reverts (fake runner only; changing them for real would touch the live network or plan).
-- Integration tests set `MYTUNE_DIR` so they never write the real log or state.
+- Integration tests set `MYTUNE_DIR` so they never write the real log or state. It is honored only for an exe in a `deps` folder (where cargo puts test binaries in every profile) that is not named `MyTune`.
 - Examples: `write_sample_state` (feeds the C# reader check), `smoke_readonly` (read-only output-format check).

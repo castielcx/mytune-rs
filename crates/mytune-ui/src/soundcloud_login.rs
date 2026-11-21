@@ -110,7 +110,7 @@ fn run() -> Result<(), String> {
         }
 
         // WebView2 keeps its profile here, so it works after an install into Program Files
-        let data = std::path::PathBuf::from(std::env::var("ProgramData").unwrap_or_else(|_| "C:\\ProgramData".into())).join("MyTune").join("webview");
+        let data = mytune_core::util::program_data().join("MyTune").join("webview");
         let mut web_context = WebContext::new(Some(data));
         let win = Win(hwnd as isize);
         let webview = WebViewBuilder::new_with_web_context(&mut web_context)

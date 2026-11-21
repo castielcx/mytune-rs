@@ -792,6 +792,18 @@ impl ChatPage {
         }
     }
 
+    /// A call is running or ringing here. False while the chat has not started.
+    #[cfg(feature = "license")]
+    pub fn call_busy(&self) -> bool {
+        self.chat.as_ref().is_some_and(|chat| chat.with_state(|s| s.voice.active() || s.rooms.iter().any(|r| r.incoming)))
+    }
+
+    /// A call is really running, not only ringing. False while the chat has not started.
+    #[cfg(feature = "license")]
+    pub fn in_call(&self) -> bool {
+        self.chat.as_ref().is_some_and(|chat| chat.with_state(|s| s.voice.active()))
+    }
+
     /// Another MyTune page is in front: new messages are no longer read as they come.
     pub fn hidden(&mut self) {
         if let (Some(chat), Some((room, true))) = (&self.chat, &self.reading) {

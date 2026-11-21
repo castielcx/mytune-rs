@@ -467,6 +467,37 @@ impl App {
                 mytune_core::process::trim_working_set();
             });
         }
+        // public setup: a newer version blocks everything, the licence screen too
+        #[cfg(feature = "license")]
+        if let Some(up) = mytune_core::updater::pending().filter(|p| p.blocks) {
+            if self.chat.in_call() {
+                mytune_core::updater::demote(); // a call must keep its controls; the block returns at the next start
+            } else if !self.chat.call_busy() { // a ring only holds the block back: unanswered, it must not lift it
+                // no page runs behind this screen, so none of them may keep reading or sampling
+                self.chat.hidden();
+                if let Some(s) = &self.sensors {
+                    s.set_watched(false);
+                }
+                self.mouse.cancel();
+                self.sound.stop();
+                self.diagnostics.stop();
+                th::backdrop(ctx, &ctx.layer_painter(egui::LayerId::background()), ctx.content_rect());
+                self.title_bar(root, 248.0);
+                let can_revert = self.states_loaded && self.work_rx.is_none() && !self.games.busy() && !self.ids_in_store.is_empty();
+                if crate::updategate::ui(root, &up, can_revert) {
+                    self.confirm_revert_all = true;
+                }
+                if self.confirm_revert_all {
+                    self.revert_all_modal(ctx);
+                }
+                if let Some((msg, ok)) = self.status.take() {
+                    crate::notice::post(ctx, msg, ok);
+                }
+                crate::notice::show(ctx, 44.0);
+                crate::fade::end_frame(ctx);
+                return;
+            }
+        }
         // public setup: no sidebar and no pages until a licence key is active on this PC
         #[cfg(feature = "license")]
         if mytune_core::license::status() != mytune_core::license::Status::Unlocked {
@@ -708,6 +739,10 @@ impl App {
                 if resp.clicked() {
                     ctx.send_viewport_cmd(cmd);
                 }
+            }
+            #[cfg(feature = "license")]
+            if let Some(up) = mytune_core::updater::pending().filter(|p| !p.blocks) {
+                crate::updategate::banner(ui, bar, &up);
             }
         });
     }

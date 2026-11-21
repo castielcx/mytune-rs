@@ -296,7 +296,7 @@ fn list_processes() -> Result<Vec<(u32, String)>> {
 }
 
 fn windir() -> String {
-    std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into())
+    crate::util::windows_dir().to_string_lossy().into_owned()
 }
 
 /// Per-process CPU, disk, network and memory, sampled on demand. The first sample has no rates (all 0).

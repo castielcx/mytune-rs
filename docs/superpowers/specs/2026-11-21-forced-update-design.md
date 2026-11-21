@@ -68,7 +68,7 @@ The existing check cannot do this. It reads the deleted C# app's feed (`castielc
 
 ### Install
 
-1. Download the setup to `%ProgramData%\MyTune\updates\`. That folder is restricted to SYSTEM and Administrators, because an admin process runs what is inside it.
+1. Download the setup to `%ProgramFiles%\MyTune Updates\`, resolved with `SHGetKnownFolderPath`. That folder is restricted to SYSTEM and Administrators, because an admin process runs what is inside it. It is not under `%ProgramData%`, where a standard user can pre-create and own the parent folder. The uninstaller removes it.
 2. Check the SHA-256 against the signed manifest. Keep the file open without write sharing until setup has started, so it cannot be swapped after the check.
 3. Start it with `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /RELAUNCH`. MyTune already runs as admin, so there is no UAC prompt.
 4. MyTune stays open and waits on the setup process. If setup cannot start, or exits with an error before closing MyTune (for example because antivirus blocked it), MyTune shows the failure on the update screen.

@@ -792,8 +792,7 @@ struct ShareMenu {
 
 /// Where the screen last shared is kept: the picker opens with it selected.
 fn last_screen_path() -> std::path::PathBuf {
-    let base = std::env::var_os("ProgramData").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
-    base.join("MyTune").join("last-share-screen.txt")
+    mytune_core::util::program_data().join("MyTune").join("last-share-screen.txt")
 }
 
 impl ShareMenu {

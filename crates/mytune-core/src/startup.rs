@@ -30,8 +30,8 @@ struct Source {
     folder: Option<PathBuf>,
 }
 
-fn folder(var: &str) -> PathBuf {
-    PathBuf::from(std::env::var_os(var).unwrap_or_default()).join(r"Microsoft\Windows\Start Menu\Programs\StartUp")
+fn folder(base: impl Into<PathBuf>) -> PathBuf {
+    base.into().join(r"Microsoft\Windows\Start Menu\Programs\StartUp")
 }
 
 fn sources() -> Vec<Source> {
@@ -40,8 +40,8 @@ fn sources() -> Vec<Source> {
         Source { label: "Current user", hive: Hive::Hkcu, run_path: Some(RUN), approved: a("Run"), folder: None },
         Source { label: "All users", hive: Hive::Hklm, run_path: Some(RUN), approved: a("Run"), folder: None },
         Source { label: "All users (32-bit)", hive: Hive::Hklm, run_path: Some(RUN32), approved: a("Run32"), folder: None },
-        Source { label: "Startup folder", hive: Hive::Hkcu, run_path: None, approved: a("StartupFolder"), folder: Some(folder("APPDATA")) },
-        Source { label: "Startup folder (all users)", hive: Hive::Hklm, run_path: None, approved: a("StartupFolder"), folder: Some(folder("ProgramData")) },
+        Source { label: "Startup folder", hive: Hive::Hkcu, run_path: None, approved: a("StartupFolder"), folder: Some(folder(std::env::var_os("APPDATA").unwrap_or_default())) },
+        Source { label: "Startup folder (all users)", hive: Hive::Hklm, run_path: None, approved: a("StartupFolder"), folder: Some(folder(crate::util::program_data())) },
     ]
 }
 

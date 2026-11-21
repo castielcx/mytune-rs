@@ -1333,13 +1333,21 @@ pub struct CleanStartTweak {
 fn save_pins(pins: &std::path::Path, bak: &std::path::Path, fresh: bool) -> Result<()> {
     if fresh || !bak.exists() {
         let tmp = bak.with_extension("tmp");
-        std::fs::copy(pins, &tmp)?;
+        // `pins` is under LOCALAPPDATA, which a non-admin can redirect: read as the user, stored as admin
+        std::fs::write(&tmp, crate::util::as_user(|| std::fs::read(pins))?)?;
         if bak.exists() {
             std::fs::rename(bak, bak.with_extension("old"))?;
         }
+        // before the backup appears, so a backup never sits beside another backup's record
+        std::fs::write(pins_record(bak), pins.to_string_lossy().as_bytes())?;
         std::fs::rename(&tmp, bak)?;
     }
     Ok(())
+}
+
+/// `start2.bin.bak.path`: where the pins of this backup came from, in the admin-only folder.
+fn pins_record(bak: &std::path::Path) -> std::path::PathBuf {
+    bak.with_extension("bak.path")
 }
 
 /// The Start menu process comes back by itself and can hold the file for a moment: tries for 2 s.
@@ -1354,9 +1362,27 @@ fn retry_locked<T>(f: impl Fn() -> std::io::Result<T>) -> Result<T> {
 }
 
 /// Puts the saved pins back. The backup goes only after the copy worked, so a failed revert can be retried.
+/// Refuses a path other than the recorded one: `LOCALAPPDATA` can be redirected, and the backup would be spent on a
+/// decoy while the real pins stay lost. A backup from an older version has no record and restores as before.
 fn restore_pins(pins: &std::path::Path, bak: &std::path::Path) -> Result<()> {
-    retry_locked(|| std::fs::copy(bak, pins))?;
-    Ok(std::fs::remove_file(bak)?)
+    match std::fs::read_to_string(pins_record(bak)) {
+        Ok(from) if from.to_lowercase() != pins.to_string_lossy().to_lowercase() => {
+            return Err(Error::Plain(format!("The Start menu pins were saved from {from}, but this session points to {}. Nothing was restored and the backup is kept.", pins.display())));
+        }
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    let saved = std::fs::read(bak)?;
+    retry_locked(|| crate::util::as_user(|| std::fs::write(pins, &saved)))?;
+    std::fs::remove_file(bak)?;
+    let _ = std::fs::remove_file(pins_record(bak)); // a leftover is harmless: the next save replaces it
+    Ok(())
+}
+
+/// Deletes the pin file as the user: its path can be redirected.
+fn delete_pins(pins: &std::path::Path) -> Result<()> {
+    retry_locked(|| crate::util::as_user(|| std::fs::remove_file(pins)))
 }
 
 impl CleanStartTweak {
@@ -1390,7 +1416,8 @@ impl CleanStartTweak {
     /// Before the first change, so an apply cut off half way still has the pins and the key that ties them.
     fn keep_pins(b: &mut TweakBackup) -> Result<bool> {
         let (pins, bak) = Self::paths();
-        if !pins.exists() {
+        // `try_exists`: a file the user may not reach is a failure, not an absent file
+        if !crate::util::as_user(|| pins.try_exists())? {
             return Ok(false);
         }
         save_pins(&pins, &bak, !b.data.contains_key("start2"))?;
@@ -1418,7 +1445,7 @@ impl Tweak for CleanStartTweak {
         if Self::keep_pins(b)? {
             let (pins, _) = Self::paths();
             self.stop_start_menu();
-            retry_locked(|| std::fs::remove_file(&pins))?;
+            delete_pins(&pins)?;
         }
         self.reg.restart_explorer();
         Ok(())
@@ -1554,7 +1581,27 @@ fn take_own_protected(path: &str, env: impl Fn(&str) -> Option<String>) -> bool 
     let mut users = vec![take_own_norm("C:\\Users")];
     users.extend(env("SystemDrive").filter(|d| !d.is_empty()).map(|d| take_own_norm(&format!("{d}\\Users"))));
     users.extend(env("USERPROFILE").and_then(|u| take_own_norm(&u).rsplit_once('\\').map(|(parent, _)| parent.to_string())));
+    users.extend(env("UserProfiles").filter(|u| !u.is_empty()).map(|u| take_own_norm(&u)));
     users.contains(&p) || p.rsplit_once('\\').is_some_and(|(parent, _)| users.iter().any(|u| u == parent))
+}
+
+/// The guard's folders from machine data. Never the environment: a non-admin can set it and shrink the list.
+fn take_own_trusted(k: &str) -> Option<String> {
+    use crate::util::{known_folder, program_data, windows_dir};
+    use windows::Win32::UI::Shell::{FOLDERID_Profile, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX64, FOLDERID_ProgramFilesX86};
+    let p = match k {
+        "SystemRoot" | "windir" => windows_dir(),
+        "ProgramData" => program_data(),
+        "ProgramFiles" => known_folder(&FOLDERID_ProgramFiles).ok()?,
+        "ProgramFiles(x86)" => known_folder(&FOLDERID_ProgramFilesX86).ok()?,
+        "ProgramW6432" => known_folder(&FOLDERID_ProgramFilesX64).ok()?,
+        "USERPROFILE" => known_folder(&FOLDERID_Profile).ok()?,
+        // from HKLM and expanded here: FOLDERID_UserProfiles expands `%SystemDrive%` from the environment
+        "UserProfiles" => crate::util::profile_list_folder("ProfilesDirectory")?,
+        "SystemDrive" => crate::util::windows_drive().into(),
+        _ => return None,
+    };
+    Some(p.to_string_lossy().into_owned())
 }
 
 /// The Windows folder or anything under it, at any depth.
@@ -1602,7 +1649,7 @@ fn take_own(raw: &str) -> Result<()> {
     let meta = std::fs::symlink_metadata(&path)?;
     // by attribute: `is_dir` is false for a junction, which is a folder here too
     let is_folder = std::os::windows::fs::MetadataExt::file_attributes(&meta) & 0x10 != 0; // FILE_ATTRIBUTE_DIRECTORY
-    take_own_guard(&path, take_own_real(std::path::Path::new(&path), is_reparse(&meta)), is_folder, |k| std::env::var(k).ok())?;
+    take_own_guard(&path, take_own_real(std::path::Path::new(&path), is_reparse(&meta)), is_folder, take_own_trusted)?;
     let failed = take_own_walk(std::path::Path::new(&path), &mut |exe, args| {
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
         match crate::process::run_with(&system32(exe).to_string_lossy(), &args, std::time::Duration::from_secs(120), None) {
@@ -2286,6 +2333,40 @@ mod tests {
         assert!(take_own_guard("C:\\Games\\a.txt", unconfirmed(), false, env).is_err(), "fails closed for a file too");
     }
 
+    // Setting the variables here would race other tests, so this test runs itself again as a child with them faked.
+    #[test]
+    fn take_own_guard_ignores_faked_variables() {
+        const KEYS: [&str; 9] = ["SystemRoot", "windir", "ProgramData", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "USERPROFILE", "UserProfiles", "SystemDrive"];
+        const REAL: &str = "MYTUNE_TEST_REAL_GUARD";
+        const NAME: &str = "special::tests::take_own_guard_ignores_faked_variables";
+        if let Ok(real) = std::env::var(REAL) {
+            for (k, want) in KEYS.iter().zip(real.split('|')) {
+                assert_eq!(take_own_trusted(k).as_deref(), Some(want), "{k}");
+            }
+            for k in ["SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramData", "UserProfiles"] {
+                assert!(take_own_protected(&take_own_trusted(k).unwrap(), take_own_trusted), "{k}");
+            }
+            let system = format!("{}\\System32", take_own_trusted("SystemRoot").unwrap());
+            assert!(take_own_guard(&system, Ok(system.clone().into()), true, take_own_trusted).is_err());
+            return;
+        }
+        let real: Vec<String> = KEYS.iter().map(|k| take_own_trusted(k).unwrap()).collect();
+        // existing folders: with a missing one the shell falls back and the test would prove nothing
+        let drive = tempfile::tempdir().unwrap();
+        let fake = |sub: &str| drive.path().join(sub);
+        for sub in ["Windows", "ProgramData", "Program Files", "Program Files (x86)", "Users\\me"] {
+            std::fs::create_dir_all(fake(sub)).unwrap();
+        }
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+        child.args(["--exact", NAME, "--test-threads=1"]).env(REAL, real.join("|")).env("SystemDrive", drive.path());
+        for (k, sub) in [("SystemRoot", "Windows"), ("windir", "Windows"), ("ProgramData", "ProgramData"), ("ALLUSERSPROFILE", "ProgramData"), ("ProgramFiles", "Program Files"), ("ProgramW6432", "Program Files"), ("ProgramFiles(x86)", "Program Files (x86)"), ("USERPROFILE", "Users\\me")] {
+            child.env(k, fake(sub));
+        }
+        let out = child.output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success() && text.contains("1 passed"), "{text}");
+    }
+
     /// Real junctions in a scratch folder. Only paths are read; nothing is run on them.
     #[test]
     fn take_own_guard_sees_windows_through_a_junction() {
@@ -2857,11 +2938,83 @@ mod cleanstart_tests {
         std::fs::write(&pins, "emptied").unwrap();
 
         // A restore that fails keeps the backup (the target folder is missing, tried for 2 s).
+        std::fs::remove_file(pins_record(&bak)).unwrap();
         assert!(restore_pins(&d.path().join("missing").join("start2.bin"), &bak).is_err());
         assert!(bak.exists());
 
         restore_pins(&pins, &bak).unwrap();
         assert_eq!(std::fs::read_to_string(&pins).unwrap(), "real pins");
         assert!(!bak.exists());
+    }
+
+    #[test]
+    fn pins_round_trip_gives_identical_bytes() {
+        let d = tempfile::tempdir().unwrap();
+        let (local, away) = (d.path().join("local"), d.path().join("away"));
+        std::fs::create_dir(&local).unwrap();
+        let (pins, bak) = (local.join("start2.bin"), d.path().join("start2.bin.bak"));
+        let bytes: Vec<u8> = (0..=255u8).cycle().take(4096).collect();
+        std::fs::write(&pins, &bytes).unwrap();
+        save_pins(&pins, &bak, true).unwrap();
+        delete_pins(&pins).unwrap();
+        assert!(!pins.exists());
+        std::fs::rename(&local, &away).unwrap();
+        assert!(restore_pins(&pins, &bak).is_err());
+        assert_eq!(std::fs::read(&bak).unwrap(), bytes, "a failed restore keeps the backup");
+        assert!(pins_record(&bak).exists(), "and its record");
+        std::fs::rename(&away, &local).unwrap();
+        restore_pins(&pins, &bak).unwrap();
+        assert_eq!(std::fs::read(&pins).unwrap(), bytes);
+        assert!(!bak.exists() && !pins_record(&bak).exists(), "the record goes with the backup");
+    }
+
+    #[test]
+    fn restore_refuses_a_path_other_than_the_recorded_one() {
+        let d = tempfile::tempdir().unwrap();
+        let decoy_dir = d.path().join("decoy");
+        std::fs::create_dir(&decoy_dir).unwrap();
+        let (pins, bak, decoy) = (d.path().join("start2.bin"), d.path().join("start2.bin.bak"), decoy_dir.join("start2.bin"));
+        std::fs::write(&pins, "real pins").unwrap();
+        save_pins(&pins, &bak, true).unwrap();
+        std::fs::remove_file(&pins).unwrap();
+        let e = restore_pins(&decoy, &bak).unwrap_err().to_string();
+        assert!(e.contains("backup is kept"), "{e}");
+        assert!(!decoy.exists() && !pins.exists());
+        assert_eq!(std::fs::read(&bak).unwrap(), b"real pins");
+        assert!(pins_record(&bak).exists());
+        // the same path in another case is the same file
+        let upper = std::path::PathBuf::from(pins.to_string_lossy().to_uppercase());
+        restore_pins(&upper, &bak).unwrap();
+        assert_eq!(std::fs::read(&pins).unwrap(), b"real pins");
+    }
+
+    #[test]
+    fn restore_of_an_old_backup_without_a_record_still_works() {
+        let d = tempfile::tempdir().unwrap();
+        let (pins, bak) = (d.path().join("start2.bin"), d.path().join("start2.bin.bak"));
+        std::fs::write(&bak, "old pins").unwrap();
+        restore_pins(&pins, &bak).unwrap();
+        assert_eq!(std::fs::read(&pins).unwrap(), b"old pins");
+        assert!(!bak.exists());
+    }
+
+    #[test]
+    fn redirected_pins_leave_an_admin_only_file_alone() {
+        if !crate::util::test_elevated() {
+            eprintln!("skipped: not elevated");
+            return;
+        }
+        let d = tempfile::tempdir().unwrap();
+        let admin = d.path().join("admin");
+        let keep = crate::util::test_admin_only(&admin);
+        let link = d.path().join("link");
+        crate::util::test_junction(&link, &admin);
+        let (pins, bak) = (link.join("keep.txt"), d.path().join("start2.bin.bak"));
+        assert!(save_pins(&pins, &bak, true).is_err() && !bak.exists(), "nothing is read through the link");
+        assert!(delete_pins(&pins).is_err());
+        std::fs::write(&bak, "attacker bytes").unwrap();
+        assert!(restore_pins(&pins, &bak).is_err());
+        assert_eq!(std::fs::read(&bak).unwrap(), b"attacker bytes", "a failed restore keeps the backup");
+        assert_eq!(std::fs::read(&keep).unwrap(), b"x");
     }
 }

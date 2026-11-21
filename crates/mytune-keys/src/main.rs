@@ -1,17 +1,42 @@
 //! MyTune key manager: creates, revokes, unbinds and deletes licence keys on the key server (keyserver\worker.js).
 //! `mytune-keys keygen` prints a fresh Ed25519 key pair instead of opening the window.
-// No console window of its own; `keygen` attaches to the terminal it was started from to print there.
+//! `mytune-keys update-keygen` creates the release signing key once; `update-sign <setup.exe> <version> <public>`
+//! writes the signed version.json next to the setup.
+// No console window of its own; the commands attach to the terminal they were started from to print there.
 #![windows_subsystem = "windows"]
 
 #[link(name = "kernel32")]
 extern "system" {
     fn AttachConsole(process: u32) -> i32;
     fn GetStdHandle(which: u32) -> isize;
+    fn GetCurrentProcess() -> isize;
+    fn CloseHandle(handle: isize) -> i32;
+    fn LocalFree(memory: *mut c_void) -> *mut c_void;
+    fn CreateFileW(name: *const u16, access: u32, share: u32, security: *const SecurityAttributes, disposition: u32, flags: u32, template: isize) -> isize;
+}
+
+#[link(name = "advapi32")]
+extern "system" {
+    fn OpenProcessToken(process: isize, access: u32, token: *mut isize) -> i32;
+    fn GetTokenInformation(token: isize, class: u32, info: *mut c_void, size: u32, written: *mut u32) -> i32;
+    fn ConvertSidToStringSidW(sid: *const c_void, text: *mut *mut u16) -> i32;
+    fn ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl: *const u16, revision: u32, descriptor: *mut *mut c_void, size: *mut u32) -> i32;
+}
+
+#[repr(C)]
+struct SecurityAttributes {
+    length: u32,
+    descriptor: *mut c_void,
+    inherit: i32,
 }
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use eframe::egui;
+use ed25519_dalek::{Signer as _, SigningKey};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
+use std::ffi::c_void;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -28,15 +53,156 @@ fn keygen() -> (Vec<u8>, [u8; 32]) {
     (der, public)
 }
 
-fn main() -> eframe::Result {
-    if std::env::args().nth(1).as_deref() == Some("keygen") {
-        // SAFETY: plain Win32 calls. Attach (u32::MAX = parent process) only when stdout (-11) is not
-        // already a pipe or file: attaching would replace it and a script would read nothing.
-        unsafe {
-            if matches!(GetStdHandle(-11i32 as u32), 0 | -1) {
-                AttachConsole(u32::MAX);
-            }
+fn attach_console() {
+    // SAFETY: plain Win32 calls. Attach (u32::MAX = parent process) only when stdout (-11) is not
+    // already a pipe or file: attaching would replace it and a script would read nothing.
+    unsafe {
+        if matches!(GetStdHandle(-11i32 as u32), 0 | -1) {
+            AttachConsole(u32::MAX);
         }
+    }
+}
+
+fn update_key_path() -> PathBuf {
+    PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default()).join(".mytune").join("update-signing.key")
+}
+
+/// SAFETY: `sid` must point to a valid SID.
+unsafe fn sid_text(sid: *const c_void) -> Result<String, String> {
+    let mut text = std::ptr::null_mut();
+    if ConvertSidToStringSidW(sid, &mut text) == 0 {
+        return Err(format!("Cannot read the user SID: {}", std::io::Error::last_os_error()));
+    }
+    let len = (0..).take_while(|&i| *text.add(i) != 0).count();
+    let out = String::from_utf16_lossy(std::slice::from_raw_parts(text, len));
+    LocalFree(text.cast());
+    Ok(out)
+}
+
+fn current_user_sid() -> Result<String, String> {
+    // SAFETY: the token is closed once; TOKEN_USER starts with a pointer to the SID stored in the same buffer.
+    unsafe {
+        let mut token = 0isize;
+        if OpenProcessToken(GetCurrentProcess(), 8 /* TOKEN_QUERY */, &mut token) == 0 {
+            return Err(format!("Cannot open the process token: {}", std::io::Error::last_os_error()));
+        }
+        let mut info = [0usize; 16];
+        let mut written = 0u32;
+        let ok = GetTokenInformation(token, 1 /* TokenUser */, info.as_mut_ptr().cast(), std::mem::size_of_val(&info) as u32, &mut written);
+        let error = std::io::Error::last_os_error();
+        CloseHandle(token);
+        if ok == 0 {
+            return Err(format!("Cannot read the current user: {error}"));
+        }
+        sid_text(info[0] as *const c_void)
+    }
+}
+
+/// Creates a new file only the current user can open. The DACL is set at creation, so the seed is never in a looser file.
+fn create_private_file(path: &Path) -> Result<std::fs::File, String> {
+    use std::os::windows::{ffi::OsStrExt as _, io::FromRawHandle as _};
+    let sid = current_user_sid()?;
+    let sddl: Vec<u16> = format!("O:{sid}D:P(A;;FA;;;{sid})").encode_utf16().chain([0]).collect();
+    let name: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+    // SAFETY: both strings are NUL-terminated, the descriptor outlives CreateFileW, and the handle is owned by the File.
+    unsafe {
+        let mut descriptor = std::ptr::null_mut();
+        if ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.as_ptr(), 1, &mut descriptor, std::ptr::null_mut()) == 0 {
+            return Err(format!("Cannot build the key file permissions: {}", std::io::Error::last_os_error()));
+        }
+        let security = SecurityAttributes { length: std::mem::size_of::<SecurityAttributes>() as u32, descriptor, inherit: 0 };
+        let handle = CreateFileW(name.as_ptr(), 0x4000_0000 /* GENERIC_WRITE */, 0, &security, 1 /* CREATE_NEW */, 0x80 /* NORMAL */, 0);
+        let error = std::io::Error::last_os_error();
+        LocalFree(descriptor);
+        if handle == -1 {
+            return Err(format!("Cannot create {} (an existing key is never replaced): {error}", path.display()));
+        }
+        Ok(std::fs::File::from_raw_handle(handle as *mut c_void))
+    }
+}
+
+/// Writes a new key once (base64 of the 32-byte seed) and returns the public key.
+fn create_update_key(path: &Path) -> Result<String, String> {
+    use std::io::Write as _;
+    let parent = path.parent().ok_or("The key path has no folder.")?;
+    std::fs::create_dir_all(parent).map_err(|e| format!("Cannot create {}: {e}", parent.display()))?;
+    let mut seed = [0u8; 32];
+    getrandom::getrandom(&mut seed).map_err(|e| format!("No system random source: {e}"))?;
+    let mut file = create_private_file(path)?;
+    // Flushed to disk: a lost key means installed apps can never accept another update.
+    if let Err(e) = file.write_all(STANDARD.encode(seed).as_bytes()).and_then(|_| file.sync_all()) {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+        return Err(format!("Cannot write {}: {e}", path.display()));
+    }
+    Ok(STANDARD.encode(SigningKey::from_bytes(&seed).verifying_key().to_bytes()))
+}
+
+/// Must match `signed_bytes` and `URL_PREFIX` in mytune-core's updater.rs; the golden test pins the format.
+fn sign_manifest(seed: &[u8; 32], version: &str, sha256: &str) -> serde_json::Value {
+    let url = format!("https://github.com/castielcx/mytune-rs/releases/download/v{version}/MyTune-rs-Setup-{version}.exe");
+    let sig = SigningKey::from_bytes(seed).sign(format!("mytune-update-v1\n{version}\n{url}\n{sha256}").as_bytes());
+    serde_json::json!({ "version": version, "url": url, "sha256": sha256, "sig": STANDARD.encode(sig.to_bytes()) })
+}
+
+fn sign_setup(seed: &[u8; 32], expected_public: &str, version: &str, file_name: &str, setup: &[u8]) -> Result<serde_json::Value, String> {
+    if STANDARD.encode(SigningKey::from_bytes(seed).verifying_key().to_bytes()) != expected_public {
+        return Err("The signing key does not match the expected public key.".into());
+    }
+    // What parse_version in updater.rs accepts, minus its trimming. Digits and dots also satisfy the app's URL rule.
+    let parts: Vec<&str> = version.split('.').collect();
+    if !(2..=4).contains(&parts.len()) || !parts.iter().all(|p| p.bytes().all(|b| b.is_ascii_digit()) && p.parse::<u32>().is_ok()) {
+        return Err(format!("{version} is not a version the app accepts (2 to 4 numbers separated by dots)."));
+    }
+    if file_name != format!("MyTune-rs-Setup-{version}.exe") {
+        return Err(format!("{file_name} is not the setup of version {version}."));
+    }
+    Ok(sign_manifest(seed, version, &format!("{:x}", Sha256::digest(setup))))
+}
+
+fn update_command(args: &[String]) -> Result<(), String> {
+    let key_path = update_key_path();
+    // Never a relative path: the private key must not land in the current folder.
+    if !key_path.is_absolute() {
+        return Err("USERPROFILE is not set.".into());
+    }
+    match args {
+        [cmd] if cmd == "update-keygen" => {
+            let public = create_update_key(&key_path)?;
+            println!("Key file (back it up, keep it secret): {}", key_path.display());
+            println!("UPDATE_PUBLIC_KEY: {public}");
+            Ok(())
+        }
+        [cmd, setup, version, public] if cmd == "update-sign" => {
+            let text = std::fs::read_to_string(&key_path).map_err(|e| format!("Cannot read {}: {e}", key_path.display()))?;
+            let seed: [u8; 32] = STANDARD.decode(text.trim()).ok().and_then(|b| b.try_into().ok())
+                .ok_or_else(|| format!("{} is not a valid update key.", key_path.display()))?;
+            let setup = Path::new(setup);
+            let file_name = setup.file_name().and_then(|n| n.to_str()).ok_or("The setup path has no file name.")?;
+            let bytes = std::fs::read(setup).map_err(|e| format!("Cannot read {}: {e}", setup.display()))?;
+            let manifest = sign_setup(&seed, public, version, file_name, &bytes)?;
+            let out = setup.with_file_name("version.json");
+            let json = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
+            std::fs::write(&out, json).map_err(|e| format!("Cannot write {}: {e}", out.display()))?;
+            println!("Wrote {}", out.display());
+            Ok(())
+        }
+        _ => Err("Usage: mytune-keys update-keygen | mytune-keys update-sign <setup.exe> <version> <expected-public-base64>".into()),
+    }
+}
+
+fn main() -> eframe::Result {
+    let args: Vec<String> = std::env::args_os().skip(1).map(|a| a.to_string_lossy().into_owned()).collect();
+    if matches!(args.first().map(String::as_str), Some("update-keygen" | "update-sign")) {
+        attach_console();
+        if let Err(e) = update_command(&args) {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
+    if args.first().map(String::as_str) == Some("keygen") {
+        attach_console();
         let (der, public) = keygen();
         println!("SIGNING_KEY (private, for `wrangler secret put SIGNING_KEY`; keep it secret):");
         println!("{}", STANDARD.encode(der));
@@ -554,5 +720,77 @@ mod tests {
 
     fn hex(b: &[u8]) -> String {
         b.iter().map(|x| format!("{x:02x}")).collect()
+    }
+
+    const SEED: [u8; 32] = [7; 32];
+    const PUBLIC: &str = "6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw=";
+
+    #[test] fn signature_matches_the_app_format() {
+        let m = sign_manifest(&SEED, "0.3.0", &"0123456789abcdef".repeat(4));
+        assert_eq!(m["url"], "https://github.com/castielcx/mytune-rs/releases/download/v0.3.0/MyTune-rs-Setup-0.3.0.exe");
+        assert_eq!(m["sig"], "vWiBcPgW3uydpuscL6+P0xr/1BaPYDVEsbA5gFX6gr1p2974j9bdVPpUCWH5eYqzL9pQhLQnOTunc4L79/5eAA==");
+    }
+    #[test] fn sign_setup_hashes_the_file() {
+        let m = sign_setup(&SEED, PUBLIC, "0.3.0", "MyTune-rs-Setup-0.3.0.exe", b"abc").unwrap();
+        assert_eq!(m["sha256"], "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+    #[test] fn sign_refuses_a_key_that_does_not_match() {
+        assert!(sign_setup(&[8; 32], PUBLIC, "0.3.0", "MyTune-rs-Setup-0.3.0.exe", b"abc").is_err());
+    }
+    #[test] fn sign_refuses_a_setup_of_another_version() {
+        assert!(sign_setup(&SEED, PUBLIC, "0.3.0", "MyTune-rs-Setup-0.2.0.exe", b"abc").is_err());
+    }
+    #[test] fn sign_refuses_a_name_the_app_url_rule_rejects() {
+        assert!(sign_setup(&SEED, PUBLIC, "0.3.0 x", "MyTune-rs-Setup-0.3.0 x.exe", b"abc").is_err());
+    }
+    #[test] fn sign_accepts_only_versions_the_app_parses() {
+        for bad in ["0.3.0-rc1", "1", "1.2.3.4.5", "+1.2", "1..2", "4294967296.0"] {
+            assert!(sign_setup(&SEED, PUBLIC, bad, &format!("MyTune-rs-Setup-{bad}.exe"), b"abc").is_err(), "{bad}");
+        }
+        assert!(sign_setup(&SEED, PUBLIC, "0.3.0", "MyTune-rs-Setup-0.3.0.exe", b"abc").is_ok());
+    }
+
+    #[link(name = "advapi32")]
+    extern "system" {
+        fn GetNamedSecurityInfoW(name: *const u16, object: u32, info: u32, owner: *mut *mut c_void, group: *mut *mut c_void, dacl: *mut *mut u8, sacl: *mut *mut c_void, descriptor: *mut *mut c_void) -> u32;
+        fn GetSecurityDescriptorControl(descriptor: *const c_void, control: *mut u16, revision: *mut u32) -> i32;
+    }
+
+    #[test] fn update_key_file_is_private() {
+        use std::os::windows::ffi::OsStrExt as _;
+        use std::ptr::null_mut;
+        let dir = std::env::temp_dir().join(format!("mytune-keys-dacl-{}", std::process::id()));
+        let path = dir.join("update-signing.key");
+        let _ = std::fs::remove_dir_all(&dir);
+        create_update_key(&path).unwrap();
+        let name: Vec<u16> = path.as_os_str().encode_wide().chain([0]).collect();
+        // SAFETY: the DACL points into `descriptor`, which is freed last. ACL: AceCount at 4, first ACE at 8.
+        // ACCESS_ALLOWED_ACE: type at 0, mask at 4, SID at 8.
+        let (control, aces, ace_type, mask, sid) = unsafe {
+            let (mut dacl, mut descriptor) = (null_mut::<u8>(), null_mut());
+            assert_eq!(GetNamedSecurityInfoW(name.as_ptr(), 1 /* file */, 4 /* DACL */, null_mut(), null_mut(), &mut dacl, null_mut(), &mut descriptor), 0);
+            let (mut control, mut revision) = (0u16, 0u32);
+            assert_ne!(GetSecurityDescriptorControl(descriptor, &mut control, &mut revision), 0);
+            let ace = dacl.add(8);
+            let read = (control, dacl.add(4).cast::<u16>().read_unaligned(), *ace, ace.add(4).cast::<u32>().read_unaligned(), sid_text(ace.add(8).cast()).unwrap());
+            LocalFree(descriptor);
+            read
+        };
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(control & 0x1000, 0x1000, "DACL is not protected");
+        assert_eq!(aces, 1);
+        assert_eq!((ace_type, mask), (0, 0x1F01FF), "not one full-access allow entry");
+        assert_eq!(sid, current_user_sid().unwrap());
+    }
+
+    #[test] fn update_keygen_never_overwrites() {
+        let dir = std::env::temp_dir().join(format!("mytune-keys-{}", std::process::id()));
+        let path = dir.join("update-signing.key");
+        let _ = std::fs::remove_dir_all(&dir);
+        create_update_key(&path).unwrap();
+        let first = std::fs::read(&path).unwrap();
+        assert!(create_update_key(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), first);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

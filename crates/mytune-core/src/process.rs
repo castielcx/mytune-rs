@@ -110,10 +110,9 @@ pub fn run_checked(file: &str, args: &[&str]) -> Result<String> {
     }
 }
 
-/// `%SystemRoot%\System32\<exe>`.
+/// `<Windows>\System32\<exe>`. Never from `%SystemRoot%`: a non-admin can set it, and these programs run as admin.
 pub fn system32(exe: &str) -> PathBuf {
-    let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
-    PathBuf::from(root).join("System32").join(exe)
+    crate::util::windows_dir().join("System32").join(exe)
 }
 
 /// True when this process runs under another account than the desktop shell (elevated with a different admin):
@@ -181,8 +180,7 @@ pub fn restart_explorer() -> bool {
         return false; // the old shell is still the one running
     }
     if !back {
-        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into());
-        let exe = PathBuf::from(root).join("explorer.exe");
+        let exe = crate::util::windows_dir().join("explorer.exe");
         let _ = run(&system32("runas.exe").to_string_lossy(), &["/trustlevel:0x20000", &exe.to_string_lossy()]);
         back = wait(10);
     }

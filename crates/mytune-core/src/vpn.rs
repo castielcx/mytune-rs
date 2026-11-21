@@ -83,7 +83,8 @@ enum Cli {
 
 impl Cli {
     fn exe(self) -> PathBuf {
-        let pf = PathBuf::from(std::env::var_os("ProgramFiles").unwrap_or_else(|| "C:\\Program Files".into()));
+        // these programs run as admin, so not from `%ProgramFiles%`, which a non-admin can set
+        let pf = crate::util::known_folder(&windows::Win32::UI::Shell::FOLDERID_ProgramFiles).unwrap_or_else(|_| PathBuf::from("C:\\Program Files"));
         match self {
             Cli::Mullvad => pf.join("Mullvad VPN").join("resources").join("mullvad.exe"),
             Cli::Warp => pf.join("Cloudflare").join("Cloudflare WARP").join("warp-cli.exe"),

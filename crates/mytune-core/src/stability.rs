@@ -147,7 +147,7 @@ ConvertTo-Json -Compress -InputObject @(
 /// (4101). Without `all`, app crashes are limited to Windows components and Store apps.
 pub fn events(cmd: &dyn Cmd, dir: &Path, all: bool) -> Result<Vec<StabilityEvent>> {
     let out = powershell(cmd, SCRIPT)?;
-    let windows = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let windows = crate::util::windows_dir().to_string_lossy().into_owned();
     Ok(parse_events(&out, &changes(dir, now()), all, &windows))
 }
 

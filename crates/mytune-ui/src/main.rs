@@ -155,6 +155,11 @@ fn main() -> eframe::Result {
         }
         let tray = TrayIconBuilder::new().with_tooltip(TITLE).with_icon(icon()).with_menu(Box::new(menu)).with_menu_on_left_click(false).build();
         let mut app = mytune_ui::app::App::new();
+        #[cfg(feature = "license")]
+        if !PREVIEW {
+            let ctx = cc.egui_ctx.clone();
+            mytune_core::updater::start(std::env::args().any(|a| a == "--update-failed"), move || ctx.request_repaint());
+        }
         cc.egui_ctx.set_zoom_factor(UI_ZOOM);
         mytune_ui::theme::install_fonts(&cc.egui_ctx);
         mytune_ui::theme::apply_visuals(&cc.egui_ctx);

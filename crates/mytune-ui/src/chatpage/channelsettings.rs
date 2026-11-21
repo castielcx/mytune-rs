@@ -65,7 +65,7 @@ pub fn screen(ui: &mut Ui, cu: &mut ChannelUi, app: &Application, cs: &ChannelSe
             if on || t > 0.0 {
                 ui.painter().rect_filled(r, 10.0, if on { super::k_active() } else { super::k_hover().gamma_multiply(t) });
             }
-            ui.painter().text(egui::pos2(r.left() + 12.0, r.center().y), egui::Align2::LEFT_CENTER, name, egui::FontId::proportional(14.0), if on { TEXT } else { SECONDARY });
+            ui.painter().text(egui::pos2(r.left() + 12.0, r.center().y), egui::Align2::LEFT_CENTER, name, egui::FontId::proportional(14.0), if on || (crate::theme::p().black && resp.hovered()) { TEXT } else { SECONDARY });
             if resp.clicked() {
                 input(acts, ChannelInput::Section(sec));
             }
@@ -234,7 +234,7 @@ fn permissions(ui: &mut Ui, cu: &mut ChannelUi, app: &Application, cs: &ChannelS
                 }
                 super::voice::glyph(ui.painter(), egui::pos2(r.left() + 16.0, r.center().y), if ow.member { "\u{E77B}" } else { "\u{E716}" }, 13.0, SECONDARY, false);
                 let shown = super::ellipsize(ui, &tidy(&name), &egui::FontId::proportional(13.5), 160.0);
-                ui.painter().text(egui::pos2(r.left() + 30.0, r.center().y), egui::Align2::LEFT_CENTER, shown, egui::FontId::proportional(13.5), if on { TEXT } else { SECONDARY });
+                ui.painter().text(egui::pos2(r.left() + 30.0, r.center().y), egui::Align2::LEFT_CENTER, shown, egui::FontId::proportional(13.5), if on || (crate::theme::p().black && resp.hovered()) { TEXT } else { SECONDARY });
                 if resp.clicked() {
                     input(acts, ChannelInput::Select(ow.id.clone()));
                 }

@@ -192,7 +192,7 @@ fn leave_button(ui: &mut Ui, w: f32, h: f32, leaving: bool) -> egui::Response {
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
     let fill = DANGER.lerp_to_gamma(DANGER_HOVER, t).gamma_multiply(if leaving { 0.5 } else { 1.0 });
     crate::theme::capsule(ui.painter(), rect, fill, 0x50);
-    glyph(ui.painter(), rect.center(), I_HANGUP, h * 0.42, Color32::WHITE, false);
+    glyph(ui.painter(), rect.center(), I_HANGUP, h * 0.42, if th::p().black { DANGER } else { Color32::WHITE }, false);
     resp.on_hover_text("Leave call")
 }
 
@@ -206,7 +206,7 @@ fn call_button(ui: &mut Ui, g: &str, label: &str, fill: Color32) -> bool {
         let rect = crate::theme::pulled(rect, crate::theme::pull(ui, &mut resp));
         let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
         crate::theme::capsule(ui.painter(), rect, fill.lerp_to_gamma(Color32::BLACK, t * 0.15), 0x50);
-        glyph(ui.painter(), rect.center(), g, 22.0, Color32::WHITE, false);
+        glyph(ui.painter(), rect.center(), g, 22.0, if th::p().black { fill } else { Color32::WHITE }, false);
         let (lr, _) = ui.allocate_exact_size(vec2(64.0, 16.0), Sense::hover());
         ui.painter().text(lr.center(), egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(13.0), SECONDARY);
         clicked = resp.clicked();
@@ -221,6 +221,9 @@ fn tile_pill(ui: &mut Ui, at: egui::Pos2, text: &str, fill: Color32, id: egui::I
     let mut resp = ui.interact(rect, id, Sense::click_and_drag());
     let rect = crate::theme::pulled(rect, crate::theme::pull(ui, &mut resp));
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
+    if th::p().black {
+        ui.painter().rect_filled(rect, 8.0, Color32::from_black_alpha(0xA0)); // it lies on video: the word must stay readable
+    }
     crate::theme::plate(ui.painter(), rect, 8.0, fill.lerp_to_gamma(Color32::WHITE, t * 0.12), 0x40);
     ui.painter().galley(rect.center() - g.size() / 2.0, g, Color32::WHITE);
     resp.clicked()
@@ -232,7 +235,8 @@ fn tile_icon(ui: &mut Ui, at: egui::Pos2, g: &str, tip: &str, id: egui::Id) -> b
     let mut resp = ui.interact(rect, id, Sense::click_and_drag());
     let rect = crate::theme::pulled(rect, crate::theme::pull(ui, &mut resp));
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
-    ui.painter().circle_filled(rect.center(), 14.0 + t, k_raised().lerp_to_gamma(Color32::WHITE, t * 0.12));
+    let under = if th::p().black { Color32::from_black_alpha(0xA0) } else { k_raised().lerp_to_gamma(Color32::WHITE, t * 0.12) }; // on video too
+    ui.painter().circle_filled(rect.center(), 14.0 + t, under);
     glyph(ui.painter(), rect.center(), g, 12.0, Color32::WHITE, false);
     resp.on_hover_text(tip).clicked()
 }
@@ -926,10 +930,11 @@ impl ShareMenu {
                                 }
                                 if on {
                                     let c = pos2(pic.right() - 14.0, pic.top() + 14.0);
-                                    ui.painter().circle_filled(c, 11.0, pal.accent);
+                                    // Black: a dark disc, so the tick reads on the picture of the screen
+                                    ui.painter().circle_filled(c, 11.0, if pal.black { Color32::from_black_alpha(0xA0) } else { pal.accent });
                                     glyph(ui.painter(), c, "\u{E73E}", 12.0, pal.on_accent, false);
                                 }
-                                ui.painter().text(pos2(rect.center().x, rect.bottom() - 19.0), egui::Align2::CENTER_CENTER, &x.title, egui::FontId::new(13.0, th::semibold()), if on { TEXT } else { SECONDARY });
+                                ui.painter().text(pos2(rect.center().x, rect.bottom() - 19.0), egui::Align2::CENTER_CENTER, &x.title, egui::FontId::new(13.0, th::semibold()), if on || (pal.black && resp.hovered()) { TEXT } else { SECONDARY });
                                 if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                                     self.picked = Some(x.source.clone());
                                 }
@@ -970,7 +975,7 @@ impl ShareMenu {
                                 38.0
                             };
                             let clip = ui.painter().with_clip_rect(Rect::from_min_max(pos2(rect.left() + tx0, rect.top()), pos2(rect.right() - 12.0, rect.bottom())));
-                            clip.text(pos2(rect.left() + tx0, rect.center().y), egui::Align2::LEFT_CENTER, &x.title, egui::FontId::proportional(13.5), if on { TEXT } else { SECONDARY });
+                            clip.text(pos2(rect.left() + tx0, rect.center().y), egui::Align2::LEFT_CENTER, &x.title, egui::FontId::proportional(13.5), if on || (pal.black && resp.hovered()) { TEXT } else { SECONDARY });
                             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                                 self.picked = Some(x.source.clone());
                             }
@@ -1002,7 +1007,9 @@ impl ShareMenu {
                 let sw_rect = Rect::from_center_size(pos2(row.right() - 24.0, row.center().y), vec2(44.0, 24.0));
                 let on = self.quality.high_quality;
                 let k = ui.ctx().animate_bool_with_time(resp.id, on, QUICK);
-                ui.painter().rect_filled(sw_rect, 12.0, k_raised().lerp_to_gamma(pal.accent, k));
+                if !pal.black {
+                    ui.painter().rect_filled(sw_rect, 12.0, k_raised().lerp_to_gamma(pal.accent, k));
+                }
                 ui.painter().circle_filled(pos2(sw_rect.left() + 12.0 + 20.0 * k, sw_rect.center().y), 9.0, if on { pal.on_accent } else { SECONDARY });
                 if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                     self.quality.high_quality = !on;

@@ -229,7 +229,9 @@ fn card(ui: &mut Ui, s: &AppState, post: &ForumPost, now: u64, tex: &mut HashMap
                         ui.spacing_mut().item_spacing.x = 6.0;
                         if post.thread.pinned {
                             let (pr, _) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::hover());
-                            ui.painter().circle_filled(pr.center(), 10.0, p().accent);
+                            if !p().black {
+                                ui.painter().circle_filled(pr.center(), 10.0, p().accent);
+                            }
                             glyph(ui.painter(), pr.center(), I_PIN, 11.0, p().on_accent, false);
                         }
                         for t in post.tags.iter().take(3) {
@@ -244,7 +246,7 @@ fn card(ui: &mut Ui, s: &AppState, post: &ForumPost, now: u64, tex: &mut HashMap
                     let bright = post.new || post.thread.unread;
                     ui.add(egui::Label::new(sb(&post.thread.name, 16.0).color(if bright { TEXT } else { SECONDARY })).truncate());
                     if post.new {
-                        egui::Frame::new().fill(p().accent).corner_radius(12.0).inner_margin(egui::Margin::symmetric(6, 1)).show(ui, |ui| {
+                        egui::Frame::new().fill(if p().black { Color32::TRANSPARENT } else { p().accent }).corner_radius(12.0).inner_margin(egui::Margin::symmetric(6, 1)).show(ui, |ui| {
                             ui.label(sb("NEW", 10.0).color(p().on_accent));
                         });
                     }

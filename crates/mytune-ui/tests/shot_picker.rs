@@ -25,7 +25,12 @@ fn pickers() {
     h.run_steps(20);
     let out = std::env::var("SHOT_DIR").unwrap_or_else(|_| ".".into());
     // "stickers" clicks the third tab of the open emoji picker; it exists only with feature `local-stickers`
-    for (x, y, name) in [(440.0, 843.0, "plus"), (1121.0, 843.0, "emoji"), (907.0, 378.0, "stickers"), (1078.0, 843.0, "gifs")] {
+    // the sticker button sits between GIF and emoji, one button step (43 px) left of emoji's neighbour
+    let (sticker_x, gif_x) = if cfg!(feature = "local-stickers") { (1078.0, 1035.0) } else { (0.0, 1078.0) };
+    for (x, y, name) in [(440.0, 843.0, "plus"), (1121.0, 843.0, "emoji"), (907.0, 378.0, "stickers"), (sticker_x, 843.0, "sticker_button"), (gif_x, 843.0, "gifs")] {
+        if name == "sticker_button" && !cfg!(feature = "local-stickers") {
+            continue;
+        }
         if name == "stickers" && !cfg!(feature = "local-stickers") {
             continue;
         }

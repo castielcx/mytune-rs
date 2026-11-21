@@ -248,13 +248,17 @@ fn rail_icon(ui: &mut Ui, tex: Option<egui::TextureId>, name: &str, selected: bo
     let radius = egui::lerp(24.0..=16.0, round);
     match tex {
         Some(id) => {
-            egui::Image::new(egui::load::SizedTexture::new(id, rect.size())).corner_radius(radius).paint_at(ui, rect);
+            // Black has no selection bar: the other icons are dimmed instead
+            let tint = if pal.black && !selected && !resp.hovered() { Color32::from_gray(0x90) } else { Color32::WHITE };
+            egui::Image::new(egui::load::SizedTexture::new(id, rect.size())).corner_radius(radius).tint(tint).paint_at(ui, rect);
         }
         None => {
             // the Direct messages tile is white when selected, whatever the accent (user's choice)
             let home = name == "@";
-            ui.painter().rect_filled(rect, radius, if selected && home { Color32::from_rgb(0xF2, 0xF2, 0xF2) } else if selected { pal.accent } else { k_active() });
-            let fg = if selected && home { Color32::from_rgb(0x1C, 0x1C, 0x1C) } else if selected { pal.on_accent } else { TEXT };
+            if !pal.black {
+                ui.painter().rect_filled(rect, radius, if selected && home { Color32::from_rgb(0xF2, 0xF2, 0xF2) } else if selected { pal.accent } else { k_active() });
+            }
+            let fg = if pal.black { th::hover_text(Color32::WHITE, selected || resp.hovered()) } else if selected && home { Color32::from_rgb(0x1C, 0x1C, 0x1C) } else if selected { pal.on_accent } else { TEXT };
             if name == "+" {
                 // two 2 px bars on the exact centre: the font's "+" sits off its box
                 let ppp = ui.ctx().pixels_per_point();
@@ -268,7 +272,7 @@ fn rail_icon(ui: &mut Ui, tex: Option<egui::TextureId>, name: &str, selected: bo
         }
     }
     // selected: a tall accent bar; unread: a short white pill on the left edge, as Discord does
-    let target = if selected { 28.0 } else if unread || pings > 0 { 8.0 } else { 0.0 };
+    let target = if selected { if pal.black { 0.0 } else { 28.0 } } else if unread || pings > 0 { 8.0 } else { 0.0 };
     let h = ui.ctx().animate_value_with_time(resp.id.with("bar"), target, 0.16);
     if h > 0.5 {
         let bar = egui::Rect::from_center_size(egui::pos2(rect.left() - 12.0, rect.center().y), vec2(4.0, h));
@@ -280,8 +284,9 @@ fn rail_icon(ui: &mut Ui, tex: Option<egui::TextureId>, name: &str, selected: bo
         let badge = egui::Rect::from_min_size(egui::pos2(rect.right() - w + 6.0, rect.bottom() - 16.0), vec2(w, 18.0));
         let red = Color32::from_rgb(0xF2, 0x3F, 0x42);
         ui.painter().rect_filled(badge.expand(2.0), 11.0, k_rail());
-        ui.painter().rect_filled(badge, 14.0, red);
-        ui.painter().text(badge.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::new(11.0, th::semibold()), Color32::WHITE);
+        // Black: the number in red on plain black, so it stays readable over the server's picture
+        ui.painter().rect_filled(badge, 14.0, if pal.black { Color32::BLACK } else { red });
+        ui.painter().text(badge.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::new(11.0, th::semibold()), if pal.black { red } else { Color32::WHITE });
     }
     resp
 }
@@ -584,10 +589,12 @@ fn message_list(ui: &mut Ui, s: &AppState, msgs: &[std::sync::Arc<mytune_chat::y
             ui.add_space(10.0);
             let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 14.0), Sense::hover());
             let y = line.center().y;
-            ui.painter().line_segment([egui::pos2(line.left() + 8.0, y), egui::pos2(line.right() - 44.0, y)], egui::Stroke::new(1.0, DANGER));
             let tag = egui::Rect::from_min_size(egui::pos2(line.right() - 40.0, y - 7.0), vec2(36.0, 14.0));
-            ui.painter().rect_filled(tag, 10.0, DANGER);
-            ui.painter().text(tag.center(), egui::Align2::CENTER_CENTER, "NEW", egui::FontId::new(9.5, th::bold()), Color32::WHITE);
+            if !p().black {
+                ui.painter().line_segment([egui::pos2(line.left() + 8.0, y), egui::pos2(line.right() - 44.0, y)], egui::Stroke::new(1.0, DANGER));
+                ui.painter().rect_filled(tag, 10.0, DANGER);
+            }
+            ui.painter().text(tag.center(), egui::Align2::CENTER_CENTER, "NEW", egui::FontId::new(9.5, th::bold()), if p().black { DANGER } else { Color32::WHITE });
             if matches!(scroll, Some(Scroll::To(item)) if *item == m.item) {
                 ui.scroll_to_rect(line, Some(Align::TOP));
                 *scroll = None;
@@ -1309,7 +1316,7 @@ impl ChatPage {
                             ui.painter().text(egui::pos2(x + 2.0, rect.center().y), egui::Align2::LEFT_CENTER, if r.voice { "\u{266A}" } else { "#" }, egui::FontId::proportional(17.0), MUTED);
                             x += 22.0;
                         }
-                        let color = if on || unread { TEXT } else { SECONDARY };
+                        let color = if on || unread || (p().black && resp.hovered()) { TEXT } else { SECONDARY };
                         let font = if unread { th::semibold() } else { egui::FontFamily::Proportional };
                         // under a DM's name (never the last message, by the user's choice): the voice channel
                         // they are in (speaker icon), else the game they play (green gamepad), else their custom status
@@ -1361,8 +1368,10 @@ impl ChatPage {
                             if let Some(("LIVE", _)) = icon {
                                 let g = ui.painter().layout_no_wrap("LIVE".to_owned(), egui::FontId::new(9.5, th::bold()), Color32::WHITE);
                                 let pill = egui::Rect::from_min_size(egui::pos2(x, rect.center().y + 2.0), vec2(g.size().x + 10.0, 14.0));
-                                ui.painter().rect_filled(pill, 4.0, DANGER);
-                                ui.painter().galley(pill.center() - g.size() / 2.0, g, Color32::WHITE);
+                                if !p().black {
+                                    ui.painter().rect_filled(pill, 4.0, DANGER);
+                                }
+                                ui.painter().galley_with_override_text_color(pill.center() - g.size() / 2.0, g, if p().black { DANGER } else { Color32::WHITE });
                                 tx += pill.width() + 4.0;
                             } else if let Some((g, c)) = icon {
                                 // Segoe Fluent icons are drawn for 16 px; smaller sizes blur
@@ -1432,8 +1441,10 @@ impl ChatPage {
                                 // the red LIVE pill of the call tile, small
                                 let g = ui.painter().layout_no_wrap("LIVE".to_owned(), egui::FontId::new(9.5, th::bold()), Color32::WHITE);
                                 let pill = egui::Rect::from_min_size(egui::pos2(pr.right() - 8.0 - g.size().x - 10.0, pr.center().y - 8.0), vec2(g.size().x + 10.0, 16.0));
-                                ui.painter().rect_filled(pill, 5.0, DANGER);
-                                ui.painter().galley(pill.center() - g.size() / 2.0, g, Color32::WHITE);
+                                if !p().black {
+                                    ui.painter().rect_filled(pill, 5.0, DANGER);
+                                }
+                                ui.painter().galley_with_override_text_color(pill.center() - g.size() / 2.0, g, if p().black { DANGER } else { Color32::WHITE });
                                 ix = pill.left() - 12.0;
                                 // a click shows what they stream, without joining
                                 let hit = ui.interact(pill.expand(3.0), ui.id().with(("live_preview", &r.id, &pe.id)), Sense::click());
@@ -1637,13 +1648,19 @@ impl ChatPage {
                                     let (r, resp) = ui.allocate_exact_size(vec2(34.0, 34.0), Sense::click());
                                     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered() || on, voice::QUICK);
                                     let font = if g == "GIF" { egui::FontId::new(11.0, th::bold()) } else { egui::FontId::new(18.0, th::icons()) };
-                                    ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, g, font, SECONDARY.lerp_to_gamma(TEXT, t));
+                                    let color = SECONDARY.lerp_to_gamma(TEXT, t);
+                                    if g == "sticker" {
+                                        picker::sticker_icon(ui.painter(), r.center(), color);
+                                    } else {
+                                        ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, g, font, color);
+                                    }
                                     resp.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
                                 };
                                 if icon(ui, "\u{E710}", "Upload a file, create a poll", pu.open) {
                                     pu.toggle();
                                 }
-                                let w = ui.available_width() - 3.0 * 40.0;
+                                let right_icons = if cfg!(feature = "local-stickers") { 4.0 } else { 3.0 };
+                                let w = ui.available_width() - right_icons * 40.0;
                                 compose::files(&ctx, acts);
                                 compose::before_edit(&ctx, s, draft, acts);
                                 let out = egui::TextEdit::singleline(draft).id(compose::edit_id()).frame(egui::Frame::NONE).desired_width(w).hint_text(rt(format!("Message {name}"), 14.0).color(FAINT)).font(egui::FontId::proportional(14.0)).show(ui);
@@ -1675,7 +1692,10 @@ impl ChatPage {
                                 if icon(ui, "GIF", "GIFs", open && pk.gifs()) {
                                     pk.toggle(picker::For::Composer, true, at, acts);
                                 }
-                                if icon(ui, "\u{E76E}", "Emoji", open && !pk.gifs()) {
+                                if cfg!(feature = "local-stickers") && icon(ui, "sticker", "Stickers", open && pk.stickers()) {
+                                    pk.toggle_stickers(at, acts);
+                                }
+                                if icon(ui, "\u{E76E}", "Emoji", open && !pk.gifs() && !pk.stickers()) {
                                     pk.toggle(picker::For::Composer, false, at, acts);
                                 }
                             });

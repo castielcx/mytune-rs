@@ -10,6 +10,7 @@ use crate::reg::{self, Hive, RegValue};
 use std::time::Duration;
 
 const TASK: &str = "MyTune";
+const HELPER: &str = "MyTuneStart.exe";
 pub const MINIMIZED_ARG: &str = "--minimized";
 const RUN: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const APPROVED: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run";
@@ -24,13 +25,41 @@ pub fn is_enabled() -> bool {
 
 fn set_run_key(on: bool) -> crate::Result<()> {
     if on {
-        let cmd = format!("\"{}\" /run /tn {TASK}", system32("schtasks.exe").display());
+        // The helper has no console and is named MyTune in Startup apps; a missing helper must not break autostart.
+        let cmd = match std::env::current_exe().map(|e| e.with_file_name(HELPER)) {
+            Ok(h) if h.is_file() => format!("\"{}\"", h.display()),
+            _ => format!("\"{}\" /run /tn {TASK}", system32("schtasks.exe").display()),
+        };
         reg::set(Hive::Hkcu, RUN, TASK, &RegValue::String(cmd))?;
         // 02 00 00 00 ... = enabled (clears a previous "disabled in Task Manager" state)
         reg::set(Hive::Hkcu, APPROVED, TASK, &RegValue::Binary(vec![2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
     } else {
         reg::delete_value(Hive::Hkcu, RUN, TASK)?;
         reg::delete_value(Hive::Hkcu, APPROVED, TASK)
+    }
+}
+
+/// The Run value older versions wrote: schtasks directly, which flashes a console at sign-in.
+fn is_old_run_value(v: &str) -> bool {
+    let v = v.replace('"', "").trim().to_ascii_lowercase();
+    v.contains("schtasks") && v.ends_with("/run /tn mytune")
+}
+
+/// Moves an old Run value to the helper. Leaves StartupApproved alone, so autostart disabled in Task Manager stays disabled.
+pub fn migrate_run_key() {
+    let Ok(exe) = std::env::current_exe() else { return };
+    let helper = exe.with_file_name(HELPER);
+    let Ok(Some(RegValue::String(v))) = reg::get(Hive::Hkcu, RUN, TASK) else { return };
+    if !is_old_run_value(&v) || !helper.is_file() {
+        return;
+    }
+    // Only the copy the task starts: a test or preview build must not point the Run value at its own folder.
+    let schtasks_exe = system32("schtasks.exe");
+    let query = run_with(&schtasks_exe.to_string_lossy(), &["/Query", "/TN", TASK, "/XML"], Duration::from_secs(15), None);
+    let wanted = xml_escape(&exe.to_string_lossy()).to_lowercase();
+    if query.is_ok_and(|r| r.exit_code == 0 && r.output.to_lowercase().contains(&wanted)) {
+        let ok = reg::set(Hive::Hkcu, RUN, TASK, &RegValue::String(format!("\"{}\"", helper.display()))).is_ok();
+        log::info(&format!("Autostart Run value moved to the helper: {ok}"));
     }
 }
 
@@ -95,6 +124,14 @@ mod tests {
         assert!(x.contains("<Command>C:\\Program Files\\My&apos;Tune\\mytune.exe</Command><Arguments>--minimized</Arguments>"));
         assert!(x.contains("<RunLevel>HighestAvailable</RunLevel>"));
         assert!(x.contains("<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>"));
+    }
+
+    #[test]
+    fn old_run_value_detected() {
+        assert!(is_old_run_value(r#""C:\WINDOWS\System32\schtasks.exe" /run /tn MyTune"#));
+        assert!(is_old_run_value("schtasks /run /tn MyTune"));
+        assert!(!is_old_run_value(r#""C:\Apps\MyTune\MyTuneStart.exe""#));
+        assert!(!is_old_run_value(r#""C:\WINDOWS\System32\schtasks.exe" /run /tn Other"#));
     }
 
     /// Read only. Never calls enable/disable: that would repoint the real "MyTune" task.

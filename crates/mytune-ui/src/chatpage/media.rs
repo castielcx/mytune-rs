@@ -363,7 +363,7 @@ fn poll_card(ui: &mut Ui, m: &ChatMessage, q: &Poll, acts: &mut Vec<Action>) {
         for a in &q.answers {
             let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 38.0), Sense::click());
             ui.painter().rect_filled(rect, 10.0, k_raised());
-            if total > 0 && a.votes > 0 {
+            if total > 0 && a.votes > 0 && !pal.black {
                 let mut bar = rect;
                 bar.set_width(rect.width() * a.votes as f32 / total as f32);
                 ui.painter().rect_filled(bar, 10.0, if a.mine { pal.accent.gamma_multiply(0.45) } else { k_active() });
@@ -375,7 +375,7 @@ fn poll_card(ui: &mut Ui, m: &ChatMessage, q: &Poll, acts: &mut Vec<Action>) {
                 Some(e) if !e.starts_with(':') => format!("{e} {}", a.text),
                 _ => a.text.clone(),
             };
-            ui.painter().text(pos2(rect.left() + 12.0, rect.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::new(13.5, egui::FontFamily::Proportional), TEXT);
+            ui.painter().text(pos2(rect.left() + 12.0, rect.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::new(13.5, egui::FontFamily::Proportional), crate::theme::hover_text(TEXT, a.mine || resp.hovered()));
             let pct = if total > 0 { a.votes * 100 / total } else { 0 };
             ui.painter().text(pos2(rect.right() - 12.0, rect.center().y), egui::Align2::RIGHT_CENTER, format!("{} · {pct}%", a.votes), egui::FontId::new(12.0, egui::FontFamily::Proportional), SECONDARY);
             if !q.finalized && resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -454,6 +454,11 @@ thread_local! {
 /// The texture of an animated picture at this moment (GIF, APNG, animated WebP), moving on by itself; none for a
 /// still or when the file cannot be read, and the caller shows the first frame then.
 pub fn animated(ctx: &egui::Context, key: &str, pic: &Picture) -> Option<egui::TextureId> {
+    played(ctx, key, pic, true)
+}
+
+/// As [`animated`], but with `repeat` off the run ends at its last frame: the player goes and this returns none.
+pub fn played(ctx: &egui::Context, key: &str, pic: &Picture, repeat: bool) -> Option<egui::TextureId> {
     let anim = pic.animation.as_ref()?;
     if anim.delays.len() < 2 || anim.delays.len() > 900 {
         return None;
@@ -475,6 +480,10 @@ pub fn animated(ctx: &egui::Context, key: &str, pic: &Picture) -> Option<egui::T
         if now >= p.next_at {
             let next = match p.frames.next() {
                 Some(f) => Some((f, p.frame + 1)),
+                None if !repeat => {
+                    players.remove(key);
+                    return None;
+                }
                 None => {
                     // the loop ends: start over
                     p.frames = pic.frames();

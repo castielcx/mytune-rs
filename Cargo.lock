@@ -4466,6 +4466,7 @@ name = "mytune-ui"
 version = "0.2.0"
 dependencies = [
  "eframe",
+ "egui",
  "egui_kittest",
  "image",
  "memmap2",

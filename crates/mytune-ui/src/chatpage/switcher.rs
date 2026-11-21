@@ -57,7 +57,7 @@ pub fn show(ctx: &egui::Context, s: &AppState, tex: &mut HashMap<String, Texture
             };
             let t = texture(ctx, tex, asked, s, &pic, want);
             avatar(ui, egui::Rect::from_center_size(egui::pos2(rect.left() + 24.0, rect.center().y), vec2(28.0, 28.0)), t, &name);
-            ui.painter().text(egui::pos2(rect.left() + 48.0, rect.center().y), egui::Align2::LEFT_CENTER, tidy(&name), egui::FontId::new(14.5, th::semibold()), TEXT);
+            ui.painter().text(egui::pos2(rect.left() + 48.0, rect.center().y), egui::Align2::LEFT_CENTER, tidy(&name), egui::FontId::new(14.5, th::semibold()), th::hover_text(TEXT, i == index || resp.hovered()));
             ui.painter().text(egui::pos2(rect.right() - 12.0, rect.center().y), egui::Align2::RIGHT_CENTER, kind, egui::FontId::proportional(12.0), MUTED);
             if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                 go = Some(id);

@@ -152,7 +152,7 @@ fn track(ui: &mut Ui, value: &mut f32, range: std::ops::RangeInclusive<f32>) -> 
     if glass > 0.01 {
         ui.painter().add(crate::lens::shape(thumb, crate::lens::Lens { radius: thumb.height() / 2.0, rim: thumb.height() * 0.45, bend: 5.0 * glass, zoom: 1.0 + 0.25 * glass, blur: 0.0, split: 0.3 }));
     }
-    th::capsule(ui.painter(), thumb, Color32::WHITE.gamma_multiply(1.0 - 0.8 * glass), 0x60);
+    th::capsule(ui.painter(), thumb, if p().black { Color32::WHITE } else { Color32::WHITE.gamma_multiply(1.0 - 0.8 * glass) }, 0x60);
     let resp = resp.on_hover_cursor(egui::CursorIcon::PointingHand);
     (changed, resp.drag_stopped() || resp.clicked())
 }
@@ -243,7 +243,7 @@ pub fn screen(ui: &mut Ui, su: &mut SettingsUi, chat: &Chat, later: &mut Later, 
             let (r, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 34.0), Sense::click());
             let t = ctx.animate_bool_with_time(resp.id, resp.hovered(), QUICK);
             ui.painter().rect_filled(r, 10.0, if on { k_active() } else { k_hover().gamma_multiply(t) });
-            ui.painter().text(pos2(r.left() + 10.0, r.center().y), egui::Align2::LEFT_CENTER, *name, egui::FontId::proportional(14.5), if on { TEXT } else { SECONDARY });
+            ui.painter().text(pos2(r.left() + 10.0, r.center().y), egui::Align2::LEFT_CENTER, *name, egui::FontId::proportional(14.5), if on || (p().black && resp.hovered()) { TEXT } else { SECONDARY });
             if resp.clicked() && !on {
                 su.page = i;
                 su.meter = None;
@@ -277,7 +277,9 @@ pub fn screen(ui: &mut Ui, su: &mut SettingsUi, chat: &Chat, later: &mut Later, 
         let c = pos2(area.right() - 48.0, area.top() + 52.0);
         let resp = ui.interact(Rect::from_center_size(c, vec2(36.0, 36.0)), egui::Id::new("settings_close"), Sense::click());
         let t = ctx.animate_bool_with_time(resp.id, resp.hovered(), QUICK);
-        ui.painter().circle_stroke(c, 18.0, Stroke::new(2.0, SECONDARY.lerp_to_gamma(TEXT, t)));
+        if !th::p().black {
+            ui.painter().circle_stroke(c, 18.0, Stroke::new(2.0, SECONDARY.lerp_to_gamma(TEXT, t)));
+        }
         glyph(ui.painter(), c, I_CLOSE, 13.0, SECONDARY.lerp_to_gamma(TEXT, t), false);
         ui.painter().text(c + vec2(0.0, 30.0), egui::Align2::CENTER_CENTER, "ESC", egui::FontId::new(11.0, th::semibold()), MUTED);
         if resp.clicked() {
@@ -962,7 +964,9 @@ fn own_card(ctx: &egui::Context, su: &mut SettingsUi, s: &AppState, anchor: Rect
             match texture(ctx, tex, asked, s, &banner_url, want) {
                 Some(t) => egui::Image::new(egui::load::SizedTexture::new(t, banner.size())).corner_radius(top).paint_at(ui, banner),
                 None => {
-                    ui.painter().rect_filled(banner, top, accent);
+                    if !p().black {
+                ui.painter().rect_filled(banner, top, accent);
+            }
                 }
             }
             let av = 80.0;
@@ -1008,7 +1012,7 @@ fn own_card(ctx: &egui::Context, su: &mut SettingsUi, s: &AppState, anchor: Rect
                     if let Some(p) = dot {
                         super::header::badge(ui.painter(), c, 6.0, p);
                     }
-                    ui.painter().text(pos2(r.left() + 42.0, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(13.5), TEXT);
+                    ui.painter().text(pos2(r.left() + 42.0, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::proportional(13.5), th::hover_text(TEXT, resp.hovered()));
                     if chevron {
                         glyph(ui.painter(), pos2(r.right() - 14.0, r.center().y), "\u{E76C}", 11.0, MUTED, false);
                     }
@@ -1071,10 +1075,11 @@ fn own_card(ctx: &egui::Context, su: &mut SettingsUi, s: &AppState, anchor: Rect
                     }
                     super::header::badge(ui.painter(), egui::pos2(r.left() + 18.0, r.center().y), 6.0, Some(p));
                     let x = r.left() + 38.0;
+                    let ink = th::hover_text(TEXT, rr.hovered() || cur == key);
                     if note.is_empty() {
-                        ui.painter().text(egui::pos2(x, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::new(13.5, th::semibold()), TEXT);
+                        ui.painter().text(egui::pos2(x, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::new(13.5, th::semibold()), ink);
                     } else {
-                        ui.painter().text(egui::pos2(x, r.center().y - 8.0), egui::Align2::LEFT_CENTER, label, egui::FontId::new(13.5, th::semibold()), TEXT);
+                        ui.painter().text(egui::pos2(x, r.center().y - 8.0), egui::Align2::LEFT_CENTER, label, egui::FontId::new(13.5, th::semibold()), ink);
                         ui.painter().text(egui::pos2(x, r.center().y + 9.0), egui::Align2::LEFT_CENTER, note, egui::FontId::proportional(11.5), MUTED);
                     }
                     if rr.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
@@ -1135,10 +1140,11 @@ fn status_menu(ctx: &egui::Context, s: &AppState, anchor: egui::Rect, acts: &mut
                 let c = egui::pos2(r.left() + 18.0, r.center().y);
                 super::header::badge(ui.painter(), c, 6.0, Some(presence));
                 let x = r.left() + 38.0;
+                let ink = th::hover_text(TEXT, lit);
                 if note.is_empty() {
-                    ui.painter().text(egui::pos2(x, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::new(13.5, th::semibold()), TEXT);
+                    ui.painter().text(egui::pos2(x, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::new(13.5, th::semibold()), ink);
                 } else {
-                    ui.painter().text(egui::pos2(x, r.center().y - 8.0), egui::Align2::LEFT_CENTER, label, egui::FontId::new(13.5, th::semibold()), TEXT);
+                    ui.painter().text(egui::pos2(x, r.center().y - 8.0), egui::Align2::LEFT_CENTER, label, egui::FontId::new(13.5, th::semibold()), ink);
                     ui.painter().text(egui::pos2(x, r.center().y + 9.0), egui::Align2::LEFT_CENTER, note, egui::FontId::proportional(11.5), MUTED);
                 }
                 if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {

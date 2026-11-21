@@ -23,16 +23,21 @@ pub struct Palette {
     pub hero_bg: Color32,
     /// red, crimson, maroon, amber, orange
     pub block: [Color32; 5],
+    /// Black preset: white accents over a plain black page.
+    pub black: bool,
 }
 
 pub const TEXT: Color32 = Color32::WHITE;
-pub fn text2() -> Color32 { Color32::from_white_alpha(0xCC) }
-pub fn text3() -> Color32 { Color32::from_white_alpha(0xB0) } // 4.5:1 on the brightest backdrop spot under glass
+// Black: nothing is drawn behind a selected or hovered item, so the dimmer rest is what marks it
+pub fn text2() -> Color32 { Color32::from_white_alpha(if p().black { 0xA0 } else { 0xCC }) }
+pub fn text3() -> Color32 { Color32::from_white_alpha(if p().black { 0x90 } else { 0xB0 }) } // 4.5:1 on the brightest backdrop spot under glass
 pub fn control_bg() -> Color32 { Color32::from_white_alpha(0x14) }
 pub fn control_border() -> Color32 { Color32::from_white_alpha(0x33) }
 pub const SUCCESS: Color32 = Color32::from_rgb(0x6C, 0xCB, 0x5F);
 pub const WARNING: Color32 = Color32::from_rgb(0xFF, 0xD4, 0x00);
 pub const DANGER: Color32 = Color32::from_rgb(0xFF, 0x7A, 0x6B);
+/// Link blue ("More info").
+pub const LINK: Color32 = Color32::from_rgb(0x4C, 0xA8, 0xFF);
 pub fn success_soft() -> Color32 { Color32::from_rgba_unmultiplied(0x6C, 0xCB, 0x5F, 0x26) }
 pub fn warning_soft() -> Color32 { Color32::from_rgba_unmultiplied(0xFF, 0xD4, 0x00, 0x26) }
 pub fn danger_soft() -> Color32 { Color32::from_rgba_unmultiplied(0xFF, 0x7A, 0x6B, 0x26) }
@@ -86,6 +91,8 @@ impl Palette {
         let h = hex.trim().trim_start_matches('#');
         let h = if h.len() != 6 || h.eq_ignore_ascii_case("60CDFF") { "FF5A0A" } else { h };
         let n = u32::from_str_radix(h, 16).unwrap_or(0xFF5A0A);
+        let black = n == 0;
+        let n = if black { 0xF2F2F2 } else { n };
         let c = [((n >> 16) & 255) as f32, ((n >> 8) & 255) as f32, (n & 255) as f32];
         let (hue, sat, _) = to_hsv(c);
         let k = (sat / 0.3).min(1.0);
@@ -94,19 +101,20 @@ impl Palette {
             accent: Color32::from_rgb(c[0] as u8, c[1] as u8, c[2] as u8),
             accent_dark: scale(c, 0.72),
             accent_deep: scale(c, 0.45),
-            on_accent: if (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) / 255.0 < 0.62 { Color32::WHITE } else { scale(c, 0.17) }, // white unless the accent is too light for it
+            on_accent: if black || (0.299 * c[0] + 0.587 * c[1] + 0.114 * c[2]) / 255.0 < 0.62 { Color32::WHITE } else { scale(c, 0.17) }, // white unless the accent is too light for it (Black has no accent plate under it)
             accent_soft: Color32::from_rgba_unmultiplied(c[0] as u8, c[1] as u8, c[2] as u8, 0x26),
             // glass: side, side_selected and card_bg are translucent white, drawn over `backdrop`
             side: Color32::from_white_alpha(0x0D),
             side_selected: Color32::from_white_alpha(0x2C),
             side_text: Color32::WHITE,
-            side_muted: Color32::from_white_alpha(0xB8),
-            layer_bg: t(0.0, 0.35, 0.06),
+            side_muted: Color32::from_white_alpha(if black { 0x90 } else { 0xB8 }),
+            layer_bg: if black { Color32::BLACK } else { t(0.0, 0.35, 0.06) },
             card_bg: Color32::from_white_alpha(0x0D),
             card_hover: t(0.0, 0.3, 0.17),
             ink: t(0.0, 0.5, 0.045),
             hero_bg: t(0.0, 0.7, 0.42),
             block: [t(-0.02, 0.8, 0.6), t(-0.05, 0.9, 0.45), t(-0.02, 0.85, 0.32), t(0.05, 0.8, 0.66), t(0.0, 0.75, 0.55)],
+            black,
         }
     }
 }
@@ -335,6 +343,9 @@ const BACKDROP_LUM: f32 = 0.022;
 /// window size (in 16 px steps) or the accent changes.
 pub fn backdrop(ctx: &egui::Context, p: &egui::Painter, rect: Rect) {
     glow_textures(ctx);
+    if self::p().black {
+        return;
+    }
     let (w, h) = (((rect.width() / 16.0).ceil() as usize).max(1), ((rect.height() / 16.0).ceil() as usize).max(1));
     let key = (w, h, self::p().accent.to_array(), self::p().layer_bg.to_array());
     let id = egui::Id::new("backdrop_tex");
@@ -434,8 +445,12 @@ pub fn backdrop_at(rect: Rect, pos: Pos2) -> Color32 {
 fn field(rect: Rect) -> impl Fn(Pos2) -> [f32; 3] {
     let rgb = |c: Color32| [c.r() as f32, c.g() as f32, c.b() as f32];
     let bg = rgb(self::p().layer_bg);
+    let black = self::p().black;
     let blobs = blobs(rect).map(|(centre, r, col, al)| (centre, r, rgb(col), al));
     move |pos| {
+        if black {
+            return [0.0; 3];
+        }
         let mut c = bg;
         for (centre, r, col, al) in blobs {
             // 1 at the centre, 0 at the radius; TIP rounds the centre, which was a cone point
@@ -613,6 +628,9 @@ fn outline(rect: Rect, r: f32) -> Vec<Pos2> {
 /// The light on a plate: a soft glow inside that is strongest at the top, and a rim one pixel wide that is `hi`
 /// strong along the top and falls to `rim` by the middle of the sides. Both follow the plate's own outline.
 fn sheen_into(out: &mut Vec<egui::Shape>, rect: Rect, r: f32, (rim, hi, glow): (u8, u8, u8), over: bool) {
+    if p().black {
+        return;
+    }
     // a plate thinner than its rim (window being minimised, a panel closing): nothing to light, and the maths
     // below once panicked on such a plate and closed the app
     let (ppp, tex) = GLOW.with(|g| (g.borrow().0.max(0.5), g.borrow().1.iter().find(|(s, _)| *s == glow).map(|(_, t)| *t)));
@@ -710,6 +728,9 @@ fn ribbon(out: &mut Vec<egui::Shape>, pts: &[(Pos2, f32)], half: f32) {
 /// A raised glass plate for a control (button, field, chip) with corner radius `r`: fill and the same light as
 /// any plate. `rim` is how bright its top edge is.
 pub fn plate(p: &egui::Painter, rect: Rect, r: f32, fill: Color32, rim: u8) {
+    if self::p().black {
+        return;
+    }
     let r = r.min(rect.height() / 2.0).min(rect.width() / 2.0);
     let mut shapes = Vec::with_capacity(3);
     shapes.push(egui::Shape::rect_filled(rect, r, fill));
@@ -719,7 +740,23 @@ pub fn plate(p: &egui::Painter, rect: Rect, r: f32, fill: Color32, rim: u8) {
 
 /// A fully round glass plate (knob, thumb, round button).
 pub fn capsule(p: &egui::Painter, rect: Rect, fill: Color32, rim: u8) {
+    // Black keeps grey and white capsules, the knobs; a coloured one is a button plate
+    if self::p().black && fill.r() == fill.g() && fill.g() == fill.b() {
+        p.rect_filled(rect, rect.height() / 2.0, fill);
+    }
     plate(p, rect, rect.height() / 2.0, fill, rim);
+}
+
+/// Black look's tick box: a tick when on, a dim dot when off. False in the other accents, which draw their box.
+pub fn bare_check(p: &egui::Painter, c: Pos2, on: bool) -> bool {
+    if self::p().black {
+        if on {
+            p.text(c, egui::Align2::CENTER_CENTER, "\u{E73E}", FontId::new(13.0, icons()), TEXT);
+        } else {
+            p.circle_filled(c, 2.5, text3());
+        }
+    }
+    self::p().black
 }
 
 /// A floating glass panel (menu, popover, picker) around `add`: the top level, `margin` px of padding. Frosted:
@@ -730,6 +767,10 @@ pub fn float<R>(ui: &mut Ui, radius: f32, margin: i8, add: impl FnOnce(&mut Ui) 
     let out = egui::Frame::new().inner_margin(Margin::same(margin)).show(ui, add);
     let rect = out.response.rect;
     let r = radius.min(rect.height() / 2.0).min(rect.width() / 2.0);
+    if p().black {
+        ui.painter().set(slot, egui::Shape::rect_filled(rect, r, Color32::BLACK));
+        return out.inner;
+    }
     let fill = if crate::lens::works() { Glass::Float.fill().gamma_multiply(0.76) } else { Glass::Float.fill() };
     let mut shapes = Vec::with_capacity(5);
     shapes.push(Glass::Float.shadow().as_shape(rect, CornerRadius::from(r)).into());
@@ -740,7 +781,96 @@ pub fn float<R>(ui: &mut Ui, radius: f32, margin: i8, add: impl FnOnce(&mut Ui) 
     out.inner
 }
 
+/// Every editable text field: clear fill (from `text_edit_bg_color`) and a white outline, brighter on hover.
+/// Only the outline is changed here, so buttons and checkboxes keep their own strokes.
+struct FieldStyle;
+
+impl egui::theme::StyleProvider<egui::widget_style::TextEditStyle> for FieldStyle {
+    fn style(&mut self, args: &egui::widget_style::StyleArgs<'_>) -> egui::widget_style::TextEditStyle {
+        use egui::{class::HasClasses as _, widget_style::WidgetState};
+        let mut s: egui::widget_style::TextEditStyle = egui::theme::DefaultStyle.style(args);
+        let alpha = match args.state {
+            WidgetState::Active => None, // focused: the selection outline stays
+            WidgetState::Hovered => Some(255),
+            _ => Some(150),
+        };
+        if let Some(a) = alpha.filter(|_| !args.classes.has_class(&egui::TextEdit::CLASS_READ_ONLY)) {
+            let f = s.atom_layout.frame;
+            s.atom_layout.frame = f.apply_stroke_and_expansion_without_layout_shift(Stroke::new(1.0, Color32::from_white_alpha(a)), 0.0);
+        }
+        s
+    }
+}
+
+/// Weakest colour the Black look keeps: below it a fill or line is a plate, hairline or tint, not content.
+const BARE_MIN: u8 = 0x60;
+
+/// What is left of a fill or line colour in the Black look. A dark solid turns black, so a menu or dialog still
+/// hides what is behind it; a pure black dimmer over a picture stays.
+fn bare_color(c: Color32) -> Color32 {
+    let (max, min, a) = (c.r().max(c.g()).max(c.b()), c.r().min(c.g()).min(c.b()), c.a());
+    if max == 0 {
+        c
+    } else if a < BARE_MIN {
+        Color32::TRANSPARENT
+    } else if (max - min) as f32 / a as f32 > 0.12 || max as f32 / a as f32 >= 0.45 {
+        c
+    } else if a == 255 {
+        Color32::BLACK
+    } else {
+        Color32::TRANSPARENT
+    }
+}
+
+fn bare(s: &mut egui::Shape) {
+    use egui::{Shape as S, epaint::ColorMode};
+    match s {
+        S::Vec(v) => v.iter_mut().for_each(bare),
+        S::Callback(_) => *s = S::Noop, // the lens
+        S::Rect(r) if r.blur_width > 0.0 => *s = S::Noop, // a shadow
+        S::Rect(r) => {
+            r.stroke = Stroke::NONE;
+            if r.brush.is_none() {
+                r.fill = bare_color(r.fill);
+            }
+        }
+        S::Circle(c) => (c.fill, c.stroke.color) = (bare_color(c.fill), bare_color(c.stroke.color)),
+        S::Ellipse(e) => (e.fill, e.stroke.color) = (bare_color(e.fill), bare_color(e.stroke.color)),
+        S::LineSegment { stroke, .. } => stroke.color = bare_color(stroke.color),
+        S::Path(p) => {
+            p.fill = bare_color(p.fill);
+            if let ColorMode::Solid(c) = &mut p.stroke.color {
+                *c = bare_color(*c);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The Black look, applied to the finished frame: plates are painted in hundreds of places, and working here
+/// leaves every layout and hit area exactly as it is in the other accents.
+struct Bare;
+
+impl egui::plugin::Plugin for Bare {
+    fn debug_name(&self) -> &'static str {
+        "bare"
+    }
+
+    fn output_hook(&mut self, _: &egui::Context, out: &mut egui::FullOutput) {
+        if p().black {
+            out.shapes.iter_mut().for_each(|c| bare(&mut c.shape));
+        }
+    }
+}
+
+/// Colour of a clickable item's text: with nothing drawn behind it in the Black look, only its brightness shows
+/// the pointer on it. `normal` in every other accent.
+pub fn hover_text(normal: Color32, hovered: bool) -> Color32 {
+    if p().black && !hovered { text2() } else { normal }
+}
+
 pub fn apply_visuals(ctx: &egui::Context) {
+    ctx.add_plugin(Bare); // egui keeps one per type
     let pal = p();
     let mut v = egui::Visuals::dark();
     let zero = CornerRadius::same(R_CTL as u8);
@@ -755,7 +885,7 @@ pub fn apply_visuals(ctx: &egui::Context) {
     v.window_shadow = soft;
     v.popup_shadow = soft;
     v.window_stroke = Stroke::new(1.0, Color32::from_white_alpha(0x22));
-    v.selection.bg_fill = pal.accent_dark;
+    v.selection.bg_fill = if pal.black { Color32::from_gray(0x55) } else { pal.accent_dark }; // white text stays readable on it
     v.selection.stroke = Stroke::new(1.0, TEXT);
     let w = &mut v.widgets;
     for s in [&mut w.noninteractive, &mut w.inactive, &mut w.hovered, &mut w.active, &mut w.open] {
@@ -768,7 +898,9 @@ pub fn apply_visuals(ctx: &egui::Context) {
     w.hovered.weak_bg_fill = Color32::from_white_alpha(0x22);
     w.active.bg_fill = Color32::from_white_alpha(0x0A);
     w.active.weak_bg_fill = Color32::from_white_alpha(0x0A);
+    v.text_edit_bg_color = Some(Color32::TRANSPARENT);
     ctx.set_visuals(v);
+    ctx.add_widget_theme::<egui::widget_style::TextEditStyle>(FieldStyle);
     ctx.global_style_mut(|s| {
         s.spacing.item_spacing = vec2(8.0, 0.0);
         s.animation_time = 0.16;
@@ -778,6 +910,8 @@ pub fn apply_visuals(ctx: &egui::Context) {
         // egui fades scrolled content into the panel's fill; on see-through glass that fill is a dark veil, so
         // the fade showed as a darker box with hard edges over the messages
         s.spacing.scroll.fade.strength = 0.0;
+        // Black: no thumb just because the pointer is somewhere over the list, only on the bar itself
+        s.spacing.scroll.active_handle_opacity = if pal.black { 0.0 } else { egui::style::ScrollStyle::floating().active_handle_opacity };
     });
 }
 
@@ -951,6 +1085,16 @@ pub fn button_tint(ui: &mut Ui, text: &str, accent: bool, tint: Option<Color32>,
     let s = 1.0 - 0.03 * down;
     let plate_rect = pulled(Rect::from_center_size(rect.center(), rect.size() * s), off);
     let paint = ui.painter();
+    if pal.black {
+        // only the word: primary is bold white, a tinted one keeps its colour; the slot is the size measured above
+        let (font, col) = match (tint, accent) {
+            (Some(t), _) => (bold(), t),
+            (None, true) => (bold(), TEXT),
+            _ => (medium(), text2().lerp_to_gamma(TEXT, hov)),
+        };
+        paint.text(plate_rect.center(), egui::Align2::CENTER_CENTER, text, FontId::new(14.0 * s, font), col);
+        return resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+    }
     if accent {
         let fill = tint.unwrap_or(pal.accent).lerp_to_gamma(Color32::WHITE, 0.10 * hov).lerp_to_gamma(Color32::BLACK, 0.10 * down);
         paint.add(egui::Shadow { offset: [0, 1], blur: 4, spread: 0, color: Color32::from_black_alpha(70) }.as_shape(plate_rect, CornerRadius::from(R_CTL)));
@@ -992,19 +1136,22 @@ pub fn switch(ui: &mut Ui, on: bool) -> egui::Response {
     let paint = ui.painter();
     let rad = rect.height() / 2.0;
     let off_bg = Color32::from_white_alpha(0x26 + (10.0 * hov) as u8);
-    paint.rect_filled(rect, rad, off_bg.lerp_to_gamma(pal.accent, k));
-    paint.rect_stroke(rect, rad, Stroke::new(px(), Color32::from_white_alpha(0x20)), StrokeKind::Inside);
+    if !pal.black {
+        paint.rect_filled(rect, rad, off_bg.lerp_to_gamma(pal.accent, k));
+        paint.rect_stroke(rect, rad, Stroke::new(px(), Color32::from_white_alpha(0x20)), StrokeKind::Inside);
+    }
     // the knob keeps 2 px from the track's edge; held, it grows 6 px towards the other side
     let stretch = 6.0 * held;
     let left = rect.left() + 2.0 + (rect.width() - 4.0 - KNOB) * t - stretch * k;
     let knob = Rect::from_min_size(pos2(left, rect.top() + 2.0), vec2(KNOB + stretch, KNOB));
-    let fill = Color32::WHITE.lerp_to_gamma(pal.on_accent, k);
+    // Black: with no track, the side and the brightness of the knob are the whole state
+    let fill = if pal.black { Color32::from_gray(0x80).lerp_to_gamma(Color32::WHITE, k) } else { Color32::WHITE.lerp_to_gamma(pal.on_accent, k) };
     paint.add(egui::Shadow { offset: [0, 1], blur: 4, spread: 0, color: Color32::from_black_alpha(90) }.as_shape(knob, CornerRadius::from(KNOB / 2.0)));
     // held, the knob turns to clear glass: the track under it shows through, magnified and bent at the rim
     if held > 0.01 {
         paint.add(crate::lens::shape(knob, crate::lens::Lens { radius: KNOB / 2.0, rim: KNOB * 0.45, bend: 5.0 * held, zoom: 1.0 + 0.2 * held, blur: 0.0, split: 0.3 }));
     }
-    capsule(paint, knob, fill.gamma_multiply(1.0 - 0.8 * held), 0x60);
+    capsule(paint, knob, if pal.black { fill } else { fill.gamma_multiply(1.0 - 0.8 * held) }, 0x60);
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -1138,7 +1285,7 @@ fn spark_with(ui: &mut Ui, values: &[f32], height: f32, fill: bool) {
         .enumerate()
         .map(|(i, v)| pos2(rect.left() + rect.width() * i as f32 / (values.len() - 1) as f32, rect.bottom() - 2.0 - (rect.height() - 4.0) * (v / 100.0).clamp(0.0, 1.0)))
         .collect();
-    if fill {
+    if fill && !p().black {
         // a strip of quads down to the baseline: the area under a line graph is not convex, so no polygon fill
         let mut mesh = egui::Mesh::default();
         let col = p().accent.gamma_multiply(0.14);
@@ -1169,6 +1316,43 @@ pub fn chip(ui: &mut Ui, text: &str, fg: Color32, bg: Color32) {
 }
 
 /// Chips under a tweak, in the same order and wording as `TweakVM`.
+/// "More info" link under a row's title; the text slides open below it. Only one row is open at a time
+/// (the open row's id lives in egui memory, opening another replaces it).
+pub fn more_info(ui: &mut Ui, id: egui::Id, text: &str) {
+    let ctx = ui.ctx().clone();
+    let key = egui::Id::new("more_info_open");
+    let open = ctx.data(|d| d.get_temp::<egui::Id>(key)) == Some(id);
+    let f = anim(&ctx, id.with("mi"), open, TRAVEL);
+    let label = ui.painter().layout_no_wrap("More info".into(), FontId::proportional(12.0), LINK);
+    ui.add_space(4.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(label.size().x + 18.0, label.size().y + 4.0), egui::Sense::click());
+    let col = if resp.hovered() { LINK.gamma_multiply(1.25) } else { LINK };
+    let p = ui.painter();
+    p.galley(pos2(rect.min.x, rect.center().y - label.size().y / 2.0), label.clone(), col);
+    // chevron, flips from down to up as the text opens
+    let c = pos2(rect.max.x - 6.0, rect.center().y);
+    let d = 2.5 * (1.0 - 2.0 * f);
+    let st = Stroke::new(1.4, col);
+    p.line_segment([pos2(c.x - 3.5, c.y - d), pos2(c.x, c.y + d)], st);
+    p.line_segment([pos2(c.x, c.y + d), pos2(c.x + 3.5, c.y - d)], st);
+    if resp.clicked() {
+        ctx.data_mut(|d| {
+            if open {
+                d.remove::<egui::Id>(key);
+            } else {
+                d.insert_temp(key, id);
+            }
+        });
+        ctx.request_repaint();
+    }
+    if f > 0.001 {
+        let w = ui.available_width();
+        let g = ui.painter().layout(text.to_owned(), FontId::proportional(12.5), WARNING.gamma_multiply(f), w);
+        let (r, _) = ui.allocate_exact_size(vec2(w, (g.size().y + 6.0) * f), egui::Sense::hover());
+        ui.painter().with_clip_rect(r).galley(r.min + vec2(0.0, 4.0 * f), g, WARNING);
+    }
+}
+
 pub fn flag_chips(ui: &mut Ui, flags: mytune_core::catalog::TweakFlags) {
     use mytune_core::catalog::TweakFlags as F;
     let neutral = (text2(), control_bg());
@@ -1217,7 +1401,7 @@ pub fn subtle_button(ui: &mut Ui, text: &str, pad: (f32, f32, f32, f32)) -> egui
     let (rect, mut resp) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
     let off = pull(ui, &mut resp);
     subtle_plate(ui, &resp, rect, off);
-    ui.painter().galley(pos2(rect.left() + pad.0, rect.top() + pad.1) + off / 2.0, galley, TEXT);
+    ui.painter().galley_with_override_text_color(pos2(rect.left() + pad.0, rect.top() + pad.1) + off / 2.0, galley, hover_text(TEXT, resp.hovered()));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -1239,7 +1423,7 @@ pub fn subtle_button_bleed(ui: &mut Ui, text: &str, pad: (f32, f32, f32, f32), b
     let mut resp = ui.interact(rect, ui.id().with(text), egui::Sense::click_and_drag());
     let off = pull(ui, &mut resp);
     subtle_plate(ui, &resp, rect, off);
-    ui.painter().galley(pos2(rect.left() + pad.0, rect.top() + pad.1) + off / 2.0, galley, TEXT);
+    ui.painter().galley_with_override_text_color(pos2(rect.left() + pad.0, rect.top() + pad.1) + off / 2.0, galley, hover_text(TEXT, resp.hovered()));
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
@@ -1298,12 +1482,16 @@ impl egui::Widget for Choice {
         let (rect, mut resp) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
         let rect = pulled(rect, pull(ui, &mut resp));
         let hov = anim(ui.ctx(), resp.id.with("hover"), resp.hovered(), HOVER);
+        let at = rect.center() - galley.size() / 2.0;
+        if pal.black {
+            ui.painter().galley_with_override_text_color(at, galley, if self.on { TEXT } else { fg.lerp_to_gamma(TEXT, hov) });
+            return resp.on_hover_cursor(egui::CursorIcon::PointingHand);
+        }
         if self.on {
             plate(ui.painter(), rect, R_CTL, pal.accent.lerp_to_gamma(Color32::WHITE, 0.10 * hov), 0x70);
         } else {
             plate(ui.painter(), rect, R_CTL, Color32::from_white_alpha(0x1A + (14.0 * hov) as u8), 0x34);
         }
-        let at = rect.center() - galley.size() / 2.0;
         ui.painter().galley(at, galley, fg);
         resp.on_hover_cursor(egui::CursorIcon::PointingHand)
     }
@@ -1382,6 +1570,18 @@ mod tests {
             last = x;
         }
         assert_eq!(pulled(Rect::from_min_size(pos2(0.0, 0.0), vec2(40.0, 20.0)), vec2(6.0, 0.0)), Rect::from_min_max(pos2(0.0, 0.0), pos2(46.0, 20.0)));
+    }
+
+    /// Black look: plates and tints go, a dark solid stays a solid black, content colours are untouched.
+    #[test]
+    fn bare_keeps_only_content() {
+        for plate in [Color32::from_white_alpha(0x1C), Color32::from_rgba_unmultiplied(0xFF, 0x7A, 0x6B, 0x26), Color32::from_gray(0x60).gamma_multiply(0.8)] {
+            assert_eq!(bare_color(plate), Color32::TRANSPARENT, "{plate:?}");
+        }
+        assert_eq!(bare_color(Color32::from_gray(0x1B)), Color32::BLACK);
+        for keep in [Color32::WHITE, Color32::from_rgb(0xF2, 0xF2, 0xF2), Color32::from_gray(0x80), DANGER, SUCCESS, Color32::BLACK, Color32::from_black_alpha(0x70)] {
+            assert_eq!(bare_color(keep), keep, "{keep:?}");
+        }
     }
 
     /// The accent is one global: tests that set it run one at a time.

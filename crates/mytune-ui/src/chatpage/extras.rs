@@ -89,7 +89,7 @@ fn person_row(ui: &mut Ui, s: &AppState, tex: &mut HashMap<String, TextureHandle
     let ctx = ui.ctx().clone();
     let t = texture(&ctx, tex, asked, s, &avatar_url, want);
     avatar(ui, egui::Rect::from_center_size(egui::pos2(r.left() + 22.0, r.center().y), vec2(32.0, 32.0)), t, name);
-    ui.painter().text(egui::pos2(r.left() + 46.0, r.center().y - if line.is_empty() { 0.0 } else { 8.0 }), egui::Align2::LEFT_CENTER, name, egui::FontId::new(14.0, th::semibold()), TEXT);
+    ui.painter().text(egui::pos2(r.left() + 46.0, r.center().y - if line.is_empty() { 0.0 } else { 8.0 }), egui::Align2::LEFT_CENTER, name, egui::FontId::new(14.0, th::semibold()), th::hover_text(TEXT, resp.hovered()));
     if !line.is_empty() {
         ui.painter().text(egui::pos2(r.left() + 46.0, r.center().y + 9.0), egui::Align2::LEFT_CENTER, line, egui::FontId::proportional(12.0), MUTED);
     }
@@ -528,8 +528,9 @@ pub fn server_rows(ui: &mut Ui, s: &AppState, server: &str, acts: &mut Vec<Actio
         if on || resp.hovered() {
             ui.painter().rect_filled(r, 10.0, if on { k_active() } else { k_hover() });
         }
-        glyph(ui.painter(), egui::pos2(r.left() + 18.0, r.center().y), g, 14.0, SECONDARY, false);
-        ui.painter().text(egui::pos2(r.left() + 38.0, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::new(13.5, th::semibold()), SECONDARY);
+        let ink = if p().black && (on || resp.hovered()) { TEXT } else { SECONDARY };
+        glyph(ui.painter(), egui::pos2(r.left() + 18.0, r.center().y), g, 14.0, ink, false);
+        ui.painter().text(egui::pos2(r.left() + 38.0, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::new(13.5, th::semibold()), ink);
         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             acts.push(if i == 0 { Action::BrowseChannels } else { Action::ShowHiddenChannels(!s.show_hidden_channels) });
         }
@@ -583,7 +584,7 @@ pub fn browse(ui: &mut Ui, s: &AppState, acts: &mut Vec<Action>) {
                     glyph(ui.painter(), egui::pos2(r.left() + 16.0, r.center().y), g, 15.0, MUTED, false);
                 }
                 let dy = if row.topic.is_empty() { 0.0 } else { -8.0 };
-                ui.painter().text(egui::pos2(r.left() + 36.0, r.center().y + dy), egui::Align2::LEFT_CENTER, &row.name, egui::FontId::new(14.0, th::semibold()), TEXT);
+                ui.painter().text(egui::pos2(r.left() + 36.0, r.center().y + dy), egui::Align2::LEFT_CENTER, &row.name, egui::FontId::new(14.0, th::semibold()), th::hover_text(TEXT, resp.hovered()));
                 if !row.topic.is_empty() {
                     let topic: String = row.topic.chars().take(110).collect();
                     ui.painter().text(egui::pos2(r.left() + 36.0, r.center().y + 10.0), egui::Align2::LEFT_CENTER, topic, egui::FontId::proportional(12.0), MUTED);
@@ -591,9 +592,11 @@ pub fn browse(ui: &mut Ui, s: &AppState, acts: &mut Vec<Action>) {
                 // the box: ticked when followed; one followed through its category shows it but can't change
                 let b = egui::Rect::from_center_size(egui::pos2(r.right() - 20.0, r.center().y), vec2(18.0, 18.0));
                 let lit = row.followed;
-                ui.painter().rect(b, 4.0, if lit { p().accent } else { Color32::TRANSPARENT }, egui::Stroke::new(1.5, if lit { p().accent } else { MUTED }), egui::StrokeKind::Inside);
-                if lit {
-                    glyph(ui.painter(), b.center(), "\u{E73E}", 11.0, p().on_accent, false);
+                if !crate::theme::bare_check(ui.painter(), b.center(), lit) {
+                    ui.painter().rect(b, 4.0, if lit { p().accent } else { Color32::TRANSPARENT }, egui::Stroke::new(1.5, if lit { p().accent } else { MUTED }), egui::StrokeKind::Inside);
+                    if lit {
+                        glyph(ui.painter(), b.center(), "\u{E73E}", 11.0, p().on_accent, false);
+                    }
                 }
                 let resp = if row.by_category { resp.on_hover_text("Followed through its category") } else { resp.on_hover_cursor(egui::CursorIcon::PointingHand) };
                 if resp.clicked() && !row.by_category {

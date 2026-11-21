@@ -34,6 +34,7 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 
 [Files]
 Source: "..\target\release\{#AppExe}"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\target\release\MyTuneStart.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\NOTICES.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\crates\mytune-ui\assets\twemoji\LICENSE-GRAPHICS.txt"; DestDir: "{app}"; DestName: "TWEMOJI-LICENSE.txt"; Flags: ignoreversion

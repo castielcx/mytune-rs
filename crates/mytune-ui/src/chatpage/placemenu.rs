@@ -88,7 +88,9 @@ fn row_resp(ui: &mut Ui, g: &str, text: &str, danger: bool, chevron: bool, check
     }
     if let Some(on) = checked {
         let b = egui::Rect::from_center_size(egui::pos2(r.right() - 18.0, r.center().y), vec2(16.0, 16.0));
-        ui.painter().rect(b, 3.0, if on { p().accent } else { Color32::TRANSPARENT }, egui::Stroke::new(1.5, if on { p().accent } else { MUTED }), egui::StrokeKind::Inside);
+        if !crate::theme::bare_check(ui.painter(), b.center(), on) {
+            ui.painter().rect(b, 3.0, if on { p().accent } else { Color32::TRANSPARENT }, egui::Stroke::new(1.5, if on { p().accent } else { MUTED }), egui::StrokeKind::Inside);
+        }
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand)
 }

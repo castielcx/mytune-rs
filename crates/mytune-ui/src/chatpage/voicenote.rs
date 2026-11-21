@@ -174,8 +174,10 @@ pub fn chip(ui: &mut Ui, m: &ChatMessage, i: usize, a: &Attachment, acts: &mut V
     });
     let active = state.is_some();
     let c = pos2(rect.left() + 26.0, rect.center().y);
-    ui.painter().circle_filled(c, 16.0, p().accent);
-    glyph(ui.painter(), c, if active { "\u{E71A}" } else { "\u{E768}" }, 13.0, Color32::BLACK, false);
+    if !p().black {
+        ui.painter().circle_filled(c, 16.0, p().accent);
+    }
+    glyph(ui.painter(), c, if active { "\u{E71A}" } else { "\u{E768}" }, 13.0, if p().black { Color32::WHITE } else { Color32::BLACK }, false);
     let track = egui::Rect::from_min_max(pos2(rect.left() + 52.0, rect.center().y - 2.0), pos2(rect.right() - 76.0, rect.center().y + 2.0));
     ui.painter().rect_filled(track, 2.0, k_edge());
     let text = match state {

@@ -67,7 +67,11 @@ struct State {
     stop: bool,
     wake: bool,
     latest: Option<Snapshot>,
+    /// Last `HISTORY` loads: CPU, GPU, RAM. Filled by the normal loop, so the graphs have a past at no extra cost.
+    hist: [Vec<f32>; 3],
 }
+
+const HISTORY: usize = 60;
 
 type Callback = Box<dyn Fn(&Snapshot) + Send>;
 
@@ -99,6 +103,14 @@ impl Sensors {
                     cb(&snap);
                 }
                 let mut g = s2.st.lock().unwrap();
+                for (h, v) in g.hist.iter_mut().zip([snap.cpu_load, snap.gpu_load, snap.ram_load]) {
+                    if let Some(v) = v {
+                        h.push(v);
+                        if h.len() > HISTORY {
+                            h.remove(0);
+                        }
+                    }
+                }
                 g.latest = Some(snap);
                 g.wake = false;
                 let iv = cadence.interval(g.watched, g.game);
@@ -130,6 +142,11 @@ impl Sensors {
 
     pub fn latest(&self) -> Option<Snapshot> {
         self.sh.st.lock().unwrap().latest
+    }
+
+    /// Recent loads, oldest first: [CPU, GPU, RAM]. One point per sample: 1 s while watched or gaming, else 5 s.
+    pub fn history(&self) -> [Vec<f32>; 3] {
+        self.sh.st.lock().unwrap().hist.clone()
     }
 
     /// Called on the sensor thread after every sample (like `Sensors.Updated`). Keep it short.

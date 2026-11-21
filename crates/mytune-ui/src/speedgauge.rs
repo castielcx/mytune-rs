@@ -33,6 +33,85 @@ pub struct Gauge<'a> {
 const R_BTN: f32 = 44.0;
 const R_DIAL: f32 = 112.0;
 const SWEEP: f32 = 0.45; // seconds the needle heads for the end, then as long back, before it follows the value
+/// Height of the gauge and of the graph column beside it.
+pub const HEIGHT: f32 = R_DIAL + 100.0;
+/// Readings in one 8 s phase (one per 250 ms after the warm-up second): the live line fills the width over these.
+const PHASE_READINGS: usize = 28;
+
+/// The column beside the gauge: legend, graph, the quiet ping row and one line for a warning or error.
+pub struct Side<'a> {
+    pub down: &'a [f64],
+    pub up: &'a [f64],
+    pub down_now: Option<f64>,
+    pub up_now: Option<f64>,
+    pub running: bool,
+    /// Ping, jitter, ping under load, already formatted.
+    pub stats: [String; 3],
+    pub note: Option<(&'a str, Color32)>,
+}
+
+/// Top of the y axis and its step, for four grid rows: the step is 1, 2, 2.5, 5 or 10 times a power of ten.
+fn y_scale(max: f64) -> (f64, f64) {
+    let want = (max * 1.05 / 4.0).max(0.25);
+    let p = 10f64.powf(want.log10().floor());
+    let step = [1.0, 2.0, 2.5, 5.0, 10.0].iter().map(|m| m * p).find(|s| *s >= want * 0.9999).unwrap_or(10.0 * p);
+    (step * 4.0, step)
+}
+
+fn speed_text(v: Option<f64>) -> String {
+    match v {
+        Some(v) if v >= 100.0 => format!("{v:.0}"),
+        Some(v) => format!("{v:.1}"),
+        None => "—".into(),
+    }
+}
+
+/// Paints the column into the full width at the cursor, always `HEIGHT` tall.
+pub fn side(ui: &mut Ui, s: &Side) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), HEIGHT), Sense::hover());
+    let paint = ui.painter_at(rect);
+    let note_h = if rect.width() < 560.0 { 32.0 } else { 16.0 }; // the SQM warning takes two lines when narrow
+
+    let mut x = rect.left();
+    for (name, now, col) in [("Download", s.down_now, DOWN), ("Upload", s.up_now, UP)] {
+        let y = rect.top() + 11.0;
+        paint.line_segment([pos2(x, y), pos2(x + 14.0, y)], Stroke::new(2.0, col));
+        x += 20.0;
+        x = paint.text(pos2(x, y), Align2::LEFT_CENTER, name, FontId::new(12.0, th::medium()), text2()).right() + 8.0;
+        x = paint.text(pos2(x, y), Align2::LEFT_CENTER, speed_text(now), FontId::new(16.0, th::bold()), th::TEXT).right() + 4.0;
+        x = paint.text(pos2(x, y + 1.0), Align2::LEFT_CENTER, "Mbit/s", FontId::new(11.0, th::medium()), text3()).right() + 24.0;
+    }
+
+    let plot = Rect::from_min_max(pos2(rect.left() + 38.0, rect.top() + 32.0), pos2(rect.right() - 2.0, rect.bottom() - 28.0 - note_h));
+    let has_data = !s.down.is_empty() || !s.up.is_empty();
+    let (top, step) = y_scale(s.down.iter().chain(s.up).copied().fold(0.0, f64::max));
+    for i in 0..=4 {
+        let y = (plot.bottom() - plot.height() * i as f32 / 4.0).round();
+        paint.line_segment([pos2(plot.left(), y), pos2(plot.right(), y)], Stroke::new(1.0, Color32::from_white_alpha(if i == 0 { 0x30 } else { 0x14 })));
+        if has_data {
+            let v = (step * i as f64 * 100.0).round() / 100.0;
+            paint.text(pos2(plot.left() - 7.0, y), Align2::RIGHT_CENTER, v.to_string(), FontId::new(10.5, th::medium()), text3());
+        }
+    }
+    for (values, col) in [(s.down, DOWN), (s.up, UP)] {
+        // A running line grows across the width; a finished one fills it.
+        let last = values.len().saturating_sub(1).max(if s.running { PHASE_READINGS - 1 } else { 1 });
+        let points = values.iter().enumerate().map(|(i, v)| pos2(plot.left() + plot.width() * i as f32 / last as f32, plot.bottom() - plot.height() * (*v / top) as f32));
+        paint.add(Shape::line(points.collect(), Stroke::new(2.0, col)));
+    }
+    if !has_data {
+        let hint = if s.running { "Measuring ping…" } else { "Run a test to see your speed here" };
+        paint.text(plot.center(), Align2::CENTER_CENTER, hint, FontId::new(12.0, th::medium()), text3());
+    }
+
+    let [ping, jitter, loaded] = &s.stats;
+    let row = format!("Ping {ping}  ·  Jitter {jitter}  ·  Under load {loaded}");
+    paint.text(pos2(plot.left(), plot.bottom() + 16.0), Align2::LEFT_CENTER, row, FontId::new(12.0, th::medium()), text2());
+    if let Some((text, col)) = s.note {
+        let g = paint.layout(text.to_owned(), FontId::new(12.0, th::medium()), col, rect.right() - plot.left());
+        paint.galley(pos2(plot.left(), rect.bottom() - note_h), g, col);
+    }
+}
 
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
@@ -57,8 +136,9 @@ pub fn show(ui: &mut Ui, g: &Gauge) -> bool {
     let ctx = ui.ctx().clone();
     let id = ui.scope_id().with("speedgauge");
     let o = th::anim(&ctx, id.with("open"), g.open, 0.5);
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), lerp(R_BTN * 2.0 + 16.0, R_DIAL + 100.0, o)), Sense::hover());
-    let c = pos2(rect.center().x, rect.top() + lerp(R_BTN + 8.0, R_DIAL + 6.0, o));
+    // Always the open dial's height, so the card does not jump between idle, running and finished.
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), HEIGHT), Sense::hover());
+    let c = pos2(rect.center().x, rect.top() + lerp(HEIGHT / 2.0, R_DIAL + 6.0, o));
     let r = lerp(R_BTN, R_DIAL, o);
     let paint = ui.painter().clone();
 
@@ -75,7 +155,7 @@ pub fn show(ui: &mut Ui, g: &Gauge) -> bool {
         clicked = resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
     }
     let draw_hub = |paint: &egui::Painter| {
-        let ring = Stroke::new(2.0 * (1.0 - o), Color32::from_white_alpha((176.0 * (1.0 - o)) as u8));
+        let ring = if th::p().black { Stroke::NONE } else { Stroke::new(2.0 * (1.0 - o), Color32::from_white_alpha((176.0 * (1.0 - o)) as u8)) };
         paint.circle(hub, hub_r, Color32::from_white_alpha(lerp(20.0 + lit, 255.0, o) as u8), ring);
         if o < 0.99 {
             paint.text(hub, Align2::CENTER_CENTER, "Start", FontId::new(15.0, th::semibold()), th::TEXT.gamma_multiply(1.0 - o));
@@ -128,6 +208,17 @@ pub fn show(ui: &mut Ui, g: &Gauge) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn graph_axis_holds_the_data() {
+        assert_eq!(y_scale(0.0), (1.0, 0.25));
+        assert_eq!(y_scale(90.0), (100.0, 25.0));
+        assert_eq!(y_scale(320.0), (400.0, 100.0));
+        for v in [0.3, 7.0, 99.9, 100.0, 512.0, 940.0, 2500.0] {
+            let (top, step) = y_scale(v);
+            assert!(top >= v && top == step * 4.0, "{v}");
+        }
+    }
 
     #[test]
     fn speed_scale() {

@@ -110,12 +110,14 @@ pub fn show(ctx: &egui::Context, s: &AppState, acts: &mut Vec<Action>) {
                             ui.painter().rect_filled(rect, 8.0, k_hover());
                         }
                         let name = if r.direct { r.name.clone() } else { format!("# {}", r.name) };
-                        ui.painter().with_clip_rect(rect.with_max_x(rect.right() - 44.0)).text(rect.left_center() + vec2(10.0, 0.0), egui::Align2::LEFT_CENTER, name, egui::FontId::proportional(14.0), TEXT);
+                        ui.painter().with_clip_rect(rect.with_max_x(rect.right() - 44.0)).text(rect.left_center() + vec2(10.0, 0.0), egui::Align2::LEFT_CENTER, name, egui::FontId::proportional(14.0), crate::theme::hover_text(TEXT, resp.hovered()));
                         let c = egui::pos2(rect.right() - 20.0, rect.center().y);
                         if r.mentions > 0 {
                             let n = if r.mentions > 99 { "99+".to_owned() } else { r.mentions.to_string() };
-                            ui.painter().rect_filled(egui::Rect::from_center_size(c, vec2(if n.len() > 1 { 26.0 } else { 18.0 }, 18.0)), 9.0, RED);
-                            ui.painter().text(c, egui::Align2::CENTER_CENTER, n, egui::FontId::proportional(11.0), Color32::WHITE);
+                            if !crate::theme::p().black {
+                                ui.painter().rect_filled(egui::Rect::from_center_size(c, vec2(if n.len() > 1 { 26.0 } else { 18.0 }, 18.0)), 9.0, RED);
+                            }
+                            ui.painter().text(c, egui::Align2::CENTER_CENTER, n, egui::FontId::proportional(11.0), if crate::theme::p().black { RED } else { Color32::WHITE });
                         } else {
                             ui.painter().circle_filled(c, 4.0, TEXT);
                         }

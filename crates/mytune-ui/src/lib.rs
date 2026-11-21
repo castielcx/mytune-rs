@@ -29,5 +29,6 @@ pub mod storagecard;
 pub mod taskbarcard;
 pub mod theme;
 pub mod vibrancepage;
+pub mod crosshairpage;
 pub mod toolspage;
 pub mod widgets;

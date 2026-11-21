@@ -78,7 +78,6 @@ const CATALOG: &[Entry] = &[
     ("Microsoft.ScreenSketch", "Snipping Tool", "Screenshots (Win+Shift+S).", "Win+Shift+S stops working."),
     ("Microsoft.WindowsNotepad", "Notepad", "Text editor.", "Most people want to keep this."),
     ("Microsoft.Paint", "Paint", "Picture editor.", "Remove only if you do not use it."),
-    ("Microsoft.WindowsTerminal", "Terminal", "Command line window.", "Windows falls back to the old console window."),
 ];
 
 /// Never listed and never removed, whatever the catalog says: the Store and winget, frameworks, codecs,
@@ -95,7 +94,7 @@ const PROTECTED: &[&str] = &[
     "Microsoft.MicrosoftEdge*", "Microsoft.Win32WebViewHost", "*WebView2",
     "NVIDIACorp.*", "AdvancedMicroDevicesInc*", "AppUp.Intel*", "RealtekSemiconductorCorp.*",
     "Microsoft.LanguageExperiencePack*",
-    "*MyTune",
+    "*MyTune", "Microsoft.WindowsTerminal*",
 ];
 
 fn like(pattern: &str, name: &str) -> bool {

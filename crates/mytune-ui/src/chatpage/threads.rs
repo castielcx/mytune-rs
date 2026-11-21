@@ -35,7 +35,7 @@ fn row(ui: &mut Ui, t: &ListedThread, acts: &mut Vec<Action>) {
     }
     voice::glyph(ui.painter(), egui::pos2(r.left() + 16.0, r.center().y), if t.private { "\u{E72E}" } else { "\u{E8BD}" }, 14.0, SECONDARY, false);
     let clip = ui.painter().with_clip_rect(egui::Rect::from_min_max(egui::pos2(r.left() + 32.0, r.top()), egui::pos2(r.right() - 70.0, r.bottom())));
-    clip.text(egui::pos2(r.left() + 32.0, r.center().y - 8.0), egui::Align2::LEFT_CENTER, &t.name, egui::FontId::new(13.5, th::semibold()), TEXT);
+    clip.text(egui::pos2(r.left() + 32.0, r.center().y - 8.0), egui::Align2::LEFT_CENTER, &t.name, egui::FontId::new(13.5, th::semibold()), crate::theme::hover_text(TEXT, resp.hovered()));
     let sub = if t.archived { "Archived".to_owned() } else { format!("{} member{}", t.members, if t.members == 1 { "" } else { "s" }) };
     clip.text(egui::pos2(r.left() + 32.0, r.center().y + 10.0), egui::Align2::LEFT_CENTER, sub, egui::FontId::proportional(12.0), MUTED);
     // Join / Leave at the row's right, as Discord's thread browser has them

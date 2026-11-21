@@ -364,9 +364,11 @@ pub fn forward(ctx: &egui::Context, fw: &mut ForwardUi, s: &AppState, tex: &mut 
                 let tx = texture(ctx, tex, asked, s, &r.avatar, want);
                 avatar(ui, a, tx, &r.name);
                 let name = if r.direct { r.name.clone() } else { format!("# {}", r.name) };
-                ui.painter().text(pos2(a.right() + 10.0, row.center().y), egui::Align2::LEFT_CENTER, name, egui::FontId::proportional(14.0), TEXT);
+                ui.painter().text(pos2(a.right() + 10.0, row.center().y), egui::Align2::LEFT_CENTER, name, egui::FontId::proportional(14.0), crate::theme::hover_text(TEXT, chosen || resp.hovered()));
                 let b = egui::Rect::from_center_size(pos2(row.right() - 16.0, row.center().y), vec2(18.0, 18.0));
+                if !crate::theme::bare_check(ui.painter(), b.center(), chosen) {
                 ui.painter().rect(b, 4.0, if chosen { p().accent } else { Color32::TRANSPARENT }, egui::Stroke::new(1.5, if chosen { p().accent } else { MUTED }), egui::StrokeKind::Inside);
+            }
                 if resp.clicked() {
                     acts.push(Action::ChooseForward(r.id.clone()));
                 }

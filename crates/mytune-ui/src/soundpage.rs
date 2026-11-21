@@ -38,8 +38,88 @@ pub fn ask_flyout(x: f32, top: f32) {
     *FLYOUT_ASK.lock().unwrap_or_else(|p| p.into_inner()) = Some((x, top));
 }
 
-/// White speaker with two sound waves for the tray, `size` x `size` RGBA.
+/// Pixel size of a tray icon on this display (16 at 100%, as the clock and network icons beside it).
+pub fn tray_px() -> u32 {
+    let px = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetSystemMetrics(windows_sys::Win32::UI::WindowsAndMessaging::SM_CXSMICON) };
+    px.clamp(16, 64) as u32
+}
+
+/// The tray speaker: Windows' own volume glyph (Segoe Fluent Icons U+E995, the one in its taskbar), white,
+/// drawn by GDI at exactly `size` pixels so it matches the system icons. Falls back to `speaker_shape`.
 pub fn speaker(size: usize) -> Vec<u8> {
+    let out = glyph(size, "Segoe Fluent Icons", 0xE995, 400, 1.0, false);
+    if out.chunks(4).all(|p| p[3] == 0) { speaker_shape(size) } else { out }
+}
+
+/// The tray "M": the letter from Segoe UI at the tray size, so its strokes are as thin as the system icons'.
+pub fn tray_m(size: usize) -> Vec<u8> {
+    let out = glyph(size, "Segoe UI", 'M' as u16, 400, 1.0, true);
+    if out.chunks(4).all(|p| p[3] == 0) { crate::icon::render(size as u32) } else { out }
+}
+
+/// One white character, `size` x `size` straight-alpha RGBA, font height `size * em`. Centred by its text box
+/// (as Windows places icon glyphs), or by its ink when `ink` (a letter, whose box holds ascent and descent).
+fn glyph(size: usize, face: &str, ch: u16, weight: i32, em: f32, ink: bool) -> Vec<u8> {
+    use windows_sys::Win32::Graphics::Gdi::*;
+    let n = size as i32;
+    let c = n * 2; // drawn on a larger canvas, then the centred part is copied
+    let mut out = vec![0u8; size * size * 4];
+    unsafe {
+        let dc = CreateCompatibleDC(std::ptr::null_mut());
+        let bmi = BITMAPINFO { bmiHeader: BITMAPINFOHEADER { biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32, biWidth: c, biHeight: -c, biPlanes: 1, biBitCount: 32, biCompression: BI_RGB, ..std::mem::zeroed() }, bmiColors: [std::mem::zeroed()] };
+        let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+        let bmp = CreateDIBSection(dc, &bmi, DIB_RGB_COLORS, &mut bits, std::ptr::null_mut(), 0);
+        if !bmp.is_null() && !bits.is_null() {
+            let old = SelectObject(dc, bmp);
+            let face: Vec<u16> = face.encode_utf16().chain(Some(0)).collect();
+            let font = CreateFontW(-((n as f32 * em).round() as i32), 0, 0, 0, weight, 0, 0, 0, DEFAULT_CHARSET as u32, 0, 0, ANTIALIASED_QUALITY as u32, 0, face.as_ptr());
+            let oldf = SelectObject(dc, font);
+            SetBkMode(dc, TRANSPARENT as i32);
+            SetTextColor(dc, 0x00FF_FFFF);
+            let ch = [ch];
+            let mut ext = std::mem::zeroed();
+            GetTextExtentPoint32W(dc, ch.as_ptr(), 1, &mut ext);
+            TextOutW(dc, (c - ext.cx) / 2, (c - ext.cy) / 2, ch.as_ptr(), 1);
+            let px = std::slice::from_raw_parts(bits as *const u8, (c * c * 4) as usize);
+            // white on black: the colour is the coverage
+            let a = |x: i32, y: i32| -> u8 {
+                if x < 0 || y < 0 || x >= c || y >= c { return 0 }
+                let i = ((y * c + x) * 4) as usize;
+                px[i].max(px[i + 1]).max(px[i + 2])
+            };
+            let (mut x0, mut y0) = ((c - n) / 2, (c - n) / 2);
+            if ink {
+                let (mut l, mut t, mut r, mut b) = (c, c, -1, -1);
+                for y in 0..c {
+                    for x in 0..c {
+                        if a(x, y) > 0 {
+                            (l, t, r, b) = (l.min(x), t.min(y), r.max(x), b.max(y));
+                        }
+                    }
+                }
+                if r >= 0 {
+                    (x0, y0) = ((l + r + 1 - n) / 2, (t + b + 1 - n) / 2);
+                }
+            }
+            for y in 0..n {
+                for x in 0..n {
+                    out[((y * n + x) * 4) as usize..][..4].copy_from_slice(&[255, 255, 255, a(x0 + x, y0 + y)]);
+                }
+            }
+            SelectObject(dc, oldf);
+            SelectObject(dc, old);
+            DeleteObject(font);
+        }
+        if !bmp.is_null() {
+            DeleteObject(bmp);
+        }
+        DeleteDC(dc);
+    }
+    out
+}
+
+/// White speaker with two sound waves for the tray, `size` x `size` RGBA (used when the icon font is missing).
+fn speaker_shape(size: usize) -> Vec<u8> {
     let s = size as f32 / 32.0; // drawn on a 32 grid
     let inside = |x: f32, y: f32| {
         let (u, v) = (x / s, y / s);
@@ -174,6 +254,9 @@ pub struct SoundPage {
     hold: Option<(String, f64, Instant)>,
     /// Flyout layout: narrower sliders, icon buttons, no "Move to" (that stays on the page).
     compact: bool,
+    /// Windows' own tray volume icon is hidden ("Use MyTune advanced sound settings"); set by the app each
+    /// frame, `None` (no `taskbar-look` build) hides the switch.
+    pub hide_win: Option<bool>,
 }
 
 /// False while MyTune's window is hidden in the tray or minimized (true when there is no window: tests).
@@ -193,7 +276,7 @@ struct Controls {
 
 impl SoundPage {
     pub fn new() -> Self {
-        Self { mixer: None, rx: None, devices: Vec::new(), loaded: false, error: None, apps: HashMap::new(), hold: None, compact: false }
+        Self { mixer: None, rx: None, devices: Vec::new(), loaded: false, error: None, apps: HashMap::new(), hold: None, compact: false, hide_win: None }
     }
 
     /// Ends the audio worker; called while another page is shown.
@@ -202,14 +285,17 @@ impl SoundPage {
         self.rx = None;
     }
 
-    pub fn ui(&mut self, ui: &mut Ui) {
+    /// Returns the new state of the "Use MyTune advanced sound settings" switch when it was clicked.
+    pub fn ui(&mut self, ui: &mut Ui) -> Option<bool> {
         if !on_screen() {
-            return self.stop(); // no audio calls while nobody can see the page
+            self.stop(); // no audio calls while nobody can see the page
+            return None;
         }
-        self.mixer(ui);
+        self.mixer(ui)
     }
 
-    pub fn mixer(&mut self, ui: &mut Ui) {
+    pub fn mixer(&mut self, ui: &mut Ui) -> Option<bool> {
+        let mut clicked = None;
         if self.mixer.is_none() {
             let (tx, rx) = mpsc::channel();
             let ctx = ui.ctx().clone();
@@ -233,11 +319,25 @@ impl SoundPage {
             ui.label(rt(e, 12.0).color(th::DANGER));
             ui.add_space(8.0);
         }
+        if let (false, Some(on)) = (self.compact, self.hide_win) {
+            th::card(ui, (10, 16, 16, 16), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(sb("Use MyTune advanced sound settings", 14.0));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if th::switch(ui, on).clicked() {
+                            self.hide_win = Some(!on);
+                            clicked = Some(!on);
+                        }
+                    });
+                });
+            });
+            ui.add_space(th::GAP);
+        }
         if self.devices.is_empty() {
             th::card(ui, (10, 16, 16, 16), |ui| {
                 ui.label(rt(if self.loaded { "No sound output device found." } else { "Looking for sound devices\u{2026}" }, 14.0).color(text2()));
             });
-            return;
+            return clicked;
         }
 
         let devices = self.devices.clone();
@@ -321,6 +421,7 @@ impl SoundPage {
                 m.send(c);
             }
         }
+        clicked
     }
 
     /// The flyout's layout, as Windows' own volume mixer (user's choice): no boxes, no app names. Per device

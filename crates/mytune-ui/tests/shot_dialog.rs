@@ -1,4 +1,4 @@
-//! Settings in a tall window, then a click at env CLICK ("x,y", default: the "What's new" button): writes
+//! Settings in a tall window, then a click at env CLICK ("x,y", set it to the button you want): writes
 //! dialog.png with that dialog open. The dialog's own buttons are not clicked.
 use eframe::egui::{self, pos2, vec2};
 use egui_kittest::Harness;

@@ -82,7 +82,7 @@ pub fn screen(ui: &mut Ui, su: &mut SettingsUi, chat: &Chat, app: &Application, 
             if on || t > 0.0 {
                 ui.painter().rect_filled(r, 10.0, if on { super::k_active() } else { super::k_hover().gamma_multiply(t) });
             }
-            ui.painter().text(egui::pos2(r.left() + 12.0, r.center().y), egui::Align2::LEFT_CENTER, name_of(*sec).unwrap_or(""), egui::FontId::proportional(14.0), if on { TEXT } else { SECONDARY });
+            ui.painter().text(egui::pos2(r.left() + 12.0, r.center().y), egui::Align2::LEFT_CENTER, name_of(*sec).unwrap_or(""), egui::FontId::proportional(14.0), if on || (crate::theme::p().black && resp.hovered()) { TEXT } else { SECONDARY });
             if resp.clicked() {
                 acts.push(Action::ServerSettingsSection(*sec));
             }
@@ -256,7 +256,7 @@ pub fn screen(ui: &mut Ui, su: &mut SettingsUi, chat: &Chat, app: &Application, 
                             ui.painter().rect_filled(row, 10.0, super::k_hover().gamma_multiply(t));
                             let col = if role.color == 0 { MUTED } else { Color32::from_rgb((role.color >> 16) as u8, (role.color >> 8) as u8, role.color as u8) };
                             ui.painter().circle_filled(egui::pos2(row.left() + 16.0, row.center().y), 6.0, col);
-                            ui.painter().text(egui::pos2(row.left() + 32.0, row.center().y), egui::Align2::LEFT_CENTER, &role.name, egui::FontId::proportional(14.0), TEXT);
+                            ui.painter().text(egui::pos2(row.left() + 32.0, row.center().y), egui::Align2::LEFT_CENTER, &role.name, egui::FontId::proportional(14.0), crate::theme::hover_text(TEXT, resp.hovered()));
                             ui.painter().text(egui::pos2(row.right() - 12.0, row.center().y), egui::Align2::RIGHT_CENTER, format!("{} members", role.members), egui::FontId::proportional(12.0), MUTED);
                             if resp.clicked() {
                                 acts.push(Action::Roles(RoleInput::Open(Some(role.id.clone()))));

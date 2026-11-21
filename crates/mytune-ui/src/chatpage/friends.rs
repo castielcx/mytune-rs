@@ -42,12 +42,15 @@ pub fn nav_rows(ui: &mut Ui, s: &AppState, acts: &mut Vec<Action>) {
         if on || t > 0.0 {
             ui.painter().rect_filled(r, 12.0, if on { k_active() } else { k_active().gamma_multiply(t) });
         }
-        glyph(ui.painter(), egui::pos2(r.left() + 24.0, r.center().y), g, 17.0, if on { TEXT } else { SECONDARY }, false);
-        ui.painter().text(egui::pos2(r.left() + 48.0, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::new(14.5, th::semibold()), if on { TEXT } else { SECONDARY });
+        let lit = on || (p().black && resp.hovered());
+        glyph(ui.painter(), egui::pos2(r.left() + 24.0, r.center().y), g, 17.0, if lit { TEXT } else { SECONDARY }, false);
+        ui.painter().text(egui::pos2(r.left() + 48.0, r.center().y), egui::Align2::LEFT_CENTER, label, egui::FontId::new(14.5, th::semibold()), if lit { TEXT } else { SECONDARY });
         if badge > 0 {
             let c = egui::pos2(r.right() - 20.0, r.center().y);
-            ui.painter().circle_filled(c, 10.0, DANGER);
-            ui.painter().text(c, egui::Align2::CENTER_CENTER, badge.to_string(), egui::FontId::new(11.0, th::bold()), Color32::WHITE);
+            if !p().black {
+                ui.painter().circle_filled(c, 10.0, DANGER);
+            }
+            ui.painter().text(c, egui::Align2::CENTER_CENTER, badge.to_string(), egui::FontId::new(11.0, th::bold()), if p().black { DANGER } else { Color32::WHITE });
         }
         if resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             f.msgs = msgs;
@@ -124,7 +127,7 @@ fn chip(ui: &mut Ui, text: &str, on: bool, accent: bool) -> bool {
     let g = ui.painter().layout_no_wrap(text.to_owned(), egui::FontId::new(13.5, th::semibold()), TEXT);
     let (r, mut resp) = ui.allocate_exact_size(vec2(g.size().x + 26.0, 30.0), Sense::click_and_drag());
     let r = crate::theme::pulled(r, crate::theme::pull(ui, &mut resp));
-    let fill = if accent { pal.accent } else if on { k_active() } else if resp.hovered() { k_hover() } else { Color32::TRANSPARENT };
+    let fill = if accent && pal.black { Color32::TRANSPARENT } else if accent { pal.accent } else if on { k_active() } else if resp.hovered() { k_hover() } else { Color32::TRANSPARENT };
     ui.painter().rect_filled(r, crate::theme::R_CTL, fill);
     let fg = if accent { pal.on_accent } else if on { TEXT } else { SECONDARY };
     ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::new(13.5, th::semibold()), fg);
@@ -149,7 +152,7 @@ fn row(ui: &mut Ui, tex: &mut HashMap<String, TextureHandle>, asked: &mut HashSe
     if let Some(p) = presence {
         status_dot(ui, a, p, if over { k_row_hover() } else { k_chat() });
     }
-    ui.painter().text(egui::pos2(r.left() + 58.0, r.center().y - 9.0), egui::Align2::LEFT_CENTER, name, egui::FontId::new(14.5, th::semibold()), TEXT);
+    ui.painter().text(egui::pos2(r.left() + 58.0, r.center().y - 9.0), egui::Align2::LEFT_CENTER, name, egui::FontId::new(14.5, th::semibold()), th::hover_text(TEXT, over));
     ui.painter().text(egui::pos2(r.left() + 58.0, r.center().y + 10.0), egui::Align2::LEFT_CENTER, line, egui::FontId::proportional(12.5), MUTED);
     // the whole row opens the profile; the buttons are added after it, so they sit on top and keep their clicks
     let clicked = ui.interact(r, resp.id.with("profile"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();

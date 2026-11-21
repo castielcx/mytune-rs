@@ -289,7 +289,7 @@ fn line(ui: &mut Ui, ctx: &egui::Context, s: &AppState, m: &ChatMessage, text: &
                 match hit {
                     Some((_, _, Some(x), _)) => {
                         let c = x.color.map(|c| Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)).unwrap_or(Color32::from_rgb(0xA6, 0xB3, 0xFF));
-                        let r = ui.add(egui::Label::new(sb(&x.text, size).color(c).background_color(c.gamma_multiply(0.2))).sense(Sense::click()));
+                        let r = ui.add(egui::Label::new(sb(&x.text, size).color(c).background_color(if crate::theme::p().black { Color32::TRANSPARENT } else { c.gamma_multiply(0.2) })).sense(Sense::click()));
                         if matches!(x.target, Target::User(_)) && r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                             if let Target::User(u) = &x.target {
                                 super::header::remember_profile_at(ctx);
@@ -356,12 +356,13 @@ fn word(ui: &mut Ui, ctx: &egui::Context, w: &str, st: &St, size: f32, color: Co
         t = t.strikethrough();
     }
     if st.code {
-        t = t.monospace().background_color(k_raised());
+        t = t.monospace().background_color(if crate::theme::p().black { Color32::TRANSPARENT } else { k_raised() });
     }
     if hidden {
+        // kept in the Black look too: a hidden spoiler has nothing else to show that it is there
         t = t.color(k_active()).background_color(k_active());
     } else if st.spoiler {
-        t = t.background_color(k_raised());
+        t = t.background_color(if crate::theme::p().black { Color32::TRANSPARENT } else { k_raised() });
     }
     let clickable = url.is_some() || st.spoiler;
     let r = ui.add(egui::Label::new(t).sense(if clickable { Sense::click() } else { Sense::hover() }).selectable(!clickable));

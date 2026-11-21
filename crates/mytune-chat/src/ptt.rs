@@ -114,3 +114,24 @@ unsafe extern "system" fn proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRE
     // SAFETY: the next hook gets the event as it came.
     unsafe { CallNextHookEx(ptr::null_mut(), code, wparam, lparam) }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn combo_needs_exact_modifiers() {
+        let list = vec![(true, false, false, 2, "a".to_string()), (false, false, false, 3, "b".to_string())];
+        assert_eq!(find_shortcut(&list, true, false, false, 2), Some("a"));
+        assert_eq!(find_shortcut(&list, false, false, false, 2), None);
+        assert_eq!(find_shortcut(&list, true, false, false, 3), None);
+    }
+
+    #[test]
+    fn modifiers_alone_are_not_keys() {
+        for code in [0x1D, 0xE01D, 0x2A, 0x36, 0x38, 0xE038, 0xE05B, 0xE05C] {
+            assert!(is_modifier(code));
+        }
+        assert!(!is_modifier(0x02));
+    }
+}

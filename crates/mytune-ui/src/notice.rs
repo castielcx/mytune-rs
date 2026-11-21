@@ -50,8 +50,10 @@ pub fn show(ctx: &Context, top: f32) {
     let closed = egui::Area::new(id()).order(Order::Foreground).fixed_pos(rect.min).show(ctx, |ui| {
         let resp = ui.allocate_rect(rect, Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
         let p = ui.painter();
-        p.rect_filled(rect, 0.0, fill.gamma_multiply(alpha));
-        let white = Color32::WHITE.gamma_multiply(alpha);
+        // Black: plain black so it hides the page under it, the colour moves to the words
+        let black = th::p().black;
+        p.rect_filled(rect, 0.0, if black { Color32::BLACK } else { fill }.gamma_multiply(alpha));
+        let white = if black && n.ok { th::SUCCESS } else if black { th::DANGER } else { Color32::WHITE }.gamma_multiply(alpha);
         // check mark, also on the red "turned off" bar; error badge for failures
         let glyph = if n.ok || n.text.starts_with(SUCCESS) { "\u{E73E}" } else { "\u{E783}" };
         let font = |s: f32, f: egui::FontFamily| egui::FontId::new(s, f);

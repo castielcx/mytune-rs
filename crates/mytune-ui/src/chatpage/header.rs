@@ -414,11 +414,13 @@ pub fn add_people(ctx: &egui::Context, h: &mut HeaderUi, s: &AppState, tex: &mut
                 let tx = texture(ui.ctx(), tex, asked, s, &f.avatar, want);
                 avatar(ui, a, tx, &f.name);
                 status_dot(ui, a, f.presence, k_panel());
-                ui.painter().text(pos2(a.right() + 10.0, row.center().y), egui::Align2::LEFT_CENTER, &f.name, egui::FontId::proportional(14.0), TEXT);
+                ui.painter().text(pos2(a.right() + 10.0, row.center().y), egui::Align2::LEFT_CENTER, &f.name, egui::FontId::proportional(14.0), th::hover_text(TEXT, chosen || resp.hovered()));
                 let b = Rect::from_center_size(pos2(row.right() - 18.0, row.center().y), vec2(20.0, 20.0));
-                ui.painter().rect(b, 5.0, if chosen { p().accent } else { Color32::TRANSPARENT }, Stroke::new(1.5, if chosen { p().accent } else { MUTED }), egui::StrokeKind::Inside);
-                if chosen {
-                    glyph(ui.painter(), b.center(), I_CHECK, 12.0, p().on_accent, false);
+                if !th::bare_check(ui.painter(), b.center(), chosen) {
+                    ui.painter().rect(b, 5.0, if chosen { p().accent } else { Color32::TRANSPARENT }, Stroke::new(1.5, if chosen { p().accent } else { MUTED }), egui::StrokeKind::Inside);
+                    if chosen {
+                        glyph(ui.painter(), b.center(), I_CHECK, 12.0, p().on_accent, false);
+                    }
                 }
                 if resp.clicked() {
                     acts.push(Action::ChoosePerson(f.id.clone()));
@@ -644,7 +646,9 @@ fn profile_head(ui: &mut Ui, s: &AppState, pr: &Profile, bh: f32, av: f32, round
     match texture(&ctx, tex, asked, s, &pr.banner, want) {
         Some(t) => egui::Image::new(egui::load::SizedTexture::new(t, banner.size())).corner_radius(top).paint_at(ui, banner),
         None => {
-            ui.painter().rect_filled(banner, top, pr.accent.map(rgb).unwrap_or(th::tone(0.24)));
+            if !p().black {
+                ui.painter().rect_filled(banner, top, pr.accent.map(rgb).unwrap_or(th::tone(0.24)));
+            }
         }
     }
     let a = Rect::from_min_size(pos2(banner.left() + 16.0, banner.bottom() - av / 2.0), vec2(av, av));
@@ -687,7 +691,9 @@ fn profile_btn(ui: &mut Ui, g: &str, text: Option<&str>, tip: &str) -> bool {
     let t = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), QUICK);
     match words {
         Some(words) => {
-            ui.painter().rect_filled(r, 8.0, p().accent.lerp_to_gamma(Color32::WHITE, 0.12 * t));
+            if !p().black {
+                ui.painter().rect_filled(r, 8.0, p().accent.lerp_to_gamma(Color32::WHITE, 0.12 * t));
+            }
             glyph(ui.painter(), pos2(r.left() + 20.0, r.center().y), g, 15.0, p().on_accent, false);
             ui.painter().galley(pos2(r.left() + 35.0, r.center().y - words.size().y / 2.0), words, p().on_accent);
         }
@@ -1220,6 +1226,7 @@ pub fn members_panel(ui: &mut Ui, s: &AppState, owned_group: Option<&str>, tex: 
             let offline = matches!(m.presence, None | Some(Presence::Offline));
             let c = m.color.map(|c| Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)).unwrap_or(SECONDARY);
             let c = if offline { c.gamma_multiply(0.5) } else { c };
+            let c = if p().black && resp.hovered() { TEXT } else { c };
             let x = a.right() + 10.0;
             let clip = ui.painter().with_clip_rect(Rect::from_min_max(pos2(x, row.top()), pos2(row.right() - 4.0, row.bottom())));
             match &m.activity {

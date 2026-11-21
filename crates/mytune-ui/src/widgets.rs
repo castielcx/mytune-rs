@@ -107,8 +107,8 @@ fn row_button(ui: &mut Ui, text: &str, selected: bool) -> bool {
     if let Some(bg) = bg {
         ui.painter().rect_filled(rect, th::nested(th::R_MENU, 4.0), bg);
     }
-    ui.painter().galley(pos2(rect.left() + ROW_H_PAD.0, rect.top() + ROW_H_PAD.1), galley, TEXT);
-    if selected {
+    ui.painter().galley_with_override_text_color(pos2(rect.left() + ROW_H_PAD.0, rect.top() + ROW_H_PAD.1), galley, th::hover_text(TEXT, selected || resp.hovered()));
+    if selected && !th::p().black {
         ui.painter().rect_filled(Rect::from_min_size(pos2(rect.left(), rect.center().y - 8.0), vec2(3.0, 16.0)), 1.5, th::p().accent);
     }
     resp.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
@@ -165,7 +165,7 @@ pub fn slider_sized(ui: &mut Ui, id: Id, value: &mut f64, min: f64, max: f64, wi
     if glass > 0.01 {
         paint.add(crate::lens::shape(thumb, crate::lens::Lens { radius: thumb.height() / 2.0, rim: thumb.height() * 0.45, bend: 5.0 * glass, zoom: 1.0 + 0.25 * glass, blur: 0.0, split: 0.3 }));
     }
-    th::capsule(paint, thumb, fade(Color32::WHITE.gamma_multiply(1.0 - 0.8 * glass)), 0x60);
+    th::capsule(paint, thumb, fade(if pal.black { Color32::WHITE } else { Color32::WHITE.gamma_multiply(1.0 - 0.8 * glass) }), 0x60);
     SliderOut { changed, released: enabled && (resp.drag_stopped() || resp.clicked()) }
 }
 
@@ -216,9 +216,11 @@ pub fn checkbox(ui: &mut Ui, id: Id, checked: &mut bool, label: impl FnOnce(&mut
         let hover = ui.rect_contains_pointer(rect);
         let fade = if hover { 0.85 } else { 1.0 };
         let (fill, stroke) = if *checked { (pal.accent, pal.accent) } else { (white(0x10), white(0x70)) };
-        ui.painter().rect_filled(rect, 6.0, fill.gamma_multiply(fade));
-        ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, stroke.gamma_multiply(fade)), StrokeKind::Inside);
-        if *checked {
+        if !th::bare_check(ui.painter(), rect.center(), *checked) {
+            ui.painter().rect_filled(rect, 6.0, fill.gamma_multiply(fade));
+            ui.painter().rect_stroke(rect, 6.0, Stroke::new(1.0, stroke.gamma_multiply(fade)), StrokeKind::Inside);
+        }
+        if *checked && !pal.black {
             ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "\u{E73E}", FontId::new(12.0, th::icons()), pal.on_accent);
         }
         ui.vertical(label);

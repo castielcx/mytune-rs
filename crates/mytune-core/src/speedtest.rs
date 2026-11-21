@@ -18,13 +18,46 @@ const STREAMS: usize = 4;
 const SECONDS: f64 = 8.0;
 const WARM_UP: f64 = 1.0;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct SpeedResult {
     pub down_mbps: f64,
     pub up_mbps: f64,
     pub ping_ms: f64,
     pub jitter_ms: f64,
     pub loaded_ms: f64,
+}
+
+/// The last finished test with its live readings, kept in `speedtest.json` next to `state.json`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LastSpeed {
+    /// Local time, `yyyy-MM-dd HH:mm`.
+    pub at: String,
+    pub result: SpeedResult,
+    pub down: Vec<f64>,
+    pub up: Vec<f64>,
+}
+
+const LAST_FILE: &str = "speedtest.json";
+/// More than a run produces (about 28 readings per phase); a longer list in the file is cut.
+const MAX_SAMPLES: usize = 64;
+
+/// The saved test. A missing, corrupt or nonsensical file is simply no saved test.
+pub fn load_last(dir: &std::path::Path) -> Option<LastSpeed> {
+    let mut l: LastSpeed = serde_json::from_slice(&std::fs::read(dir.join(LAST_FILE)).ok()?).ok()?;
+    l.down.truncate(MAX_SAMPLES);
+    l.up.truncate(MAX_SAMPLES);
+    let r = l.result;
+    let ok = |v: &f64| v.is_finite() && *v >= 0.0;
+    let valid = l.at.chars().count() <= 32 && [r.down_mbps, r.up_mbps, r.ping_ms, r.jitter_ms, r.loaded_ms].iter().all(ok) && l.down.iter().chain(&l.up).all(ok);
+    valid.then_some(l)
+}
+
+/// Writes through a temporary file, so a crash mid-write leaves the previous test intact.
+pub fn save_last(dir: &std::path::Path, last: &LastSpeed) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let tmp = dir.join("speedtest.json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec(last)?)?;
+    std::fs::rename(tmp, dir.join(LAST_FILE))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -208,6 +241,25 @@ mod tests {
         assert_eq!(median(&[10.0, 20.0, 30.0, 40.0]), 30.0); // upper middle
         assert_eq!(jitter(&[10.0]), 0.0);
         assert_eq!(jitter(&[10.0, 14.0, 12.0]), 3.0);
+    }
+
+    #[test]
+    fn last_result_round_trip_and_bad_files() {
+        let d = tempfile::tempdir().unwrap();
+        assert_eq!(load_last(d.path()), None, "missing file");
+        let r = SpeedResult { down_mbps: 320.5, up_mbps: 41.0, ping_ms: 12.0, jitter_ms: 1.2, loaded_ms: 18.0 };
+        let last = LastSpeed { at: "2026-11-21 14:32".into(), result: r, down: vec![100.0, 320.5], up: vec![41.0] };
+        save_last(d.path(), &last).unwrap();
+        assert_eq!(load_last(d.path()), Some(last.clone()));
+        let file = d.path().join(LAST_FILE);
+        for bad in ["{ not json", "", r#"{"at":"x"}"#, r#"{"at":"x","result":{"down_mbps":-1,"up_mbps":0,"ping_ms":0,"jitter_ms":0,"loaded_ms":0},"down":[],"up":[]}"#] {
+            std::fs::write(&file, bad).unwrap();
+            assert_eq!(load_last(d.path()), None, "{bad}");
+        }
+        let mut long = last;
+        long.down = vec![1.0; 500];
+        save_last(d.path(), &long).unwrap();
+        assert_eq!(load_last(d.path()).unwrap().down.len(), MAX_SAMPLES);
     }
 
     #[test]

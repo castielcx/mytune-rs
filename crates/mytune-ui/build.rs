@@ -11,6 +11,8 @@ fn main() {
         }
         // Bin only: tests and examples must run without elevation. (MSVC linker.)
         println!("cargo:rustc-link-arg-bins=/MANIFEST:EMBED");
-        println!("cargo:rustc-link-arg-bins=/MANIFESTUAC:level='requireAdministrator' uiAccess='false'");
+        println!("cargo:rustc-link-arg-bin=MyTune=/MANIFESTUAC:level='requireAdministrator' uiAccess='false'");
+        // The Run entry's helper: Windows skips elevated programs in a Run key.
+        println!("cargo:rustc-link-arg-bin=MyTuneStart=/MANIFESTUAC:level='asInvoker' uiAccess='false'");
     }
 }

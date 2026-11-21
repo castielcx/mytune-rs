@@ -459,7 +459,7 @@ fn rows(ui: &mut egui::Ui, tracks: &[Track], playing: Option<u64>, liked: &std::
 
         let width = (bx_left - tx - 12.0).max(40.0);
         let line = |text: egui::RichText| egui::WidgetText::from(text).into_galley(ui, Some(egui::TextWrapMode::Truncate), width, egui::FontSelection::Default);
-        let title = line(sb(&t.title, 14.0).color(if ok { th::TEXT } else { text3() }));
+        let title = line(sb(&t.title, 14.0).color(if ok { th::hover_text(th::TEXT, now || hover) } else { text3() }));
         let artist = line(rt(&t.artist, 12.0).color(text2()));
         ui.painter().galley(egui::pos2(tx, rect.top() + 10.0), title, th::TEXT);
         ui.painter().galley(egui::pos2(tx, rect.top() + 31.0), artist, text2());
@@ -588,7 +588,7 @@ pub fn section(ui: &mut egui::Ui) {
         match s.tab {
             Tab::Search => {
                 ui.horizontal(|ui| {
-                    let field = ui.add(egui::TextEdit::singleline(&mut s.query).hint_text("Search SoundCloud").background_color(th::control_bg()).margin(egui::Margin::symmetric(10, 8)).desired_width(ui.available_width() - 110.0));
+                    let field = ui.add(egui::TextEdit::singleline(&mut s.query).hint_text("Search SoundCloud").margin(egui::Margin::symmetric(10, 8)).desired_width(ui.available_width() - 110.0));
                     let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if (th::button(ui, "Search", true, (16.0, 6.0, 16.0, 7.0)).clicked() || enter) && !s.query.trim().is_empty() && !s.busy {
                         act = Some(Act::Search(s.query.trim().to_owned()));
@@ -640,7 +640,7 @@ pub fn section(ui: &mut egui::Ui) {
                 // new playlist
                 ui.horizontal(|ui| {
                     if s.creating {
-                        let field = ui.add(egui::TextEdit::singleline(&mut s.new_name).hint_text("Playlist name").background_color(th::control_bg()).margin(egui::Margin::symmetric(10, 8)).desired_width(240.0));
+                        let field = ui.add(egui::TextEdit::singleline(&mut s.new_name).hint_text("Playlist name").margin(egui::Margin::symmetric(10, 8)).desired_width(240.0));
                         let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                         if (th::button(ui, "Create", true, (14.0, 6.0, 14.0, 7.0)).clicked() || enter) && !s.new_name.trim().is_empty() && !s.busy {
                             act = Some(Act::NewPlaylist(s.new_name.trim().to_owned(), None));
@@ -716,7 +716,7 @@ pub fn section(ui: &mut egui::Ui) {
                 ui.horizontal(|ui| {
                     let name = {
                         let mut s = state();
-                        ui.add(egui::TextEdit::singleline(&mut s.new_name).hint_text("New playlist").background_color(th::control_bg()).margin(egui::Margin::symmetric(10, 8)).desired_width(180.0));
+                        ui.add(egui::TextEdit::singleline(&mut s.new_name).hint_text("New playlist").margin(egui::Margin::symmetric(10, 8)).desired_width(180.0));
                         s.new_name.trim().to_owned()
                     };
                     if th::button(ui, "Create", true, (12.0, 6.0, 12.0, 7.0)).clicked() && !name.is_empty() {

@@ -12,6 +12,7 @@ use mytune_core::engine::{Engine, Tweak};
 use mytune_core::netrepair::{net_tweaks, NetTweak};
 use mytune_core::sysreport;
 use mytune_core::tweaks::system_cmd;
+#[cfg(feature = "license")]
 use mytune_core::updater;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -198,29 +199,25 @@ impl SettingsPage {
             }
         }
 
-        heading(ui, "Updates", 20.0);
-        let upd = self.flag("CheckForUpdates", true);
-        let mut check = false;
-        let mut toggled = false;
-        row(ui, "Check for updates", "Looks for a newer MyTune when it starts and every few hours. A banner appears at the top; one click installs it. Nothing about you is sent.", 260.0, |ui| {
-            toggled = th::switch(ui, upd).clicked();
-            ui.add_space(8.0);
-            check = th::button(ui, "Check now", false, th::BTN).clicked();
-            false
-        });
-        if toggled {
-            self.set_flag("CheckForUpdates", "Check for updates", !upd);
-        }
-        if check {
-            self.status = Some(("Checking…".into(), true));
-            self.spawn(&ctx, |tx| {
-                let (t, ok) = match updater::check() {
-                    Ok(None) => ("You're on the latest version.".to_string(), true),
-                    Ok(Some(u)) => (format!("Version {} is available. This build can't install updates yet.", u.version), true),
-                    Err(e) => (format!("Couldn't check for updates: {e}"), false),
-                };
-                let _ = tx.send(Msg::Status(t, ok));
+        #[cfg(feature = "license")]
+        {
+            heading(ui, "Updates", 20.0);
+            let mut check = false;
+            row(ui, "Check for updates", "MyTune looks for a new version when it starts and once a day. Nothing about you is sent.", 260.0, |ui| {
+                check = th::button(ui, "Check now", false, th::BTN).clicked();
+                false
             });
+            if check {
+                self.status = Some(("Checking…".into(), true));
+                self.spawn(&ctx, |tx| {
+                    let (t, ok) = match updater::check() {
+                        Ok(None) => ("You're on the latest version.".to_string(), true),
+                        Ok(Some(u)) => (format!("Version {} is available. Use Update now at the top of the window.", u.version), true),
+                        Err(e) => (format!("Couldn't check for updates: {e}"), false),
+                    };
+                    let _ = tx.send(Msg::Status(t, ok));
+                });
+            }
         }
 
         heading(ui, "Appearance", 20.0);

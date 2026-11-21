@@ -8,8 +8,14 @@ edition.workspace = true
 name = "MyTune"
 path = "src/main.rs"
 
+# Target of the Run entry (Start with Windows): no console, not elevated. Built by every `-p mytune-ui` build.
+[[bin]]
+name = "MyTuneStart"
+path = "src/start.rs"
+
 [dependencies]
 eframe = { version = "0.37.0", default-features = false, features = ["glow", "clipboard", "links", "default_fonts"] }
+egui = { version = "0.37.0", default-features = false, features = ["experimental"] } # only unhides the widget-theme API (theme::FieldStyle)
 mytune-core = { path = "../mytune-core" }
 mytune-chat = { path = "../mytune-chat" }
 mytune-sensors = { path = "../mytune-sensors" }

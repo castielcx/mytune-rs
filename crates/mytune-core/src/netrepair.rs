@@ -8,13 +8,10 @@
 use crate::catalog::{self, TweakFlags};
 use crate::engine::Tweak;
 use crate::error::Result;
-use crate::pccheck::parse_ping;
-use crate::process::{run, system32};
+use crate::process::system32;
 use crate::special::{adapter_tweaks, ProtocolBindingsTweak};
 use crate::tweaks::Cmd;
-use std::net::ToSocketAddrs;
 use std::sync::Arc;
-use std::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Step {
@@ -91,22 +88,6 @@ pub fn repair(cmd: &dyn Cmd, key: &str, log: &mut dyn FnMut(&str)) -> bool {
     restart
 }
 
-/// Quick check: 4 pings to 1.1.1.1 and a DNS lookup. Two lines of text.
-pub fn test_connection() -> String {
-    let ping = match run("ping.exe", &["-n", "4", "-w", "1000", "1.1.1.1"]) {
-        Ok(r) => match parse_ping(&r.output) {
-            (0, _) => "Internet: not reachable".to_string(),
-            (n, Some((_, _, avg))) => format!("Internet: {avg:.0} ms ping ({n}/4 replies)"),
-            (n, None) => format!("Internet: answers ({n}/4 replies)"),
-        },
-        Err(e) => format!("Internet: {e}"),
-    };
-    let t = Instant::now();
-    let found = ("www.google.com", 0).to_socket_addrs().map(|mut a| a.next().is_some()).unwrap_or(false);
-    let dns = if found { format!("DNS: working ({} ms)", t.elapsed().as_millis()) } else { "DNS: not working".to_string() };
-    format!("{ping}\n{dns}")
-}
-
 /// A net.* tweak with the text the catalog gives it.
 pub struct NetTweak {
     pub tweak: Box<dyn Tweak + Send + Sync>,
@@ -115,7 +96,7 @@ pub struct NetTweak {
     pub flags: TweakFlags,
 }
 
-/// net.adapterpower, net.adapteradvanced, net.bindings (the active ones of the C# catalog).
+/// net.adapterpower, net.adapteradvanced, net.wifi, net.bindings (the active network tweaks).
 pub fn net_tweaks(cmd: Arc<dyn Cmd>) -> Result<Vec<NetTweak>> {
     let mut all: Vec<(String, Box<dyn Tweak + Send + Sync>)> = adapter_tweaks(cmd.clone()).into_iter().map(|t| (t.id.clone(), Box::new(t) as Box<dyn Tweak + Send + Sync>)).collect();
     all.push(("net.bindings".into(), Box::new(ProtocolBindingsTweak { cmd })));
@@ -183,7 +164,7 @@ mod tests {
     fn net_tweaks_come_from_catalog() {
         let t = net_tweaks(crate::tweaks::system_cmd()).unwrap();
         let ids: Vec<&str> = t.iter().map(|n| n.tweak.id()).collect();
-        assert_eq!(ids, ["net.adapterpower", "net.adapteradvanced", "net.buffers", "net.bindings"]);
-        assert!(t[1].flags.has(TweakFlags::EXPERIMENTAL) && !t[2].description.is_empty());
+        assert_eq!(ids, ["net.adapterpower", "net.adapteradvanced", "net.wifi", "net.bindings"]);
+        assert!(t[1].flags.has(TweakFlags::EXPERIMENTAL) && !t[3].description.is_empty());
     }
 }

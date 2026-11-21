@@ -368,7 +368,11 @@ struct Saved {
 }
 
 fn all(store: &Store) -> BTreeMap<String, Vec<Saved>> {
-    store.top("CustomResolutions").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default()
+    all_in(store, "CustomResolutions")
+}
+
+fn all_in(store: &Store, key: &str) -> BTreeMap<String, Vec<Saved>> {
+    store.top(key).and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default()
 }
 
 /// Custom resolutions MyTune saved for a display (`CustomResolutions` in state.json).
@@ -388,6 +392,59 @@ pub fn register(store: &mut Store, dev: &str, m: DisplayMode, keep: bool) {
         map.remove(dev);
     }
     store.set_top("CustomResolutions", serde_json::to_value(map).unwrap_or_default());
+}
+
+fn mode_key(m: DisplayMode) -> String {
+    format!("{}x{}@{}", m.width, m.height, m.hz)
+}
+
+type NameMap = BTreeMap<String, BTreeMap<String, String>>;
+
+/// Names the user gave modes of a display (`ResolutionNames`: display -> "WxH@Hz" -> name).
+pub fn names(store: &Store, dev: &str) -> BTreeMap<DisplayMode, String> {
+    let all: NameMap = store.top("ResolutionNames").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+    let mut out = BTreeMap::new();
+    for (k, n) in all.get(dev).cloned().unwrap_or_default() {
+        let nums: Vec<u32> = k.split(|c| c == 'x' || c == '@').filter_map(|p| p.parse().ok()).collect();
+        if let [width, height, hz] = nums[..] {
+            out.insert(DisplayMode { width, height, hz }, n);
+        }
+    }
+    out
+}
+
+/// Names a mode (empty name clears it). In memory only; call `store.save()` afterwards.
+pub fn set_name(store: &mut Store, dev: &str, m: DisplayMode, name: &str) {
+    let mut all: NameMap = store.top("ResolutionNames").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+    let list = all.entry(dev.to_string()).or_default();
+    if name.trim().is_empty() {
+        list.remove(&mode_key(m));
+    } else {
+        list.insert(mode_key(m), name.trim().to_string());
+    }
+    if list.is_empty() {
+        all.remove(dev);
+    }
+    store.set_top("ResolutionNames", serde_json::to_value(all).unwrap_or_default());
+}
+
+/// Presets (any mode Windows lists) saved for a display (`SavedModes` in state.json).
+pub fn presets(store: &Store, dev: &str) -> Vec<DisplayMode> {
+    all_in(store, "SavedModes").remove(dev).unwrap_or_default().iter().map(|s| DisplayMode { width: s.width, height: s.height, hz: s.hz }).collect()
+}
+
+/// Adds or drops a preset. In memory only; call `store.save()` afterwards.
+pub fn register_preset(store: &mut Store, dev: &str, m: DisplayMode, keep: bool) {
+    let mut map = all_in(store, "SavedModes");
+    let list = map.entry(dev.to_string()).or_default();
+    list.retain(|s| (s.width, s.height, s.hz) != (m.width, m.height, m.hz));
+    if keep {
+        list.push(Saved { width: m.width, height: m.height, hz: m.hz });
+    }
+    if list.is_empty() {
+        map.remove(dev);
+    }
+    store.set_top("SavedModes", serde_json::to_value(map).unwrap_or_default());
 }
 
 #[cfg(test)]

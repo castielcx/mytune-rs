@@ -162,7 +162,7 @@ pub fn popup(ctx: &egui::Context, s: &AppState, composer: egui::Rect, draft: &mu
                 let col = c.color.map(|c| Color32::from_rgb((c >> 16) as u8, (c >> 8) as u8, c as u8)).unwrap_or(TEXT);
                 let g = ui.painter().layout_no_wrap(c.name.clone(), egui::FontId::new(13.5, th::semibold()), col);
                 let nx = r.left() + 40.0;
-                ui.painter().galley(egui::pos2(nx, r.center().y - g.size().y / 2.0), g.clone(), col);
+                ui.painter().galley_with_override_text_color(egui::pos2(nx, r.center().y - g.size().y / 2.0), g.clone(), th::hover_text(col, i == st.index.min(list.len() - 1) || resp.hovered()));
                 if let Some(u) = &c.username {
                     ui.painter().text(egui::pos2(nx + g.size().x + 8.0, r.center().y), egui::Align2::LEFT_CENTER, u, egui::FontId::proportional(12.0), MUTED);
                 }

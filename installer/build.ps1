@@ -11,8 +11,9 @@ if (-not $iscc) { throw 'Inno Setup 6 not found. Install it with: winget install
 
 $ErrorActionPreference = 'Continue' # cargo prints warnings on stderr
 # local-stickers: the Stickers tab of the chat picker, in the public build by the owner's choice (2026-11-15).
+# taskbar-look: Taskbar look card, injects a DLL into explorer.exe; in the public build by the owner's choice (2026-11-20).
 # license: the licence key screen (crates\mytune-core\src\license.rs); the owner's own build is made without it.
-& "$root\build.ps1" build --release -p mytune-ui --features 'local-stickers,license'
+& "$root\build.ps1" build --release -p mytune-ui --features 'local-stickers,taskbar-look,license'
 if ($LASTEXITCODE -ne 0) { throw 'cargo build failed' }
 $ErrorActionPreference = 'Stop'
 

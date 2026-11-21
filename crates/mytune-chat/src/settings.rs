@@ -239,6 +239,12 @@ mod tests {
     }
 
     #[test]
+    fn old_settings_have_no_shortcuts() {
+        let s: Settings = serde_json::from_str("{}").unwrap();
+        assert!(s.sound_shortcuts.is_empty());
+    }
+
+    #[test]
     fn muted_stream_is_silent_and_keeps_its_volume() {
         use yapfast_core::volume::{self, Kind};
         set_stream_sound("stream-test-1", 0.5, true);

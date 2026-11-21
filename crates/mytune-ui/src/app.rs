@@ -700,11 +700,11 @@ impl App {
                 let r = Rect::from_min_size(pos2(right - 46.0 * (i as f32 + 1.0), bar.top()), vec2(46.0, 32.0));
                 let resp = ui.interact(r, Id::new(("cap", i)), Sense::click());
                 let hov = th::anim(&ctx, resp.id.with("hover"), resp.hovered(), th::HOVER);
-                if hov > 0.0 {
+                if hov > 0.0 && !pal.black {
                     let tint = if close { pal.block[1] } else { Color32::from_white_alpha(0x24) };
                     ui.painter().rect_filled(r.shrink2(vec2(5.0, 3.0)), 8.0, tint.gamma_multiply(hov));
                 }
-                ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, glyph, FontId::new(10.0, th::icons()), if close { pal.side_text.lerp_to_gamma(Color32::WHITE, hov) } else { pal.side_text });
+                ui.painter().text(r.center(), egui::Align2::CENTER_CENTER, glyph, FontId::new(10.0, th::icons()), if pal.black { th::text2().lerp_to_gamma(Color32::WHITE, hov) } else if close { pal.side_text.lerp_to_gamma(Color32::WHITE, hov) } else { pal.side_text });
                 if resp.clicked() {
                     ctx.send_viewport_cmd(cmd);
                 }

@@ -22,6 +22,8 @@ pub struct PickerUi {
     gifs: bool,
     /// The Stickers tab shows (feature `local-stickers` only).
     stickers: bool,
+    /// Sticker pictures running their animation: a hover starts one, and it finishes after the pointer left.
+    playing: HashSet<String>,
     query: String,
     gif_query: String,
     at: Option<egui::Pos2>,
@@ -32,10 +34,24 @@ pub struct PickerUi {
 
 impl PickerUi {
     pub fn toggle(&mut self, what: For, gifs: bool, at: Option<egui::Pos2>, acts: &mut Vec<Action>) {
-        if self.open.as_ref() == Some(&what) && self.gifs == gifs {
+        if self.open.as_ref() == Some(&what) && self.gifs == gifs && !self.stickers {
             self.close(acts);
             return;
         }
+        self.switch(what, gifs, at, acts);
+    }
+
+    /// The composer's sticker button: opens the Stickers tab, or closes it when it already shows.
+    pub fn toggle_stickers(&mut self, at: Option<egui::Pos2>, acts: &mut Vec<Action>) {
+        if self.open == Some(For::Composer) && self.stickers {
+            self.close(acts);
+            return;
+        }
+        self.switch(For::Composer, false, at, acts);
+        self.stickers = true;
+    }
+
+    fn switch(&mut self, what: For, gifs: bool, at: Option<egui::Pos2>, acts: &mut Vec<Action>) {
         if self.gifs && !gifs {
             acts.push(Action::CloseGifs);
         }
@@ -44,6 +60,7 @@ impl PickerUi {
         }
         self.open = Some(what);
         self.gifs = gifs;
+        self.stickers = false;
         self.at = at;
         self.fresh = true;
         self.query.clear();
@@ -54,6 +71,11 @@ impl PickerUi {
         self.gifs
     }
 
+    /// The Stickers tab shows.
+    pub fn stickers(&self) -> bool {
+        self.stickers
+    }
+
     pub fn close(&mut self, acts: &mut Vec<Action>) {
         if self.gifs {
             acts.push(Action::CloseGifs);
@@ -61,6 +83,7 @@ impl PickerUi {
         self.open = None;
         self.gifs = false;
         self.stickers = false;
+        self.playing.clear();
         self.gif_tex.clear();
     }
 }
@@ -89,6 +112,25 @@ const EMOJI: &[(&str, &str)] = &[
     ("⚠️", "warning"), ("❓", "question"), ("❗", "exclamation"), ("🚀", "rocket"), ("🍕", "pizza"), ("🍔", "burger"), ("🍺", "beer"), ("☕", "coffee"),
     ("🐐", "goat"), ("🐶", "dog"), ("🐱", "cat"), ("🐸", "frog"), ("🦀", "crab rust"), ("🌈", "rainbow"), ("☀️", "sun"), ("🌙", "moon"),
 ];
+
+/// The sticker glyph: a rounded square with its lower right corner peeled over. The icon font has none.
+pub fn sticker_icon(painter: &egui::Painter, c: egui::Pos2, color: egui::Color32) {
+    use std::f32::consts::{FRAC_PI_2, PI};
+    let (half, radius, peel) = (8.0_f32, 3.5_f32, 6.5_f32);
+    let stroke = egui::Stroke::new(1.5, color);
+    let arc = |x: f32, y: f32, from: f32| (0..=6).map(move |i| {
+        let a = from + FRAC_PI_2 * i as f32 / 6.0;
+        c + vec2(x + radius * a.cos(), y + radius * a.sin())
+    });
+    let inner = half - radius;
+    let mut outline: Vec<egui::Pos2> = arc(-inner, -inner, PI).chain(arc(inner, -inner, PI + FRAC_PI_2)).collect();
+    outline.push(c + vec2(half, half - peel));
+    outline.push(c + vec2(half - peel, half));
+    outline.extend(arc(-inner, inner, FRAC_PI_2));
+    painter.add(egui::Shape::closed_line(outline, stroke));
+    let fold = vec![c + vec2(half - peel, half), c + vec2(half - peel, half - peel), c + vec2(half, half - peel)];
+    painter.add(egui::Shape::line(fold, stroke));
+}
 
 /// The picker, as a floating panel: above the composer's right edge, or by the pointer for a reaction.
 #[allow(clippy::too_many_arguments)]
@@ -119,6 +161,7 @@ pub fn show(ctx: &egui::Context, pk: &mut PickerUi, app: &Application, draft: &m
                                     pk.toggle(For::Composer, tab == 0, at, acts);
                                 }
                                 pk.stickers = tab == 2;
+                                pk.playing.clear();
                                 pk.query.clear();
                             }
                         }
@@ -257,8 +300,25 @@ fn stickers(ui: &mut Ui, pk: &mut PickerUi, app: &Application, tex: &mut HashMap
                     let inner = Rect::from_center_size(r.center(), vec2(84.0, 84.0));
                     // pictures are asked for only once their tile is in view: a server can have 60 stickers
                     match ui.is_rect_visible(r).then(|| texture(&ctx, tex, asked, s, &Some(picture.clone()), want)).flatten() {
-                        Some(t) => egui::Image::new(egui::load::SizedTexture::new(t, inner.size())).paint_at(ui, inner),
+                        Some(still) => {
+                            let hovered = resp.hovered();
+                            if hovered {
+                                pk.playing.insert(picture.clone());
+                            }
+                            let mut id = still;
+                            if pk.playing.contains(picture) {
+                                // under the pointer it repeats; after that it runs to its end, then rests on the still
+                                match s.pictures.get(picture).and_then(|p| super::media::played(&ctx, &format!("sticker:{picture}"), p, hovered)) {
+                                    Some(moving) => id = moving,
+                                    None => {
+                                        pk.playing.remove(picture);
+                                    }
+                                }
+                            }
+                            egui::Image::new(egui::load::SizedTexture::new(id, inner.size())).paint_at(ui, inner);
+                        }
                         None => {
+                            pk.playing.remove(picture);
                             ui.painter().rect_filled(inner, 10.0, k_raised());
                         }
                     }
